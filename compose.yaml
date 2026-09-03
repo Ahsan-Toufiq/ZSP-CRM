@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-bookworm
+    container_name: digi7_zsp_postgres
+    environment:
+      POSTGRES_DB: digi7_zsp
+      POSTGRES_USER: digi7_user
+      POSTGRES_PASSWORD: digi7_pass
+    ports:
+      - "55433:5432"
+    volumes:
+      - digi7_zsp_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U digi7_user -d digi7_zsp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  digi7_zsp_postgres_data:

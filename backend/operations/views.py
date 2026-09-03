@@ -1,0 +1,101 @@
+from django.db.models import Count
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.response import Response
+
+from accounts.permissions import OperationsPermission
+from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass
+from operations.serializers import (
+    AuctionSaleCreateSerializer,
+    AuctionSaleLineReadSerializer,
+    AuctionSaleSerializer,
+    ContainerItemSerializer,
+    ContainerSerializer,
+    CustomerSerializer,
+    GatePassCreateSerializer,
+    GatePassSerializer,
+)
+from operations.services import verify_gate_pass
+
+
+class UserStampedMixin:
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user, updated_by=self.request.user)
+
+    def perform_update(self, serializer):
+        serializer.save(updated_by=self.request.user)
+
+
+class CustomerViewSet(UserStampedMixin, viewsets.ModelViewSet):
+    queryset = Customer.objects.all()
+    serializer_class = CustomerSerializer
+    permission_classes = [OperationsPermission]
+    filterset_fields = ['is_active', 'customer_type']
+    search_fields = ['name', 'phone', 'email', 'cnic_or_tax_id']
+    ordering_fields = ['name', 'created_at']
+
+
+class ContainerViewSet(UserStampedMixin, viewsets.ModelViewSet):
+    serializer_class = ContainerSerializer
+    permission_classes = [OperationsPermission]
+    filterset_fields = ['status', 'origin_country']
+    search_fields = ['reference', 'supplier_name', 'manifest_notes']
+    ordering_fields = ['arrival_date', 'created_at', 'reference']
+
+    def get_queryset(self):
+        return Container.objects.annotate(item_count=Count('items')).order_by('-arrival_date', '-created_at')
+
+
+class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
+    queryset = ContainerItem.objects.select_related('container')
+    serializer_class = ContainerItemSerializer
+    permission_classes = [OperationsPermission]
+    filterset_fields = ['container', 'status', 'category', 'condition']
+    search_fields = ['lot_number', 'part_name', 'part_number', 'description', 'category']
+    ordering_fields = ['lot_number', 'part_name', 'created_at']
+
+
+class AuctionSaleViewSet(viewsets.ModelViewSet):
+    queryset = AuctionSale.objects.select_related('customer').prefetch_related('lines__item__container')
+    permission_classes = [OperationsPermission]
+    filterset_fields = ['payment_type', 'is_cancelled', 'customer']
+    search_fields = ['sale_number', 'customer__name', 'notes']
+    ordering_fields = ['sale_date', 'created_at', 'total_amount']
+
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return AuctionSaleCreateSerializer
+        return AuctionSaleSerializer
+
+    @action(detail=False, methods=['get'], url_path='sold-without-gate-pass')
+    def sold_without_gate_pass(self, request):
+        queryset = (
+            AuctionSaleLine.objects
+            .select_related('sale', 'sale__customer', 'item', 'item__container')
+            .filter(gate_pass_line__isnull=True, sale__is_cancelled=False, item__status=ContainerItem.Status.SOLD)
+            .order_by('-sale__sale_date')
+        )
+        page = self.paginate_queryset(queryset)
+        serializer = AuctionSaleLineReadSerializer(page or queryset, many=True, context={'request': request})
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
+
+
+class GatePassViewSet(viewsets.ModelViewSet):
+    queryset = GatePass.objects.prefetch_related('lines__sale_line__item__container', 'lines__sale_line__sale')
+    permission_classes = [OperationsPermission]
+    filterset_fields = ['status']
+    search_fields = ['gate_pass_number', 'issued_to_name', 'issued_to_phone', 'vehicle_number', 'driver_name']
+    ordering_fields = ['issued_at', 'created_at']
+
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return GatePassCreateSerializer
+        return GatePassSerializer
+
+    @action(detail=True, methods=['post'])
+    def verify(self, request, pk=None):
+        gate_pass = self.get_object()
+        gate_pass = verify_gate_pass(user=request.user, gate_pass=gate_pass)
+        return Response(GatePassSerializer(gate_pass, context={'request': request}).data, status=status.HTTP_200_OK)

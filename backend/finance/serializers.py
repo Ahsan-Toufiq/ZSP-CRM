@@ -1,0 +1,97 @@
+from django.db.models import Sum
+from rest_framework import serializers
+
+from finance.models import Cheque, ChequeStatus, ChequeStatusHistory, CustomerLedgerEntry
+from finance.services import change_cheque_status, create_cheque
+from operations.models import AuctionSale, Customer
+
+
+class ChequeStatusSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ChequeStatus
+        fields = ['id', 'name', 'balance_effect', 'is_system', 'is_active', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'is_system', 'created_at', 'updated_at']
+
+
+class ChequeSerializer(serializers.ModelSerializer):
+    customer_name = serializers.CharField(source='customer.name', read_only=True)
+    status_name = serializers.CharField(source='status.name', read_only=True)
+
+    class Meta:
+        model = Cheque
+        fields = [
+            'id', 'cheque_number', 'customer', 'customer_name', 'bank_name',
+            'branch_name', 'account_title', 'amount', 'cheque_date',
+            'expiry_date', 'received_date', 'status', 'status_name', 'sale',
+            'notes', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'customer_name', 'status_name', 'created_at', 'updated_at']
+
+    def validate(self, attrs):
+        cheque_date = attrs.get('cheque_date', getattr(self.instance, 'cheque_date', None))
+        expiry_date = attrs.get('expiry_date', getattr(self.instance, 'expiry_date', None))
+        if cheque_date and expiry_date and expiry_date < cheque_date:
+            raise serializers.ValidationError({'expiry_date': 'Expiry date cannot be before cheque date.'})
+        return attrs
+
+    def create(self, validated_data):
+        return create_cheque(user=self.context['request'].user, **validated_data)
+
+
+class ChequeStatusChangeSerializer(serializers.Serializer):
+    status = serializers.PrimaryKeyRelatedField(queryset=ChequeStatus.objects.filter(is_active=True))
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+    def save(self, **kwargs):
+        return change_cheque_status(
+            user=self.context['request'].user,
+            cheque=self.context['cheque'],
+            status=self.validated_data['status'],
+            notes=self.validated_data.get('notes', ''),
+        )
+
+
+class ChequeStatusHistorySerializer(serializers.ModelSerializer):
+    from_status_name = serializers.CharField(source='from_status.name', read_only=True)
+    to_status_name = serializers.CharField(source='to_status.name', read_only=True)
+
+    class Meta:
+        model = ChequeStatusHistory
+        fields = ['id', 'cheque', 'from_status_name', 'to_status_name', 'notes', 'created_at']
+        read_only_fields = fields
+
+
+class CustomerLedgerEntrySerializer(serializers.ModelSerializer):
+    customer_name = serializers.CharField(source='customer.name', read_only=True)
+
+    class Meta:
+        model = CustomerLedgerEntry
+        fields = [
+            'id', 'customer', 'customer_name', 'entry_date', 'entry_type',
+            'description', 'debit', 'credit', 'sale', 'cheque', 'created_at',
+        ]
+        read_only_fields = ['id', 'customer_name', 'created_at']
+
+
+class CustomerBalanceSerializer(serializers.ModelSerializer):
+    balance = serializers.SerializerMethodField()
+    total_debit = serializers.SerializerMethodField()
+    total_credit = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Customer
+        fields = ['id', 'name', 'phone', 'balance', 'total_debit', 'total_credit']
+
+    def _totals(self, obj):
+        if not hasattr(obj, '_ledger_totals'):
+            obj._ledger_totals = obj.ledger_entries.aggregate(debit=Sum('debit'), credit=Sum('credit'))
+        return obj._ledger_totals
+
+    def get_total_debit(self, obj):
+        return self._totals(obj)['debit'] or 0
+
+    def get_total_credit(self, obj):
+        return self._totals(obj)['credit'] or 0
+
+    def get_balance(self, obj):
+        return self.get_total_debit(obj) - self.get_total_credit(obj)
