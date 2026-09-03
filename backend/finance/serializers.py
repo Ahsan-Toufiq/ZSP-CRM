@@ -1,6 +1,8 @@
 from django.db.models import Sum
 from rest_framework import serializers
 
+from catalog.models import DropdownOption
+from catalog.services import ensure_dropdown_option
 from finance.models import Cheque, ChequeStatus, ChequeStatusHistory, CustomerLedgerEntry
 from finance.services import change_cheque_status, create_cheque
 from operations.models import AuctionSale, Customer
@@ -16,12 +18,13 @@ class ChequeStatusSerializer(serializers.ModelSerializer):
 class ChequeSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     status_name = serializers.CharField(source='status.name', read_only=True)
+    name_on_cheque = serializers.CharField(max_length=180)
 
     class Meta:
         model = Cheque
         fields = [
-            'id', 'cheque_number', 'customer', 'customer_name', 'bank_name',
-            'branch_name', 'account_title', 'amount', 'cheque_date',
+            'id', 'cheque_number', 'customer', 'customer_name', 'name_on_cheque',
+            'bank_name', 'branch_name', 'account_title', 'amount', 'cheque_date',
             'expiry_date', 'received_date', 'status', 'status_name', 'sale',
             'notes', 'created_at', 'updated_at',
         ]
@@ -36,6 +39,13 @@ class ChequeSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         return create_cheque(user=self.context['request'].user, **validated_data)
+
+    def update(self, instance, validated_data):
+        validated_data.pop('status', None)
+        bank_name = validated_data.get('bank_name')
+        if bank_name:
+            ensure_dropdown_option(group=DropdownOption.Group.BANK, label=bank_name, user=self.context['request'].user)
+        return super().update(instance, validated_data)
 
 
 class ChequeStatusChangeSerializer(serializers.Serializer):

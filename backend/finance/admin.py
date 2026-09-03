@@ -18,8 +18,8 @@ class ChequeStatusHistoryInline(admin.TabularInline):
 
 @admin.register(Cheque)
 class ChequeAdmin(admin.ModelAdmin):
-    list_display = ('cheque_number', 'customer', 'bank_name', 'amount', 'cheque_date', 'expiry_date', 'status')
-    search_fields = ('cheque_number', 'customer__name', 'bank_name')
+    list_display = ('cheque_number', 'customer', 'name_on_cheque', 'bank_name', 'amount', 'cheque_date', 'expiry_date', 'status')
+    search_fields = ('cheque_number', 'customer__name', 'name_on_cheque', 'bank_name')
     list_filter = ('status', 'bank_name')
     inlines = [ChequeStatusHistoryInline]
 

@@ -26,9 +26,13 @@ The system currently supports:
 - Gate-pass issuing for one or multiple sold items.
 - One-gate-pass-per-sold-item protection.
 - Gate-pass verification that marks items as released.
+- Gate-pass editing before verification.
+- Gate-pass print tracking with a two-copy print layout.
 - Cheque register.
-- System cheque statuses: `Settle for Cash`, `Bounced`, `Cleared`.
+- System cheque statuses: `Pending`, `Bounced`, `Settled`, `Settled by Cash`, `Cleared`.
 - Custom cheque statuses.
+- Cheque entry from the auction sale dialog when payment type is cheque.
+- Persisted dropdown values for banks, item categories, item conditions, and units.
 - Ledger-based customer receivables.
 - API-level role permissions.
 
@@ -112,6 +116,8 @@ Backend service tests cover:
 - Customer required for non-cash sale.
 - Duplicate sale prevention for the same item.
 - Gate-pass issue and verify flow.
+- Gate-pass editing and print-status reset.
+- Cheque sale creation.
 - Cheque settlement ledger credit.
 - Bounced cheque reversal.
 

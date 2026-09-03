@@ -1,6 +1,7 @@
 from django.db.models import Count
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from accounts.permissions import OperationsPermission
@@ -9,13 +10,15 @@ from operations.serializers import (
     AuctionSaleCreateSerializer,
     AuctionSaleLineReadSerializer,
     AuctionSaleSerializer,
+    AuctionSaleUpdateSerializer,
     ContainerItemSerializer,
     ContainerSerializer,
     CustomerSerializer,
     GatePassCreateSerializer,
     GatePassSerializer,
+    GatePassUpdateSerializer,
 )
-from operations.services import verify_gate_pass
+from operations.services import mark_gate_pass_printed, verify_gate_pass
 
 
 class UserStampedMixin:
@@ -54,6 +57,11 @@ class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
     search_fields = ['lot_number', 'part_name', 'part_number', 'description', 'category']
     ordering_fields = ['lot_number', 'part_name', 'created_at']
 
+    def perform_destroy(self, instance):
+        if instance.status != ContainerItem.Status.AVAILABLE:
+            raise ValidationError({'item': 'Only available inventory can be deleted.'})
+        instance.delete()
+
 
 class AuctionSaleViewSet(viewsets.ModelViewSet):
     queryset = AuctionSale.objects.select_related('customer').prefetch_related('lines__item__container')
@@ -65,6 +73,8 @@ class AuctionSaleViewSet(viewsets.ModelViewSet):
     def get_serializer_class(self):
         if self.action == 'create':
             return AuctionSaleCreateSerializer
+        if self.action in {'update', 'partial_update'}:
+            return AuctionSaleUpdateSerializer
         return AuctionSaleSerializer
 
     @action(detail=False, methods=['get'], url_path='sold-without-gate-pass')
@@ -92,10 +102,18 @@ class GatePassViewSet(viewsets.ModelViewSet):
     def get_serializer_class(self):
         if self.action == 'create':
             return GatePassCreateSerializer
+        if self.action in {'update', 'partial_update'}:
+            return GatePassUpdateSerializer
         return GatePassSerializer
 
     @action(detail=True, methods=['post'])
     def verify(self, request, pk=None):
         gate_pass = self.get_object()
         gate_pass = verify_gate_pass(user=request.user, gate_pass=gate_pass)
+        return Response(GatePassSerializer(gate_pass, context={'request': request}).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='mark-printed')
+    def mark_printed(self, request, pk=None):
+        gate_pass = self.get_object()
+        gate_pass = mark_gate_pass_printed(user=request.user, gate_pass=gate_pass)
         return Response(GatePassSerializer(gate_pass, context={'request': request}).data, status=status.HTTP_200_OK)

@@ -26,7 +26,9 @@ Authentication uses Django sessions and CSRF cookies.
 - `GET|POST /operations/auction-sales/`
 - `GET /operations/auction-sales/sold-without-gate-pass/`
 - `GET|POST /operations/gate-passes/`
+- `GET|PATCH|DELETE /operations/gate-passes/{id}/`
 - `POST /operations/gate-passes/{id}/verify/`
+- `POST /operations/gate-passes/{id}/mark-printed/`
 
 ## Finance
 
@@ -38,5 +40,6 @@ Authentication uses Django sessions and CSRF cookies.
 - `GET /finance/ledger/`
 - `GET /finance/customer-balances/`
 - `GET /finance/dashboard-summary/`
+- `GET|POST /catalog/dropdown-options/`
 
 All list endpoints are paginated by default.

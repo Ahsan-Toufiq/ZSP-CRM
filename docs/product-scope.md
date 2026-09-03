@@ -12,6 +12,8 @@ The critical business risk is inventory leakage. A sold item should not physical
 
 Customers represent real parties with balances. Non-cash transactions must be linked to a customer. Cash sales may be recorded without a customer.
 
+Customer phone numbers are mandatory and must include a country code.
+
 ### Containers
 
 Containers represent incoming shipments. Each container has a reference, origin, supplier, arrival date, status, and notes.
@@ -26,21 +28,29 @@ An item can be sold once only.
 
 Auction sales record the transaction price for sold parts. The backend supports multiple lines per sale, but the current frontend records one sold lot at a time because the described business process auctions parts individually.
 
+If payment type is cheque, cheque details are captured from the same sale dialog and a pending cheque record is created automatically. Customer balance increases at the sale date for non-cash sales, then reduces only when the cheque reaches a settlement status.
+
 ### Gate Passes
 
 Gate passes are issued for sold items waiting for release. A gate pass may include multiple sold items. A sold item can belong to only one gate pass.
 
 Verification at the gate changes the gate pass to verified and marks its items as released.
 
+Gate passes can be edited before verification. If an item is removed from a gate pass, it returns to sold/pending-gate-pass state. Printed gate passes are tracked separately from release status, and editing a gate pass resets it to not printed.
+
 ### Cheques
 
 Cheques are linked to customers and track date, expiry, bank, amount, status, and history. The system statuses are:
 
-- `Settle for Cash`
+- `Pending`
 - `Bounced`
+- `Settled`
+- `Settled by Cash`
 - `Cleared`
 
 Custom statuses can be added and persist for all users.
+
+`Pending` is retained as the pre-clearance holding status because a cheque cannot be `Cleared`, `Settled`, or `Bounced` at the moment it is merely received.
 
 ### Customer Balances
 
@@ -62,6 +72,8 @@ Current roles:
 - Customer balance is ledger-derived for auditability.
 - Item sale and gate-pass uniqueness are enforced with database constraints, not just UI checks.
 - The app is currently ZSP-specific, not multi-tenant SaaS.
+- Lifecycle statuses such as sold/released/verified are controlled by workflow services, not arbitrary dropdown text.
+- Descriptive dropdowns such as bank, category, condition, and unit are persisted option records.
 
 ## Open Business Questions
 

@@ -1,8 +1,9 @@
 from django.db import migrations
 
 
-def seed_statuses(apps, schema_editor):
+def align_statuses(apps, schema_editor):
     ChequeStatus = apps.get_model('finance', 'ChequeStatus')
+    ChequeStatus.objects.filter(name='Settle for Cash').update(name='Settled by Cash')
     statuses = [
         ('Pending', 'none'),
         ('Bounced', 'reverses_settlement'),
@@ -21,16 +22,11 @@ def seed_statuses(apps, schema_editor):
         )
 
 
-def unseed_statuses(apps, schema_editor):
-    ChequeStatus = apps.get_model('finance', 'ChequeStatus')
-    ChequeStatus.objects.filter(name__in=['Pending', 'Bounced', 'Settled', 'Settled by Cash', 'Cleared']).delete()
-
-
 class Migration(migrations.Migration):
     dependencies = [
-        ('finance', '0001_initial'),
+        ('finance', '0002_seed_cheque_statuses'),
     ]
 
     operations = [
-        migrations.RunPython(seed_statuses, unseed_statuses),
+        migrations.RunPython(align_statuses, migrations.RunPython.noop),
     ]

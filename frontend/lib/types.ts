@@ -43,6 +43,7 @@ export interface ContainerItem {
   lot_number: string;
   part_name: string;
   part_number: string;
+  description: string;
   category: string;
   condition: string;
   quantity: number;
@@ -65,6 +66,7 @@ export interface AuctionSale {
   customer: UUID | null;
   customer_name: string | null;
   payment_type: string;
+  notes: string;
   total_amount: string;
   is_cancelled: boolean;
   lines: AuctionSaleLine[];
@@ -77,7 +79,10 @@ export interface GatePass {
   issued_to_phone: string;
   vehicle_number: string;
   driver_name: string;
+  notes: string;
   status: string;
+  print_status: string;
+  printed_at: string | null;
   issued_at: string;
   verified_at: string | null;
   lines: { id: UUID; sale_line: AuctionSaleLine }[];
@@ -96,13 +101,42 @@ export interface Cheque {
   cheque_number: string;
   customer: UUID;
   customer_name: string;
+  name_on_cheque: string;
   bank_name: string;
+  branch_name: string;
+  account_title: string;
   amount: string;
   cheque_date: string;
   expiry_date: string;
   received_date: string;
   status: UUID;
   status_name: string;
+  sale: UUID | null;
+  notes: string;
+}
+
+export interface DropdownOption {
+  id: UUID;
+  group: 'bank' | 'item_category' | 'item_condition' | 'item_unit';
+  label: string;
+  value: string;
+  is_system: boolean;
+  is_active: boolean;
+  sort_order: number;
+}
+
+export interface CustomerLedgerEntry {
+  id: UUID;
+  customer: UUID;
+  customer_name: string;
+  entry_date: string;
+  entry_type: string;
+  description: string;
+  debit: string;
+  credit: string;
+  sale: UUID | null;
+  cheque: UUID | null;
+  created_at: string;
 }
 
 export interface DashboardSummary {

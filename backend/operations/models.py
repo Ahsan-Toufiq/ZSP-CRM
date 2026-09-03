@@ -19,7 +19,7 @@ class Customer(UserStampedModel):
         choices=CustomerType.choices,
         default=CustomerType.INDIVIDUAL,
     )
-    phone = models.CharField(max_length=40, blank=True)
+    phone = models.CharField(max_length=40)
     email = models.EmailField(blank=True)
     cnic_or_tax_id = models.CharField(max_length=80, blank=True)
     address = models.TextField(blank=True)
@@ -84,7 +84,7 @@ class ContainerItem(UserStampedModel):
     part_number = models.CharField(max_length=120, blank=True)
     description = models.TextField(blank=True)
     category = models.CharField(max_length=120, blank=True)
-    condition = models.CharField(max_length=20, choices=Condition.choices, default=Condition.UNKNOWN)
+    condition = models.CharField(max_length=80, default=Condition.UNKNOWN)
     quantity = models.PositiveIntegerField(default=1)
     unit = models.CharField(max_length=30, default='piece')
     reserve_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
@@ -179,6 +179,10 @@ class GatePass(UserStampedModel):
         VERIFIED = 'verified', 'Verified'
         CANCELLED = 'cancelled', 'Cancelled'
 
+    class PrintStatus(models.TextChoices):
+        NOT_PRINTED = 'not_printed', 'Not printed'
+        PRINTED = 'printed', 'Printed'
+
     gate_pass_number = models.CharField(max_length=40, unique=True)
     issued_to_name = models.CharField(max_length=180)
     issued_to_phone = models.CharField(max_length=40, blank=True)
@@ -186,7 +190,9 @@ class GatePass(UserStampedModel):
     driver_name = models.CharField(max_length=180, blank=True)
     notes = models.TextField(blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ISSUED)
+    print_status = models.CharField(max_length=20, choices=PrintStatus.choices, default=PrintStatus.NOT_PRINTED)
     issued_at = models.DateTimeField()
+    printed_at = models.DateTimeField(null=True, blank=True)
     verified_at = models.DateTimeField(null=True, blank=True)
     verified_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

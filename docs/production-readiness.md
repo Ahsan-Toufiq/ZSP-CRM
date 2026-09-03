@@ -15,9 +15,15 @@ This document tracks what is already implemented in the new Digi7 ZSP build and 
 - Gate-pass issuing for multiple sold items.
 - Database protection against issuing the same sold item to multiple gate passes.
 - Gate-pass verification endpoint and UI.
+- Gate-pass print status and two-copy browser print layout.
+- Gate-pass editing before verification.
 - Cheque register.
 - System and custom cheque statuses.
+- Cheque sale creation from auction-sale entry.
 - Ledger-based customer balances.
+- Merged customer and balance view with ledger breakdown.
+- Modal-driven data entry/editing instead of side-mounted forms.
+- Persisted dropdown options for banks, categories, conditions, and units.
 - Basic audit log entries for sales, gate passes, and cheque status changes.
 - API role permissions for admin, operations, finance, and gatekeeper.
 - Local seed data and role-specific demo users.
@@ -25,9 +31,9 @@ This document tracks what is already implemented in the new Digi7 ZSP build and 
 
 ## Required Before Live Replacement
 
-### Gate Pass Printing and Scanning
+### Gate Pass Scanning
 
-The current system records and verifies gate passes, but production should have a printable gate pass with a unique code, barcode, or QR code. A gatekeeper needs a fast validation screen that can search/scan the pass, show all items, and clearly mark whether the pass is valid, already used, cancelled, or not found.
+The current system records, prints, edits, and verifies gate passes. Production should still add QR/barcode scanning. A gatekeeper needs a fast validation screen that can scan the pass, show all items, and clearly mark whether the pass is valid, already used, cancelled, or not found.
 
 ### Manifest Import
 
@@ -87,3 +93,4 @@ Before launch:
 - Automated cheque expiry reminders.
 - Printable customer statements.
 - Multi-tenant Digi7 SaaS architecture.
+- Dedicated mobile gatekeeper view.

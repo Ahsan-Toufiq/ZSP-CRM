@@ -1,12 +1,16 @@
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.utils import timezone
 
 from audit.models import AuditLog
+from catalog.models import DropdownOption
+from catalog.services import ensure_dropdown_option
 from finance.models import Cheque, ChequeStatus, ChequeStatusHistory, CustomerLedgerEntry
 
 
 @transaction.atomic
 def create_cheque(*, user, **data) -> Cheque:
+    ensure_dropdown_option(group=DropdownOption.Group.BANK, label=data.get('bank_name', ''), user=user)
     cheque = Cheque.objects.create(created_by=user, updated_by=user, **data)
     ChequeStatusHistory.objects.create(
         cheque=cheque,
@@ -53,7 +57,7 @@ def change_cheque_status(*, user, cheque: Cheque, status: ChequeStatus, notes=''
             raise ValidationError({'status': 'This cheque has already posted a settlement entry.'})
         CustomerLedgerEntry.objects.create(
             customer=cheque.customer,
-            entry_date=cheque.received_date,
+            entry_date=cheque.received_date or timezone.localdate(),
             entry_type=CustomerLedgerEntry.EntryType.CHEQUE_SETTLEMENT,
             description=f'Cheque settlement {cheque.cheque_number}',
             credit=cheque.amount,
@@ -67,7 +71,7 @@ def change_cheque_status(*, user, cheque: Cheque, status: ChequeStatus, notes=''
         if settled and not reversed_once:
             CustomerLedgerEntry.objects.create(
                 customer=cheque.customer,
-                entry_date=cheque.received_date,
+                entry_date=cheque.received_date or timezone.localdate(),
                 entry_type=CustomerLedgerEntry.EntryType.CHEQUE_REVERSAL,
                 description=f'Cheque reversal {cheque.cheque_number}',
                 debit=cheque.amount,

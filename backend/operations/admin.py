@@ -53,9 +53,9 @@ class GatePassLineInline(admin.TabularInline):
 
 @admin.register(GatePass)
 class GatePassAdmin(admin.ModelAdmin):
-    list_display = ('gate_pass_number', 'issued_to_name', 'vehicle_number', 'status', 'issued_at', 'verified_at')
+    list_display = ('gate_pass_number', 'issued_to_name', 'vehicle_number', 'status', 'print_status', 'issued_at', 'printed_at', 'verified_at')
     search_fields = ('gate_pass_number', 'issued_to_name', 'vehicle_number')
-    list_filter = ('status',)
+    list_filter = ('status', 'print_status')
     inlines = [GatePassLineInline]
 
 # Register your models here.
