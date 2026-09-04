@@ -44,12 +44,11 @@ services:
 
   - type: web
     name: digi7-zsp-frontend
-    runtime: node
+    runtime: docker
     region: singapore
     plan: 0.5c-512mb
-    rootDir: frontend
-    buildCommand: npm ci && npm run build
-    startCommand: npm run start -- --hostname 0.0.0.0 --port $PORT
+    dockerContext: ./frontend
+    dockerfilePath: ./frontend/Dockerfile
     envVars:
       - key: BACKEND_API_ORIGIN
         value: https://digi7-zsp-backend.onrender.com
