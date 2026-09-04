@@ -79,31 +79,57 @@ class ContainerItem(UserStampedModel):
         VOID = 'void', 'Void'
 
     container = models.ForeignKey(Container, on_delete=models.PROTECT, related_name='items')
-    lot_number = models.CharField(max_length=80)
+    lot_number = models.CharField(max_length=80, blank=True)
     part_name = models.CharField(max_length=180)
     part_number = models.CharField(max_length=120, blank=True)
     description = models.TextField(blank=True)
     category = models.CharField(max_length=120, blank=True)
-    condition = models.CharField(max_length=80, default=Condition.UNKNOWN)
+    condition = models.CharField(max_length=80, blank=True)
     quantity = models.PositiveIntegerField(default=1)
     unit = models.CharField(max_length=30, default='piece')
     reserve_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     status = models.CharField(max_length=30, choices=Status.choices, default=Status.AVAILABLE)
 
     class Meta:
-        ordering = ['container__reference', 'lot_number']
-        constraints = [
-            models.UniqueConstraint(fields=['container', 'lot_number'], name='unique_lot_per_container'),
-        ]
+        ordering = ['container__reference', 'part_name', 'lot_number']
         indexes = [
-            models.Index(fields=['status']),
             models.Index(fields=['part_name']),
             models.Index(fields=['part_number']),
             models.Index(fields=['category']),
         ]
 
     def __str__(self) -> str:
-        return f'{self.container.reference} / {self.lot_number} - {self.part_name}'
+        lot = f'{self.lot_number} - ' if self.lot_number else ''
+        return f'{self.container.reference} / {lot}{self.part_name}'
+
+
+class PartInventory(UserStampedModel):
+    part_name = models.CharField(max_length=180)
+    part_number = models.CharField(max_length=120, blank=True)
+    description = models.TextField(blank=True)
+    category = models.CharField(max_length=120, blank=True)
+    condition = models.CharField(max_length=80, blank=True)
+    quantity = models.PositiveIntegerField(default=1)
+    unit = models.CharField(max_length=30, default='piece')
+    reserve_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+
+    class Meta:
+        ordering = ['part_name', 'part_number']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['part_name', 'part_number', 'category', 'condition', 'unit'],
+                name='unique_sellable_part_inventory',
+            ),
+            models.CheckConstraint(condition=models.Q(quantity__gte=0), name='part_inventory_quantity_non_negative'),
+        ]
+        indexes = [
+            models.Index(fields=['part_name']),
+            models.Index(fields=['part_number']),
+            models.Index(fields=['category']),
+        ]
+
+    def __str__(self) -> str:
+        return self.part_name
 
 
 class AuctionSale(UserStampedModel):
@@ -154,13 +180,13 @@ class AuctionSale(UserStampedModel):
 
 class AuctionSaleLine(UserStampedModel):
     sale = models.ForeignKey(AuctionSale, on_delete=models.PROTECT, related_name='lines')
-    item = models.ForeignKey(ContainerItem, on_delete=models.PROTECT, related_name='sale_lines')
+    item = models.ForeignKey(PartInventory, on_delete=models.PROTECT, related_name='sale_lines')
     quantity = models.PositiveIntegerField(default=1)
     sold_price = models.DecimalField(max_digits=14, decimal_places=2)
     notes = models.TextField(blank=True)
 
     class Meta:
-        ordering = ['sale__sale_number', 'item__lot_number']
+        ordering = ['sale__sale_number', 'item__part_name']
         constraints = [
             models.CheckConstraint(condition=models.Q(quantity__gt=0), name='sale_line_quantity_positive'),
         ]
@@ -170,11 +196,11 @@ class AuctionSaleLine(UserStampedModel):
         ]
 
     def clean(self):
-        if self.item_id and self.item.status not in [ContainerItem.Status.AVAILABLE, ContainerItem.Status.SOLD]:
-            raise ValidationError({'item': 'Only available or already sold items can be attached to an auction sale.'})
+        if self.quantity <= 0:
+            raise ValidationError({'quantity': 'Quantity must be greater than zero.'})
 
     def __str__(self) -> str:
-        return f'{self.sale.sale_number} / {self.item.lot_number}'
+        return f'{self.sale.sale_number} / {self.item.part_name}'
 
 
 class GatePass(UserStampedModel):
@@ -241,6 +267,6 @@ class GatePassLine(UserStampedModel):
             raise ValidationError({'sale_line': 'Cannot issue a gate pass for a cancelled sale.'})
 
     def __str__(self) -> str:
-        return f'{self.gate_pass.gate_pass_number} / {self.sale_line.item.lot_number}'
+        return f'{self.gate_pass.gate_pass_number} / {self.sale_line.item.part_name}'
 
 # Create your models here.

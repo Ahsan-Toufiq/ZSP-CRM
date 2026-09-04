@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from django.db.models import Count, DecimalField, Prefetch, Sum, Value
+from django.db.models import Count, DecimalField, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
@@ -16,7 +16,7 @@ from finance.serializers import (
     CustomerBalanceSerializer,
     CustomerLedgerEntrySerializer,
 )
-from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass
+from operations.models import AuctionSale, AuctionSaleLine, Container, Customer, GatePass, PartInventory
 
 
 class UserStampedMixin:
@@ -78,7 +78,7 @@ class CustomerBalanceViewSet(viewsets.ReadOnlyModelViewSet):
     ordering_fields = ['name', 'created_at']
 
     def get_queryset(self):
-        sale_lines = AuctionSaleLine.objects.select_related('item', 'item__container')
+        sale_lines = AuctionSaleLine.objects.select_related('item')
         allocations = ChequeSettlementAllocation.objects.select_related('cheque', 'sale')
         sales = (
             AuctionSale.objects
@@ -114,14 +114,21 @@ class CustomerBalanceViewSet(viewsets.ReadOnlyModelViewSet):
 def dashboard_summary(request):
     ledger_totals = CustomerLedgerEntry.objects.aggregate(debit=Sum('debit'), credit=Sum('credit'))
     receivable = (ledger_totals['debit'] or 0) - (ledger_totals['credit'] or 0)
-    item_counts = ContainerItem.objects.values('status').annotate(count=Count('id'))
+    parts = PartInventory.objects.annotate(
+        sold_quantity=Coalesce(
+            Sum('sale_lines__quantity', filter=Q(sale_lines__sale__is_cancelled=False)),
+            Value(0),
+        ),
+    )
+    available_parts = sum(1 for part in parts if part.quantity > part.sold_quantity)
+    sold_out_parts = parts.count() - available_parts
     cheque_counts = Cheque.objects.values('status__name').annotate(count=Count('id'))
 
     return Response({
         'containers': Container.objects.count(),
         'items': {
-            'total': ContainerItem.objects.count(),
-            'by_status': {row['status']: row['count'] for row in item_counts},
+            'total': PartInventory.objects.count(),
+            'by_status': {'available': available_parts, 'sold_out': sold_out_parts},
         },
         'auction_sales': AuctionSale.objects.filter(is_cancelled=False).count(),
         'gate_passes': {

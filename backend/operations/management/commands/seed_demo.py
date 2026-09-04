@@ -9,8 +9,8 @@ from accounts.permissions import Roles
 from catalog.models import DropdownOption
 from finance.models import Cheque, ChequeStatus
 from finance.services import change_cheque_status, create_cheque
-from operations.models import AuctionSale, Container, ContainerItem, Customer
-from operations.services import create_auction_sale, refresh_item_status
+from operations.models import AuctionSale, Container, ContainerItem, Customer, PartInventory
+from operations.services import apply_container_inventory_delta, create_auction_sale
 
 
 class Command(BaseCommand):
@@ -154,11 +154,33 @@ class Command(BaseCommand):
                 },
             )
             if not item_created and item.quantity < quantity:
+                before = {
+                    'part_name': item.part_name,
+                    'part_number': item.part_number or '',
+                    'category': item.category or '',
+                    'condition': item.condition or '',
+                    'unit': item.unit or 'piece',
+                    'quantity': item.quantity,
+                    'reserve_price': item.reserve_price,
+                    'description': item.description or '',
+                }
                 item.quantity = quantity
                 item.updated_by = admin
                 item.save(update_fields=['quantity', 'updated_by', 'updated_at'])
-                refresh_item_status(item, user=admin)
+                apply_container_inventory_delta(user=admin, before=before, after=item)
+            if item_created:
+                apply_container_inventory_delta(user=admin, after=item)
             items[lot] = item
+        parts = {
+            lot: PartInventory.objects.filter(
+                part_name=item.part_name,
+                part_number=item.part_number or '',
+                category=item.category or '',
+                condition=item.condition or '',
+                unit=item.unit or 'piece',
+            ).first()
+            for lot, item in items.items()
+        }
 
         sale_specs = [
             (
@@ -221,7 +243,7 @@ class Command(BaseCommand):
                 notes=marker,
                 lines=[
                     {
-                        'item': items[lot],
+                        'item': parts[lot],
                         'quantity': quantity,
                         'sold_price': Decimal(price),
                         'notes': 'Seeded sale line.',
@@ -305,6 +327,17 @@ class Command(BaseCommand):
         ]
         option_groups = {
             DropdownOption.Group.BANK: banks,
+            DropdownOption.Group.PART_NAME: [
+                'Toyota headlight pair',
+                'Honda front bumper',
+                'Nissan alternator',
+                'Mazda side mirror',
+                'Suzuki tail light',
+                'Engine assembly',
+                'Transmission',
+                'ABS pump',
+                'Shock set',
+            ],
             DropdownOption.Group.ITEM_CATEGORY: ['Body parts', 'Electrical', 'Engine', 'Lights', 'Suspension', 'Transmission'],
             DropdownOption.Group.ITEM_CONDITION: ['Unknown', 'Used', 'New', 'Damaged'],
             DropdownOption.Group.ITEM_UNIT: ['piece', 'set', 'pair', 'kg', 'box'],

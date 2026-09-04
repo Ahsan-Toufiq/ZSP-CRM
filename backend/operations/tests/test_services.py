@@ -8,8 +8,8 @@ from django.utils import timezone
 from catalog.models import DropdownOption
 from finance.models import Cheque, ChequeStatus, CustomerLedgerEntry
 from finance.services import change_cheque_status
-from operations.models import AuctionSale, Container, ContainerItem, GatePassLine
-from operations.services import create_auction_sale, issue_gate_pass, mark_gate_pass_printed, update_auction_sale, verify_gate_pass
+from operations.models import AuctionSale, Container, ContainerItem, GatePassLine, PartInventory
+from operations.services import available_quantity_for_item, create_auction_sale, issue_gate_pass, mark_gate_pass_printed, update_auction_sale, verify_gate_pass
 
 
 @pytest.fixture
@@ -26,14 +26,12 @@ def customer(db):
 
 @pytest.fixture
 def item(db):
-    container = Container.objects.create(reference='CNT-001', origin_country='Japan')
-    return ContainerItem.objects.create(container=container, lot_number='A-1', part_name='Headlight')
+    return PartInventory.objects.create(part_name='Headlight', quantity=1, unit='piece')
 
 
 @pytest.fixture
 def second_item(db):
-    container = Container.objects.create(reference='CNT-002', origin_country='Japan')
-    return ContainerItem.objects.create(container=container, lot_number='B-1', part_name='Bumper')
+    return PartInventory.objects.create(part_name='Bumper', quantity=1, unit='piece')
 
 
 @pytest.mark.django_db
@@ -48,7 +46,7 @@ def test_credit_sale_marks_item_sold_and_posts_customer_balance(user, customer, 
 
     item.refresh_from_db()
     assert sale.total_amount == Decimal('15000.00')
-    assert item.status == ContainerItem.Status.SOLD
+    assert available_quantity_for_item(item) == 0
     assert CustomerLedgerEntry.objects.get(customer=customer).debit == Decimal('15000.00')
 
 
@@ -113,7 +111,7 @@ def test_sale_can_sell_partial_container_quantity(user, customer, item):
 
     item.refresh_from_db()
     assert first_sale.total_amount == Decimal('10000.00')
-    assert item.status == ContainerItem.Status.AVAILABLE
+    assert available_quantity_for_item(item) == 1
 
     second_sale = create_auction_sale(
         user=user,
@@ -125,7 +123,7 @@ def test_sale_can_sell_partial_container_quantity(user, customer, item):
 
     item.refresh_from_db()
     assert second_sale.total_amount == Decimal('6000.00')
-    assert item.status == ContainerItem.Status.SOLD
+    assert available_quantity_for_item(item) == 0
 
 
 @pytest.mark.django_db
@@ -149,12 +147,12 @@ def test_sale_auto_creates_gate_pass_and_verification_does_not_release_stock(use
 
     item.refresh_from_db()
     assert same_gate_pass.id == gate_pass.id
-    assert item.status == ContainerItem.Status.SOLD
+    assert available_quantity_for_item(item) == 0
     assert GatePassLine.objects.filter(sale_line=sale_line).count() == 1
 
     verify_gate_pass(user=user, gate_pass=gate_pass)
     item.refresh_from_db()
-    assert item.status == ContainerItem.Status.SOLD
+    assert available_quantity_for_item(item) == 0
 
 
 @pytest.mark.django_db
@@ -238,3 +236,40 @@ def test_new_item_category_persists_as_dropdown_option(user):
     assert DropdownOption.objects.filter(group=DropdownOption.Group.ITEM_CATEGORY, label='Custom Category').exists()
     assert DropdownOption.objects.filter(group=DropdownOption.Group.ITEM_CONDITION, label='Refurbished').exists()
     assert DropdownOption.objects.filter(group=DropdownOption.Group.ITEM_UNIT, label='crate').exists()
+    assert DropdownOption.objects.filter(group=DropdownOption.Group.PART_NAME, label='Custom mirror').exists()
+
+
+@pytest.mark.django_db
+def test_container_manifest_delta_updates_parts_inventory_without_rewriting_manifest(user):
+    from operations.serializers import ContainerItemSerializer, PartInventorySerializer
+
+    container = Container.objects.create(reference='CNT-DELTA')
+    request = type('Request', (), {'user': user})()
+    serializer = ContainerItemSerializer(
+        data={
+            'container': str(container.id),
+            'part_name': 'Split engine assembly',
+            'quantity': 2,
+            'unit': 'piece',
+        },
+        context={'request': request},
+    )
+    assert serializer.is_valid(), serializer.errors
+    manifest_item = serializer.save(created_by=user, updated_by=user)
+
+    part = PartInventory.objects.get(part_name='Split engine assembly')
+    assert part.quantity == 2
+
+    part_serializer = PartInventorySerializer(
+        part,
+        data={'quantity': 5},
+        partial=True,
+        context={'request': request},
+    )
+    assert part_serializer.is_valid(), part_serializer.errors
+    part_serializer.save(updated_by=user)
+
+    manifest_item.refresh_from_db()
+    part.refresh_from_db()
+    assert manifest_item.quantity == 2
+    assert part.quantity == 5

@@ -10,7 +10,7 @@ from rest_framework.status import HTTP_409_CONFLICT
 
 from accounts.permissions import OperationsPermission
 from finance.models import Cheque, CustomerLedgerEntry
-from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass
+from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass, PartInventory
 from operations.serializers import (
     AuctionSaleCreateSerializer,
     AuctionSaleLineReadSerializer,
@@ -22,14 +22,15 @@ from operations.serializers import (
     GatePassCreateSerializer,
     GatePassSerializer,
     GatePassUpdateSerializer,
+    PartInventorySerializer,
 )
-from operations.services import mark_gate_pass_printed, verify_gate_pass
+from operations.services import apply_container_inventory_delta, mark_gate_pass_printed, sold_quantity_for_item, verify_gate_pass
 
 
 def sale_line_queryset():
     return (
         AuctionSaleLine.objects
-        .select_related('item', 'item__container', 'sale', 'sale__customer')
+        .select_related('item', 'sale', 'sale__customer')
         .annotate(
             item_sold_quantity_total=Coalesce(
                 Sum(
@@ -114,6 +115,34 @@ class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
         return (
             ContainerItem.objects
             .select_related('container')
+            .order_by('container__reference', 'part_name', 'lot_number')
+        )
+
+    def perform_destroy(self, instance):
+        before = {
+            'part_name': instance.part_name,
+            'part_number': instance.part_number or '',
+            'category': instance.category or '',
+            'condition': instance.condition or '',
+            'unit': instance.unit or 'piece',
+            'quantity': instance.quantity,
+            'reserve_price': instance.reserve_price,
+            'description': instance.description or '',
+        }
+        apply_container_inventory_delta(user=self.request.user, before=before)
+        instance.delete()
+
+
+class PartInventoryViewSet(UserStampedMixin, viewsets.ModelViewSet):
+    serializer_class = PartInventorySerializer
+    permission_classes = [OperationsPermission]
+    filterset_fields = ['category', 'condition', 'unit']
+    search_fields = ['part_name', 'part_number', 'description', 'category']
+    ordering_fields = ['part_name', 'part_number', 'created_at', 'quantity']
+
+    def get_queryset(self):
+        return (
+            PartInventory.objects
             .annotate(
                 sold_quantity_total=Coalesce(
                     Sum(
@@ -124,52 +153,14 @@ class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
                     output_field=IntegerField(),
                 ),
             )
-            .order_by('container__reference', 'lot_number')
+            .order_by('part_name', 'part_number')
         )
 
     def perform_destroy(self, instance):
-        if instance.status != ContainerItem.Status.AVAILABLE:
-            raise ValidationError({'item': 'Only available inventory can be deleted.'})
+        sold = sold_quantity_for_item(instance)
+        if sold:
+            raise ValidationError({'part': f'This part has {sold} sold unit(s) and cannot be deleted.'})
         instance.delete()
-
-    @action(detail=False, methods=['get'], url_path='parts-inventory')
-    def parts_inventory(self, request):
-        rows = (
-            ContainerItem.objects
-            .values('part_name', 'part_number', 'category', 'unit')
-            .annotate(total_quantity=Sum('quantity'))
-            .order_by('part_name', 'part_number')
-        )
-        sale_totals = (
-            AuctionSaleLine.objects
-            .filter(sale__is_cancelled=False)
-            .values('item__part_name', 'item__part_number', 'item__category', 'item__unit')
-            .annotate(sold_quantity=Sum('quantity'))
-        )
-        sold_by_key = {
-            (
-                row['item__part_name'],
-                row['item__part_number'],
-                row['item__category'],
-                row['item__unit'],
-            ): row['sold_quantity'] or 0
-            for row in sale_totals
-        }
-        data = []
-        for row in rows:
-            key = (row['part_name'], row['part_number'], row['category'], row['unit'])
-            sold_quantity = sold_by_key.get(key, 0)
-            total_quantity = row['total_quantity'] or 0
-            data.append({
-                'part_name': row['part_name'],
-                'part_number': row['part_number'],
-                'category': row['category'],
-                'unit': row['unit'],
-                'total_quantity': total_quantity,
-                'sold_quantity': sold_quantity,
-                'available_quantity': max(total_quantity - sold_quantity, 0),
-            })
-        return Response(data)
 
 
 class AuctionSaleViewSet(viewsets.ModelViewSet):
@@ -197,7 +188,7 @@ class AuctionSaleViewSet(viewsets.ModelViewSet):
     def sold_without_gate_pass(self, request):
         queryset = (
             AuctionSaleLine.objects
-            .select_related('sale', 'sale__customer', 'item', 'item__container')
+            .select_related('sale', 'sale__customer', 'item')
             .annotate(
                 item_sold_quantity_total=Coalesce(
                     Sum(
@@ -208,7 +199,7 @@ class AuctionSaleViewSet(viewsets.ModelViewSet):
                     output_field=IntegerField(),
                 ),
             )
-            .filter(gate_pass_line__isnull=True, sale__is_cancelled=False, item__status=ContainerItem.Status.SOLD)
+            .filter(gate_pass_line__isnull=True, sale__is_cancelled=False)
             .order_by('-sale__sale_date')
         )
         page = self.paginate_queryset(queryset)

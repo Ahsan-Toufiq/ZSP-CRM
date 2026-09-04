@@ -7,6 +7,7 @@ from core_models import UserStampedModel
 class DropdownOption(UserStampedModel):
     class Group(models.TextChoices):
         BANK = 'bank', 'Bank'
+        PART_NAME = 'part_name', 'Part name'
         ITEM_CATEGORY = 'item_category', 'Item category'
         ITEM_CONDITION = 'item_condition', 'Item condition'
         ITEM_UNIT = 'item_unit', 'Item unit'

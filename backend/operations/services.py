@@ -6,9 +6,11 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from audit.models import AuditLog
+from catalog.models import DropdownOption
+from catalog.services import ensure_dropdown_option
 from finance.models import ChequeStatus, CustomerLedgerEntry
 from finance.services import create_cheque
-from operations.models import AuctionSale, AuctionSaleLine, ContainerItem, GatePass, GatePassLine
+from operations.models import AuctionSale, AuctionSaleLine, ContainerItem, GatePass, GatePassLine, PartInventory
 
 
 def _number(prefix: str) -> str:
@@ -34,27 +36,71 @@ def _sale_total(lines) -> Decimal:
     return sum((_line_total(line) for line in lines), Decimal('0.00'))
 
 
-def sold_quantity_for_item(item: ContainerItem, *, excluding_sale: AuctionSale | None = None) -> int:
+def sold_quantity_for_item(item: PartInventory, *, excluding_sale: AuctionSale | None = None) -> int:
     queryset = AuctionSaleLine.objects.filter(item=item, sale__is_cancelled=False)
     if excluding_sale is not None:
         queryset = queryset.exclude(sale=excluding_sale)
     return int(queryset.aggregate(total=Sum('quantity'))['total'] or 0)
 
 
-def available_quantity_for_item(item: ContainerItem, *, excluding_sale: AuctionSale | None = None) -> int:
+def available_quantity_for_item(item: PartInventory, *, excluding_sale: AuctionSale | None = None) -> int:
     return max(int(item.quantity) - sold_quantity_for_item(item, excluding_sale=excluding_sale), 0)
 
 
-def refresh_item_status(item: ContainerItem, *, user) -> None:
-    next_status = (
-        ContainerItem.Status.SOLD
-        if available_quantity_for_item(item) == 0
-        else ContainerItem.Status.AVAILABLE
-    )
-    if item.status != next_status:
-        item.status = next_status
-        item.updated_by = user
-        item.save(update_fields=['status', 'updated_by', 'updated_at'])
+def _part_payload(source) -> dict:
+    return {
+        'part_name': source.part_name,
+        'part_number': source.part_number or '',
+        'category': source.category or '',
+        'condition': source.condition or '',
+        'unit': source.unit or 'piece',
+        'reserve_price': source.reserve_price,
+        'description': source.description or '',
+    }
+
+
+def _part_inventory_for_payload(payload: dict) -> PartInventory | None:
+    return PartInventory.objects.select_for_update().filter(
+        part_name=payload['part_name'],
+        part_number=payload['part_number'],
+        category=payload['category'],
+        condition=payload['condition'],
+        unit=payload['unit'],
+    ).first()
+
+
+def apply_container_inventory_delta(*, user, before: dict | None = None, after: ContainerItem | None = None) -> None:
+    if before:
+        inventory = _part_inventory_for_payload(before)
+        if inventory:
+            next_quantity = int(inventory.quantity) - int(before['quantity'])
+            sold = sold_quantity_for_item(inventory)
+            if next_quantity < sold:
+                raise ValidationError({
+                    'quantity': f'Cannot reduce parts inventory below {sold} already sold unit(s) for {inventory.part_name}.',
+                })
+            inventory.quantity = max(next_quantity, 0)
+            inventory.updated_by = user
+            inventory.save(update_fields=['quantity', 'updated_by', 'updated_at'])
+
+    if after:
+        payload = _part_payload(after)
+        inventory = _part_inventory_for_payload(payload)
+        if inventory is None:
+            inventory = PartInventory.objects.create(
+                **payload,
+                quantity=after.quantity,
+                created_by=user,
+                updated_by=user,
+            )
+        else:
+            inventory.quantity = int(inventory.quantity) + int(after.quantity)
+            if not inventory.description and payload['description']:
+                inventory.description = payload['description']
+            if inventory.reserve_price is None and payload['reserve_price'] is not None:
+                inventory.reserve_price = payload['reserve_price']
+            inventory.updated_by = user
+            inventory.save(update_fields=['quantity', 'description', 'reserve_price', 'updated_by', 'updated_at'])
 
 
 def _item_id(line) -> str:
@@ -129,7 +175,7 @@ def _validate_sale_lines(lines, *, excluding_sale: AuctionSale | None = None) ->
 
     items = {
         str(item.id): item
-        for item in ContainerItem.objects.select_for_update().filter(id__in=item_ids)
+        for item in PartInventory.objects.select_for_update().filter(id__in=item_ids)
     }
     if len(items) != len(item_ids):
         raise ValidationError({'lines': 'One or more selected items do not exist.'})
@@ -139,11 +185,9 @@ def _validate_sale_lines(lines, *, excluding_sale: AuctionSale | None = None) ->
         quantity = _quantity(line)
         _line_total(line)
         available_quantity = available_quantity_for_item(item, excluding_sale=excluding_sale)
-        if item.status == ContainerItem.Status.VOID:
-            raise ValidationError({'lines': f'Item {item.lot_number} is void and cannot be sold.'})
         if quantity > available_quantity:
             raise ValidationError({
-                'lines': f'Only {available_quantity} unit(s) are available for lot {item.lot_number}.',
+                'lines': f'Only {available_quantity} unit(s) are available for {item.part_name}.',
             })
     return items
 
@@ -180,7 +224,6 @@ def create_auction_sale(
         updated_by=user,
     )
 
-    touched_items = set()
     for line in lines:
         item = items[_item_id(line)]
         AuctionSaleLine.objects.create(
@@ -192,10 +235,6 @@ def create_auction_sale(
             created_by=user,
             updated_by=user,
         )
-        touched_items.add(item)
-
-    for item in touched_items:
-        refresh_item_status(item, user=user)
 
     if customer is not None and payment_type != AuctionSale.PaymentType.CASH:
         CustomerLedgerEntry.objects.create(
@@ -274,7 +313,6 @@ def update_auction_sale(
     if notes is not None:
         sale.notes = notes
 
-    touched_items = set()
     if lines is not None:
         existing_lines = {str(line.id): line for line in sale.lines.select_related('item')}
         desired_existing_ids = {str(line['id']) for line in lines if line.get('id')}
@@ -297,7 +335,6 @@ def update_auction_sale(
 
         for removed_id in set(existing_lines) - desired_existing_ids:
             line = existing_lines[removed_id]
-            touched_items.add(line.item)
             if hasattr(line, 'gate_pass_line'):
                 line.gate_pass_line.delete()
             line.delete()
@@ -307,7 +344,6 @@ def update_auction_sale(
             line_id = line_data.get('id')
             if line_id:
                 sale_line = existing_lines[str(line_id)]
-                touched_items.add(sale_line.item)
                 sale_line.item = item
             else:
                 sale_line = AuctionSaleLine(sale=sale, item=item, created_by=user)
@@ -316,7 +352,6 @@ def update_auction_sale(
             sale_line.notes = line_data.get('notes', sale_line.notes)
             sale_line.updated_by = user
             sale_line.save()
-            touched_items.add(item)
 
         sale.total_amount = _sale_total(normalized)
 
@@ -344,9 +379,6 @@ def update_auction_sale(
             sale_cheque.save(update_fields=['amount', 'customer', 'updated_by', 'updated_at'])
 
     _sync_gate_pass_for_sale(user=user, sale=sale, gate_pass_data=gate_pass)
-
-    for item in touched_items:
-        refresh_item_status(item, user=user)
 
     AuditLog.objects.create(
         actor=user,

@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass, GatePassLine
+from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass, GatePassLine, PartInventory
 
 
 @admin.register(Customer)
@@ -13,8 +13,7 @@ class CustomerAdmin(admin.ModelAdmin):
 class ContainerItemInline(admin.TabularInline):
     model = ContainerItem
     extra = 0
-    fields = ('lot_number', 'part_name', 'part_number', 'category', 'condition', 'quantity', 'status')
-    readonly_fields = ('status',)
+    fields = ('lot_number', 'part_name', 'part_number', 'category', 'condition', 'quantity', 'unit')
 
 
 @admin.register(Container)
@@ -27,9 +26,16 @@ class ContainerAdmin(admin.ModelAdmin):
 
 @admin.register(ContainerItem)
 class ContainerItemAdmin(admin.ModelAdmin):
-    list_display = ('lot_number', 'part_name', 'container', 'category', 'condition', 'quantity', 'status')
+    list_display = ('lot_number', 'part_name', 'container', 'category', 'condition', 'quantity', 'unit')
     search_fields = ('lot_number', 'part_name', 'part_number')
-    list_filter = ('status', 'condition', 'category')
+    list_filter = ('condition', 'category')
+
+
+@admin.register(PartInventory)
+class PartInventoryAdmin(admin.ModelAdmin):
+    list_display = ('part_name', 'part_number', 'category', 'condition', 'quantity', 'unit')
+    search_fields = ('part_name', 'part_number', 'description')
+    list_filter = ('condition', 'category', 'unit')
 
 
 class AuctionSaleLineInline(admin.TabularInline):

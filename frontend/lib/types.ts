@@ -51,13 +51,25 @@ export interface ContainerItem {
   unit: string;
   reserve_price: string | null;
   status: string;
+}
+
+export interface PartInventory {
+  id: UUID;
+  part_name: string;
+  part_number: string;
+  description: string;
+  category: string;
+  condition: string;
+  quantity: number;
+  unit: string;
+  reserve_price: string | null;
   sold_quantity: number;
   available_quantity: number;
 }
 
 export interface AuctionSaleLine {
   id: UUID;
-  item: ContainerItem;
+  item: PartInventory;
   quantity: number;
   sold_price: string;
   line_total: string;
@@ -143,7 +155,7 @@ export interface ChequeSettlementAllocation {
 
 export interface DropdownOption {
   id: UUID;
-  group: 'bank' | 'item_category' | 'item_condition' | 'item_unit';
+  group: 'bank' | 'part_name' | 'item_category' | 'item_condition' | 'item_unit';
   label: string;
   value: string;
   is_system: boolean;

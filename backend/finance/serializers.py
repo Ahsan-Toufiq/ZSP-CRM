@@ -151,7 +151,6 @@ class CustomerBalanceSerializer(serializers.ModelSerializer):
                 'outstanding_amount': sale.total_amount - active_allocated,
                 'items': [
                     {
-                        'lot_number': line.item.lot_number,
                         'part_name': line.item.part_name,
                         'quantity': line.quantity,
                         'unit_price': line.sold_price,

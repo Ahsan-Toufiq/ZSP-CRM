@@ -1,10 +1,12 @@
+from django.db import transaction
 from django.db.models import Sum
 from rest_framework import serializers
 
 from catalog.models import DropdownOption
 from catalog.services import ensure_dropdown_option
-from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass, GatePassLine
+from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass, GatePassLine, PartInventory
 from operations.services import (
+    apply_container_inventory_delta,
     available_quantity_for_item,
     create_auction_sale,
     issue_gate_pass,
@@ -58,21 +60,66 @@ class ContainerSerializer(serializers.ModelSerializer):
 
 class ContainerItemSerializer(serializers.ModelSerializer):
     container_reference = serializers.CharField(source='container.reference', read_only=True)
-    sold_quantity = serializers.SerializerMethodField()
-    available_quantity = serializers.SerializerMethodField()
 
     class Meta:
         model = ContainerItem
         fields = [
             'id', 'container', 'container_reference', 'lot_number', 'part_name',
             'part_number', 'description', 'category', 'condition', 'quantity',
-            'unit', 'reserve_price', 'status', 'sold_quantity', 'available_quantity',
-            'created_at', 'updated_at',
+            'unit', 'reserve_price', 'status', 'created_at', 'updated_at',
         ]
         read_only_fields = [
-            'id', 'container_reference', 'status', 'sold_quantity', 'available_quantity',
+            'id', 'container_reference', 'status',
             'created_at', 'updated_at',
         ]
+
+    def _persist_options(self, validated_data):
+        user = self.context['request'].user
+        ensure_dropdown_option(group=DropdownOption.Group.PART_NAME, label=validated_data.get('part_name', ''), user=user)
+        ensure_dropdown_option(group=DropdownOption.Group.ITEM_CATEGORY, label=validated_data.get('category', ''), user=user)
+        ensure_dropdown_option(group=DropdownOption.Group.ITEM_CONDITION, label=validated_data.get('condition', ''), user=user)
+        ensure_dropdown_option(group=DropdownOption.Group.ITEM_UNIT, label=validated_data.get('unit', ''), user=user)
+
+    def _snapshot(self, instance):
+        return {
+            'part_name': instance.part_name,
+            'part_number': instance.part_number or '',
+            'category': instance.category or '',
+            'condition': instance.condition or '',
+            'unit': instance.unit or 'piece',
+            'quantity': instance.quantity,
+            'reserve_price': instance.reserve_price,
+            'description': instance.description or '',
+        }
+
+    def create(self, validated_data):
+        self._persist_options(validated_data)
+        with transaction.atomic():
+            instance = super().create(validated_data)
+            apply_container_inventory_delta(user=self.context['request'].user, after=instance)
+            return instance
+
+    def update(self, instance, validated_data):
+        self._persist_options(validated_data)
+        with transaction.atomic():
+            before = self._snapshot(instance)
+            instance = super().update(instance, validated_data)
+            apply_container_inventory_delta(user=self.context['request'].user, before=before, after=instance)
+            return instance
+
+
+class PartInventorySerializer(serializers.ModelSerializer):
+    sold_quantity = serializers.SerializerMethodField()
+    available_quantity = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PartInventory
+        fields = [
+            'id', 'part_name', 'part_number', 'description', 'category',
+            'condition', 'quantity', 'unit', 'reserve_price', 'sold_quantity',
+            'available_quantity', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'sold_quantity', 'available_quantity', 'created_at', 'updated_at']
 
     def get_sold_quantity(self, obj):
         if hasattr(obj, 'sold_quantity_total'):
@@ -86,9 +133,16 @@ class ContainerItemSerializer(serializers.ModelSerializer):
 
     def _persist_options(self, validated_data):
         user = self.context['request'].user
+        ensure_dropdown_option(group=DropdownOption.Group.PART_NAME, label=validated_data.get('part_name', ''), user=user)
         ensure_dropdown_option(group=DropdownOption.Group.ITEM_CATEGORY, label=validated_data.get('category', ''), user=user)
         ensure_dropdown_option(group=DropdownOption.Group.ITEM_CONDITION, label=validated_data.get('condition', ''), user=user)
         ensure_dropdown_option(group=DropdownOption.Group.ITEM_UNIT, label=validated_data.get('unit', ''), user=user)
+
+    def validate(self, attrs):
+        quantity = attrs.get('quantity', getattr(self.instance, 'quantity', 0))
+        if self.instance is not None and quantity < sold_quantity_for_item(self.instance):
+            raise serializers.ValidationError({'quantity': 'Quantity cannot be lower than the quantity already sold.'})
+        return attrs
 
     def create(self, validated_data):
         self._persist_options(validated_data)
@@ -119,9 +173,6 @@ class AuctionSaleLineReadSerializer(serializers.ModelSerializer):
             sold_quantity = sold_quantity_for_item(item)
         return {
             'id': str(item.id),
-            'container': str(item.container_id),
-            'container_reference': item.container.reference,
-            'lot_number': item.lot_number,
             'part_name': item.part_name,
             'part_number': item.part_number,
             'description': item.description,
@@ -130,7 +181,6 @@ class AuctionSaleLineReadSerializer(serializers.ModelSerializer):
             'quantity': item.quantity,
             'unit': item.unit,
             'reserve_price': item.reserve_price,
-            'status': item.status,
             'sold_quantity': sold_quantity,
             'available_quantity': max(int(item.quantity) - int(sold_quantity or 0), 0),
             'created_at': item.created_at,
@@ -139,7 +189,7 @@ class AuctionSaleLineReadSerializer(serializers.ModelSerializer):
 
 
 class AuctionSaleLineWriteSerializer(serializers.Serializer):
-    item = serializers.PrimaryKeyRelatedField(queryset=ContainerItem.objects.all())
+    item = serializers.PrimaryKeyRelatedField(queryset=PartInventory.objects.all())
     quantity = serializers.IntegerField(min_value=1)
     sold_price = serializers.DecimalField(max_digits=14, decimal_places=2)
     notes = serializers.CharField(required=False, allow_blank=True)
@@ -147,7 +197,7 @@ class AuctionSaleLineWriteSerializer(serializers.Serializer):
 
 class AuctionSaleLineUpdateSerializer(serializers.Serializer):
     id = serializers.UUIDField(required=False)
-    item = serializers.PrimaryKeyRelatedField(queryset=ContainerItem.objects.all(), required=False)
+    item = serializers.PrimaryKeyRelatedField(queryset=PartInventory.objects.all(), required=False)
     quantity = serializers.IntegerField(min_value=1)
     sold_price = serializers.DecimalField(max_digits=14, decimal_places=2)
     notes = serializers.CharField(required=False, allow_blank=True)

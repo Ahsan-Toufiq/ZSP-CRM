@@ -6,7 +6,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from accounts.permissions import Roles
-from operations.models import AuctionSale, Container, ContainerItem, Customer
+from operations.models import AuctionSale, Customer, PartInventory
 from operations.services import create_auction_sale
 
 
@@ -38,8 +38,7 @@ def test_customer_without_transactions_can_be_deleted(api_client):
 @pytest.mark.django_db
 def test_customer_with_transactions_cannot_be_deleted(api_client, admin_user):
     customer = Customer.objects.create(name='Keep Me', phone='+923001231232')
-    container = Container.objects.create(reference='CNT-DELETE-GUARD')
-    item = ContainerItem.objects.create(container=container, lot_number='D-1', part_name='Door')
+    item = PartInventory.objects.create(part_name='Door', quantity=1, unit='piece')
     create_auction_sale(
         user=admin_user,
         sale_date=timezone.localdate(),
