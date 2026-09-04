@@ -83,17 +83,21 @@ class Command(BaseCommand):
             ('Bilal Workshop', '+923214567890', Customer.CustomerType.BUSINESS),
             ('No Transaction Demo', '+923339990000', Customer.CustomerType.INDIVIDUAL),
         ]):
-            customers[name] = Customer.objects.get_or_create(
-                name=name,
-                defaults={
-                    'phone': phone,
-                    'customer_type': customer_type,
-                    'address': f'Demo address {index + 1}',
-                    'notes': 'Seeded demo customer for testing workflows.',
-                    'created_by': admin,
-                    'updated_by': admin,
-                },
-            )[0]
+            customer = (
+                Customer.objects.filter(phone=phone).order_by('created_at').first()
+                or Customer.objects.filter(name=name, phone=phone).order_by('created_at').first()
+            )
+            if customer is None:
+                customer = Customer.objects.create(
+                    name=name,
+                    phone=phone,
+                    customer_type=customer_type,
+                    address=f'Demo address {index + 1}',
+                    notes='Seeded demo customer for testing workflows.',
+                    created_by=admin,
+                    updated_by=admin,
+                )
+            customers[name] = customer
 
         container_specs = [
             ('ZSP-CNT-001', 'Japan', 'Osaka Auto Exports', 18, 'Engine, lights, and mixed body parts.'),
