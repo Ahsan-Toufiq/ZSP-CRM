@@ -102,7 +102,7 @@ h3 {
 }
 
 .sidebar-brand img {
-  width: 172px;
+  width: 68px;
   height: auto;
   filter: drop-shadow(0 10px 24px rgba(0, 0, 0, 0.28));
 }
@@ -689,7 +689,8 @@ td select {
 }
 
 .login-brand img {
-  width: min(280px, 100%);
+  width: 112px;
+  max-width: 100%;
 }
 
 .login-brand h1 {

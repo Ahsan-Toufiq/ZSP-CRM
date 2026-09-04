@@ -260,7 +260,7 @@ export default function Home() {
       <main className="login-screen">
         <section className="login-card">
           <div className="login-brand">
-            <Image src="/digi7-logo.png" alt="Digi7" width={291} height={90} priority />
+            <Image src="/digi7-logo.png" alt="ZSP" width={96} height={96} priority />
             <div>
               <p className="eyebrow">ZSP spare-parts operations</p>
               <h1>Secure auction control</h1>
@@ -282,7 +282,7 @@ export default function Home() {
     <main className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <Image src="/digi7-logo.png" alt="Digi7" width={194} height={60} priority />
+          <Image src="/digi7-logo.png" alt="ZSP" width={64} height={64} priority />
           <div><strong>ZSP Control</strong><span>{currentUser?.full_name ?? 'Operations'}</span></div>
         </div>
         <nav className="nav">
