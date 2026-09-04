@@ -50,12 +50,16 @@ export interface ContainerItem {
   unit: string;
   reserve_price: string | null;
   status: string;
+  sold_quantity: number;
+  available_quantity: number;
 }
 
 export interface AuctionSaleLine {
   id: UUID;
   item: ContainerItem;
+  quantity: number;
   sold_price: string;
+  line_total: string;
   notes: string;
 }
 
@@ -70,6 +74,15 @@ export interface AuctionSale {
   total_amount: string;
   is_cancelled: boolean;
   lines: AuctionSaleLine[];
+  gate_pass: {
+    id: UUID;
+    gate_pass_number: string;
+    print_status: string;
+    issued_to_name: string;
+    vehicle_number: string;
+    driver_name: string;
+    printed_at: string | null;
+  } | null;
 }
 
 export interface GatePass {
@@ -112,7 +125,19 @@ export interface Cheque {
   status: UUID;
   status_name: string;
   sale: UUID | null;
+  settlement_allocations: ChequeSettlementAllocation[];
   notes: string;
+}
+
+export interface ChequeSettlementAllocation {
+  id: UUID;
+  cheque: UUID;
+  sale: UUID;
+  sale_number: string;
+  sale_date: string;
+  amount: string;
+  is_reversed: boolean;
+  created_at: string;
 }
 
 export interface DropdownOption {
@@ -135,7 +160,9 @@ export interface CustomerLedgerEntry {
   debit: string;
   credit: string;
   sale: UUID | null;
+  sale_number: string | null;
   cheque: UUID | null;
+  cheque_number: string | null;
   created_at: string;
 }
 
@@ -149,6 +176,8 @@ export interface DashboardSummary {
   gate_passes: {
     issued: number;
     verified: number;
+    not_printed: number;
+    printed: number;
   };
   cheques_by_status: Record<string, number>;
   customer_receivable: string | number;

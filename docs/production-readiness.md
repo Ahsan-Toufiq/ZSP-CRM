@@ -8,32 +8,52 @@ This document tracks what is already implemented in the new Digi7 ZSP build and 
 - Next.js frontend with TypeScript.
 - Container management.
 - Spare-parts inventory management.
+- Separate container inventory and calculated parts inventory views.
 - Customer management.
 - Auction sale recording.
-- Database protection against selling one item twice.
+- Quantity-based auction sale lines.
+- One auction sale can include multiple items.
 - Customer required for non-cash sales.
-- Gate-pass issuing for multiple sold items.
-- Database protection against issuing the same sold item to multiple gate passes.
-- Gate-pass verification endpoint and UI.
+- Cash sales do not create customer balance entries.
+- Gate-pass creation from the auction-sale workflow.
+- Gate-pass print action from the sale record.
 - Gate-pass print status and two-copy browser print layout.
-- Gate-pass editing before verification.
+- Gate-pass details synchronize when an editable sale changes.
 - Cheque register.
 - System and custom cheque statuses.
+- Configurable cheque-status balance effects.
 - Cheque sale creation from auction-sale entry.
+- Separately entered cleared cheques allocate to the oldest open balances first.
+- Split cheque settlements are stored explicitly for balance breakdowns.
 - Ledger-based customer balances.
 - Merged customer and balance view with ledger breakdown.
+- Active/inactive customer status control.
 - Modal-driven data entry/editing instead of side-mounted forms.
 - Persisted dropdown options for banks, categories, conditions, and units.
 - Basic audit log entries for sales, gate passes, and cheque status changes.
 - API role permissions for admin, operations, finance, and gatekeeper.
 - Local seed data and role-specific demo users.
-- Backend service tests for core sale, gate-pass, and cheque logic.
+- Backend service tests for quantity-based sale, sale-created gate-pass, and cheque-allocation logic.
 
 ## Required Before Live Replacement
 
+### Live Cutover Blockers
+
+The new build should not replace the current live ZSP deployment until these are done:
+
+- Create/connect the Git remote for this new repository.
+- Create Render services for backend, frontend, and managed PostgreSQL. A starter `render.yaml` is now included.
+- Set production environment variables for both services.
+- Run migrations on a staging/prod clone.
+- Migrate useful production data from the current live app into the new PostgreSQL schema.
+- Reconcile inventory, sales, customer balances, cheques, and gate-pass records after migration.
+- Configure `zsp.digi7.org` routing only after staging verification passes.
+- Configure an API hostname such as `zsp-api.digi7.org` for the backend service, or add a proper reverse proxy if frontend and API must share one hostname.
+- Keep a rollback path to the current live Laravel deployment.
+
 ### Gate Pass Scanning
 
-The current system records, prints, edits, and verifies gate passes. Production should still add QR/barcode scanning. A gatekeeper needs a fast validation screen that can scan the pass, show all items, and clearly mark whether the pass is valid, already used, cancelled, or not found.
+The current system creates and prints gate passes from the sale record. Production should still add QR/barcode scanning. A gatekeeper needs a fast validation screen that can scan the pass, show all items, and clearly mark whether the pass is valid, cancelled, or not found.
 
 ### Manifest Import
 
@@ -49,8 +69,8 @@ Minimum production reports should include:
 
 - Container inventory status.
 - Available inventory.
-- Sold items pending gate pass.
-- Released items.
+- Sales by gate-pass print status.
+- Sold quantities by container and part.
 - Customer receivables.
 - Cheque ageing and expiry.
 - Daily auction sales.

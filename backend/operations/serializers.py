@@ -4,11 +4,19 @@ from rest_framework import serializers
 from catalog.models import DropdownOption
 from catalog.services import ensure_dropdown_option
 from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass, GatePassLine
-from operations.services import create_auction_sale, issue_gate_pass, update_auction_sale, update_gate_pass
+from operations.services import (
+    available_quantity_for_item,
+    create_auction_sale,
+    issue_gate_pass,
+    sold_quantity_for_item,
+    update_auction_sale,
+    update_gate_pass,
+)
 
 
 class CustomerSerializer(serializers.ModelSerializer):
     balance = serializers.SerializerMethodField()
+    customer_type = serializers.ChoiceField(choices=Customer.CustomerType.choices, required=True)
 
     class Meta:
         model = Customer
@@ -42,15 +50,27 @@ class ContainerSerializer(serializers.ModelSerializer):
 
 class ContainerItemSerializer(serializers.ModelSerializer):
     container_reference = serializers.CharField(source='container.reference', read_only=True)
+    sold_quantity = serializers.SerializerMethodField()
+    available_quantity = serializers.SerializerMethodField()
 
     class Meta:
         model = ContainerItem
         fields = [
             'id', 'container', 'container_reference', 'lot_number', 'part_name',
             'part_number', 'description', 'category', 'condition', 'quantity',
-            'unit', 'reserve_price', 'status', 'created_at', 'updated_at',
+            'unit', 'reserve_price', 'status', 'sold_quantity', 'available_quantity',
+            'created_at', 'updated_at',
         ]
-        read_only_fields = ['id', 'container_reference', 'status', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id', 'container_reference', 'status', 'sold_quantity', 'available_quantity',
+            'created_at', 'updated_at',
+        ]
+
+    def get_sold_quantity(self, obj):
+        return sold_quantity_for_item(obj)
+
+    def get_available_quantity(self, obj):
+        return available_quantity_for_item(obj)
 
     def _persist_options(self, validated_data):
         user = self.context['request'].user
@@ -69,20 +89,27 @@ class ContainerItemSerializer(serializers.ModelSerializer):
 
 class AuctionSaleLineReadSerializer(serializers.ModelSerializer):
     item = ContainerItemSerializer(read_only=True)
+    line_total = serializers.SerializerMethodField()
 
     class Meta:
         model = AuctionSaleLine
-        fields = ['id', 'item', 'sold_price', 'notes']
+        fields = ['id', 'item', 'quantity', 'sold_price', 'line_total', 'notes']
+
+    def get_line_total(self, obj):
+        return obj.quantity * obj.sold_price
 
 
 class AuctionSaleLineWriteSerializer(serializers.Serializer):
     item = serializers.PrimaryKeyRelatedField(queryset=ContainerItem.objects.all())
+    quantity = serializers.IntegerField(min_value=1)
     sold_price = serializers.DecimalField(max_digits=14, decimal_places=2)
     notes = serializers.CharField(required=False, allow_blank=True)
 
 
 class AuctionSaleLineUpdateSerializer(serializers.Serializer):
-    id = serializers.UUIDField()
+    id = serializers.UUIDField(required=False)
+    item = serializers.PrimaryKeyRelatedField(queryset=ContainerItem.objects.all(), required=False)
+    quantity = serializers.IntegerField(min_value=1)
     sold_price = serializers.DecimalField(max_digits=14, decimal_places=2)
     notes = serializers.CharField(required=False, allow_blank=True)
 
@@ -93,7 +120,6 @@ class ChequeForSaleSerializer(serializers.Serializer):
     bank_name = serializers.CharField(max_length=120)
     branch_name = serializers.CharField(max_length=120, required=False, allow_blank=True)
     account_title = serializers.CharField(max_length=180, required=False, allow_blank=True)
-    amount = serializers.DecimalField(max_digits=14, decimal_places=2)
     cheque_date = serializers.DateField()
     expiry_date = serializers.DateField()
     received_date = serializers.DateField(required=False, allow_null=True)
@@ -108,15 +134,39 @@ class ChequeForSaleSerializer(serializers.Serializer):
 class AuctionSaleSerializer(serializers.ModelSerializer):
     lines = AuctionSaleLineReadSerializer(read_only=True, many=True)
     customer_name = serializers.CharField(source='customer.name', read_only=True)
+    gate_pass = serializers.SerializerMethodField()
 
     class Meta:
         model = AuctionSale
         fields = [
             'id', 'sale_number', 'sale_date', 'customer', 'customer_name',
             'payment_type', 'notes', 'total_amount', 'is_cancelled',
-            'lines', 'created_at', 'updated_at',
+            'lines', 'gate_pass', 'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'sale_number', 'total_amount', 'is_cancelled', 'created_at', 'updated_at']
+
+    def get_gate_pass(self, obj):
+        try:
+            gate_pass = obj.gate_pass
+        except GatePass.DoesNotExist:
+            return None
+        return {
+            'id': str(gate_pass.id),
+            'gate_pass_number': gate_pass.gate_pass_number,
+            'print_status': gate_pass.print_status,
+            'issued_to_name': gate_pass.issued_to_name,
+            'vehicle_number': gate_pass.vehicle_number,
+            'driver_name': gate_pass.driver_name,
+            'printed_at': gate_pass.printed_at,
+        }
+
+
+class GatePassDetailsSerializer(serializers.Serializer):
+    issued_to_name = serializers.CharField(max_length=180, required=False, allow_blank=True)
+    issued_to_phone = serializers.CharField(max_length=40, required=False, allow_blank=True)
+    vehicle_number = serializers.CharField(max_length=80, required=False, allow_blank=True)
+    driver_name = serializers.CharField(max_length=180, required=False, allow_blank=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
 
 
 class AuctionSaleCreateSerializer(serializers.Serializer):
@@ -126,6 +176,7 @@ class AuctionSaleCreateSerializer(serializers.Serializer):
     notes = serializers.CharField(required=False, allow_blank=True)
     lines = AuctionSaleLineWriteSerializer(many=True)
     cheque = ChequeForSaleSerializer(required=False)
+    gate_pass = GatePassDetailsSerializer(required=False)
 
     def create(self, validated_data):
         return create_auction_sale(user=self.context['request'].user, **validated_data)
@@ -140,6 +191,7 @@ class AuctionSaleUpdateSerializer(serializers.Serializer):
     payment_type = serializers.ChoiceField(choices=AuctionSale.PaymentType.choices, required=False)
     notes = serializers.CharField(required=False, allow_blank=True)
     lines = AuctionSaleLineUpdateSerializer(many=True, required=False)
+    gate_pass = GatePassDetailsSerializer(required=False)
 
     def update(self, instance, validated_data):
         return update_auction_sale(user=self.context['request'].user, sale=instance, **validated_data)
@@ -159,6 +211,7 @@ class GatePassLineReadSerializer(serializers.ModelSerializer):
 class GatePassSerializer(serializers.ModelSerializer):
     lines = GatePassLineReadSerializer(read_only=True, many=True)
     verified_by_name = serializers.CharField(source='verified_by.get_full_name', read_only=True)
+    sale_number = serializers.CharField(source='sale.sale_number', read_only=True)
 
     class Meta:
         model = GatePass
@@ -166,11 +219,12 @@ class GatePassSerializer(serializers.ModelSerializer):
             'id', 'gate_pass_number', 'issued_to_name', 'issued_to_phone',
             'vehicle_number', 'driver_name', 'notes', 'status', 'print_status',
             'printed_at', 'issued_at', 'verified_at', 'verified_by_name',
-            'lines', 'created_at', 'updated_at',
+            'sale', 'sale_number', 'lines', 'created_at', 'updated_at',
         ]
         read_only_fields = [
             'id', 'gate_pass_number', 'status', 'print_status', 'printed_at',
-            'issued_at', 'verified_at', 'verified_by_name', 'created_at', 'updated_at',
+            'issued_at', 'verified_at', 'verified_by_name', 'sale', 'sale_number',
+            'created_at', 'updated_at',
         ]
 
 

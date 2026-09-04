@@ -2,10 +2,11 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Sum
 from django.utils import timezone
 
 from audit.models import AuditLog
-from finance.models import Cheque, ChequeStatus, CustomerLedgerEntry
+from finance.models import ChequeStatus, CustomerLedgerEntry
 from finance.services import create_cheque
 from operations.models import AuctionSale, AuctionSaleLine, ContainerItem, GatePass, GatePassLine
 
@@ -15,42 +16,158 @@ def _number(prefix: str) -> str:
     return f'{prefix}-{now:%Y%m%d-%H%M%S}-{str(timezone.now().timestamp()).replace(".", "")[-5:]}'
 
 
+def _quantity(line) -> int:
+    quantity = int(line.get('quantity') or 1)
+    if quantity <= 0:
+        raise ValidationError({'lines': 'Quantity must be greater than zero.'})
+    return quantity
+
+
+def _line_total(line) -> Decimal:
+    price = Decimal(str(line['sold_price']))
+    if price <= 0:
+        raise ValidationError({'lines': 'Unit sold price must be greater than zero.'})
+    return price * Decimal(_quantity(line))
+
+
 def _sale_total(lines) -> Decimal:
-    return sum((Decimal(str(line['sold_price'])) for line in lines), Decimal('0.00'))
+    return sum((_line_total(line) for line in lines), Decimal('0.00'))
 
 
-@transaction.atomic
-def create_auction_sale(*, user, sale_date, payment_type, customer=None, notes='', lines=None, cheque=None) -> AuctionSale:
-    lines = lines or []
+def sold_quantity_for_item(item: ContainerItem, *, excluding_sale: AuctionSale | None = None) -> int:
+    queryset = AuctionSaleLine.objects.filter(item=item, sale__is_cancelled=False)
+    if excluding_sale is not None:
+        queryset = queryset.exclude(sale=excluding_sale)
+    return int(queryset.aggregate(total=Sum('quantity'))['total'] or 0)
+
+
+def available_quantity_for_item(item: ContainerItem, *, excluding_sale: AuctionSale | None = None) -> int:
+    return max(int(item.quantity) - sold_quantity_for_item(item, excluding_sale=excluding_sale), 0)
+
+
+def refresh_item_status(item: ContainerItem, *, user) -> None:
+    next_status = (
+        ContainerItem.Status.SOLD
+        if available_quantity_for_item(item) == 0
+        else ContainerItem.Status.AVAILABLE
+    )
+    if item.status != next_status:
+        item.status = next_status
+        item.updated_by = user
+        item.save(update_fields=['status', 'updated_by', 'updated_at'])
+
+
+def _item_id(line) -> str:
+    item = line['item']
+    return str(item.id if hasattr(item, 'id') else item)
+
+
+def _default_gate_pass_data(sale: AuctionSale) -> dict:
+    customer = sale.customer
+    return {
+        'issued_to_name': customer.name if customer else 'Cash customer',
+        'issued_to_phone': customer.phone if customer else '',
+        'vehicle_number': '',
+        'driver_name': '',
+        'notes': '',
+    }
+
+
+def _sync_gate_pass_for_sale(*, user, sale: AuctionSale, gate_pass_data: dict | None = None) -> GatePass:
+    data = {**_default_gate_pass_data(sale), **(gate_pass_data or {})}
+    try:
+        gate_pass = sale.gate_pass
+    except GatePass.DoesNotExist:
+        gate_pass = GatePass.objects.create(
+            gate_pass_number=_number('D7-GP'),
+            sale=sale,
+            issued_to_name=data['issued_to_name'],
+            issued_to_phone=data.get('issued_to_phone', ''),
+            vehicle_number=data.get('vehicle_number', ''),
+            driver_name=data.get('driver_name', ''),
+            notes=data.get('notes', ''),
+            issued_at=timezone.now(),
+            created_by=user,
+            updated_by=user,
+        )
+    else:
+        gate_pass.issued_to_name = data['issued_to_name']
+        gate_pass.issued_to_phone = data.get('issued_to_phone', '')
+        gate_pass.vehicle_number = data.get('vehicle_number', '')
+        gate_pass.driver_name = data.get('driver_name', '')
+        gate_pass.notes = data.get('notes', '')
+        gate_pass.print_status = GatePass.PrintStatus.NOT_PRINTED
+        gate_pass.printed_at = None
+        gate_pass.updated_by = user
+        gate_pass.save(update_fields=[
+            'issued_to_name', 'issued_to_phone', 'vehicle_number', 'driver_name',
+            'notes', 'print_status', 'printed_at', 'updated_by', 'updated_at',
+        ])
+
+    sale_lines = list(AuctionSaleLine.objects.filter(sale=sale).select_related('item'))
+    next_line_ids = {line.id for line in sale_lines}
+    gate_pass.lines.exclude(sale_line_id__in=next_line_ids).delete()
+    existing = set(gate_pass.lines.values_list('sale_line_id', flat=True))
+    for sale_line in sale_lines:
+        if sale_line.id not in existing:
+            GatePassLine.objects.create(
+                gate_pass=gate_pass,
+                sale_line=sale_line,
+                created_by=user,
+                updated_by=user,
+            )
+    return gate_pass
+
+
+def _validate_sale_lines(lines, *, excluding_sale: AuctionSale | None = None) -> dict:
     if not lines:
         raise ValidationError({'lines': 'At least one sold item is required.'})
-    if payment_type != AuctionSale.PaymentType.CASH and customer is None:
-        raise ValidationError({'customer': 'Customer is required unless this is a cash sale.'})
-    if payment_type == AuctionSale.PaymentType.CHEQUE and not cheque:
-        raise ValidationError({'cheque': 'Cheque details are required when payment type is cheque.'})
 
-    item_ids = [line['item'].id if hasattr(line['item'], 'id') else line['item'] for line in lines]
+    item_ids = [_item_id(line) for line in lines]
     if len(set(item_ids)) != len(item_ids):
-        raise ValidationError({'lines': 'The same item cannot be sold twice in one sale.'})
+        raise ValidationError({'lines': 'Use one sale line per item and set the quantity there.'})
 
     items = {
-        item.id: item
+        str(item.id): item
         for item in ContainerItem.objects.select_for_update().filter(id__in=item_ids)
     }
     if len(items) != len(item_ids):
         raise ValidationError({'lines': 'One or more selected items do not exist.'})
 
     for line in lines:
-        item_id = line['item'].id if hasattr(line['item'], 'id') else line['item']
-        item = items[item_id]
-        if item.status != ContainerItem.Status.AVAILABLE:
-            raise ValidationError({'lines': f'Item {item.lot_number} is not available for sale.'})
-        price = Decimal(str(line['sold_price']))
-        if price <= 0:
-            raise ValidationError({'lines': 'Sold price must be greater than zero.'})
+        item = items[_item_id(line)]
+        quantity = _quantity(line)
+        _line_total(line)
+        available_quantity = available_quantity_for_item(item, excluding_sale=excluding_sale)
+        if item.status == ContainerItem.Status.VOID:
+            raise ValidationError({'lines': f'Item {item.lot_number} is void and cannot be sold.'})
+        if quantity > available_quantity:
+            raise ValidationError({
+                'lines': f'Only {available_quantity} unit(s) are available for lot {item.lot_number}.',
+            })
+    return items
+
+
+@transaction.atomic
+def create_auction_sale(
+    *,
+    user,
+    sale_date,
+    payment_type,
+    customer=None,
+    notes='',
+    lines=None,
+    cheque=None,
+    gate_pass=None,
+) -> AuctionSale:
+    lines = lines or []
+    if payment_type != AuctionSale.PaymentType.CASH and customer is None:
+        raise ValidationError({'customer': 'Customer is required unless this is a cash sale.'})
+    if payment_type == AuctionSale.PaymentType.CHEQUE and not cheque:
+        raise ValidationError({'cheque': 'Cheque details are required when payment type is cheque.'})
+
+    items = _validate_sale_lines(lines)
     total = _sale_total(lines)
-    if payment_type == AuctionSale.PaymentType.CHEQUE and Decimal(str(cheque['amount'])) != total:
-        raise ValidationError({'cheque': 'Cheque amount must match the sale total for cheque payments.'})
 
     sale = AuctionSale.objects.create(
         sale_number=_number('D7-SALE'),
@@ -63,20 +180,22 @@ def create_auction_sale(*, user, sale_date, payment_type, customer=None, notes='
         updated_by=user,
     )
 
+    touched_items = set()
     for line in lines:
-        item_id = line['item'].id if hasattr(line['item'], 'id') else line['item']
-        item = items[item_id]
+        item = items[_item_id(line)]
         AuctionSaleLine.objects.create(
             sale=sale,
             item=item,
+            quantity=_quantity(line),
             sold_price=line['sold_price'],
             notes=line.get('notes', ''),
             created_by=user,
             updated_by=user,
         )
-        item.status = ContainerItem.Status.SOLD
-        item.updated_by = user
-        item.save(update_fields=['status', 'updated_by', 'updated_at'])
+        touched_items.add(item)
+
+    for item in touched_items:
+        refresh_item_status(item, user=user)
 
     if customer is not None and payment_type != AuctionSale.PaymentType.CASH:
         CustomerLedgerEntry.objects.create(
@@ -94,13 +213,17 @@ def create_auction_sale(*, user, sale_date, payment_type, customer=None, notes='
         pending_status = ChequeStatus.objects.filter(name='Pending', is_active=True).first()
         if pending_status is None:
             raise ValidationError({'cheque': 'Pending cheque status is not configured.'})
+        cheque_data = dict(cheque)
+        cheque_data['amount'] = total
         create_cheque(
             user=user,
             customer=customer,
             sale=sale,
             status=pending_status,
-            **cheque,
+            **cheque_data,
         )
+
+    _sync_gate_pass_for_sale(user=user, sale=sale, gate_pass_data=gate_pass)
 
     AuditLog.objects.create(
         actor=user,
@@ -114,18 +237,26 @@ def create_auction_sale(*, user, sale_date, payment_type, customer=None, notes='
 
 
 @transaction.atomic
-def update_auction_sale(*, user, sale: AuctionSale, sale_date=None, customer=None, payment_type=None, notes=None, lines=None) -> AuctionSale:
+def update_auction_sale(
+    *,
+    user,
+    sale: AuctionSale,
+    sale_date=None,
+    customer=None,
+    payment_type=None,
+    notes=None,
+    lines=None,
+    gate_pass=None,
+) -> AuctionSale:
     sale = (
         AuctionSale.objects
-        .select_for_update()
+        .select_for_update(of=('self',))
         .select_related('customer')
-        .prefetch_related('lines__gate_pass_line', 'lines__item', 'ledger_entries', 'cheques__ledger_entries')
+        .prefetch_related('lines__item', 'ledger_entries', 'cheques__ledger_entries', 'gate_pass__lines')
         .get(id=sale.id)
     )
     if sale.is_cancelled:
         raise ValidationError({'sale': 'Cancelled sales cannot be edited.'})
-    if any(hasattr(line, 'gate_pass_line') for line in sale.lines.all()):
-        raise ValidationError({'sale': 'Sales already attached to a gate pass cannot be edited. Edit the gate pass first or create an adjustment.'})
     if sale.cheques.filter(ledger_entries__entry_type=CustomerLedgerEntry.EntryType.CHEQUE_SETTLEMENT).exists():
         raise ValidationError({'sale': 'Sales with settled cheques cannot be edited.'})
 
@@ -143,22 +274,51 @@ def update_auction_sale(*, user, sale: AuctionSale, sale_date=None, customer=Non
     if notes is not None:
         sale.notes = notes
 
+    touched_items = set()
     if lines is not None:
         existing_lines = {str(line.id): line for line in sale.lines.select_related('item')}
-        if set(existing_lines) != {str(line['id']) for line in lines}:
-            raise ValidationError({'lines': 'Editing sale items is not supported here. Create a corrected sale if items were wrong.'})
-        total = Decimal('0.00')
-        for line_data in lines:
-            line = existing_lines[str(line_data['id'])]
-            price = Decimal(str(line_data['sold_price']))
-            if price <= 0:
-                raise ValidationError({'lines': 'Sold price must be greater than zero.'})
-            line.sold_price = price
-            line.notes = line_data.get('notes', line.notes)
-            line.updated_by = user
-            line.save(update_fields=['sold_price', 'notes', 'updated_by', 'updated_at'])
-            total += price
-        sale.total_amount = total
+        desired_existing_ids = {str(line['id']) for line in lines if line.get('id')}
+        unknown_ids = desired_existing_ids - set(existing_lines)
+        if unknown_ids:
+            raise ValidationError({'lines': 'One or more sale lines do not belong to this sale.'})
+
+        normalized = []
+        for line in lines:
+            if line.get('id'):
+                existing = existing_lines[str(line['id'])]
+                normalized.append({
+                    **line,
+                    'item': line.get('item') or existing.item,
+                })
+            else:
+                normalized.append(line)
+
+        items = _validate_sale_lines(normalized, excluding_sale=sale)
+
+        for removed_id in set(existing_lines) - desired_existing_ids:
+            line = existing_lines[removed_id]
+            touched_items.add(line.item)
+            if hasattr(line, 'gate_pass_line'):
+                line.gate_pass_line.delete()
+            line.delete()
+
+        for line_data in normalized:
+            item = items[_item_id(line_data)]
+            line_id = line_data.get('id')
+            if line_id:
+                sale_line = existing_lines[str(line_id)]
+                touched_items.add(sale_line.item)
+                sale_line.item = item
+            else:
+                sale_line = AuctionSaleLine(sale=sale, item=item, created_by=user)
+            sale_line.quantity = _quantity(line_data)
+            sale_line.sold_price = line_data['sold_price']
+            sale_line.notes = line_data.get('notes', sale_line.notes)
+            sale_line.updated_by = user
+            sale_line.save()
+            touched_items.add(item)
+
+        sale.total_amount = _sale_total(normalized)
 
     sale.updated_by = user
     sale.save(update_fields=['sale_date', 'payment_type', 'customer', 'notes', 'total_amount', 'updated_by', 'updated_at'])
@@ -176,6 +336,18 @@ def update_auction_sale(*, user, sale: AuctionSale, sale_date=None, customer=Non
             updated_by=user,
         )
 
+    if sale.payment_type == AuctionSale.PaymentType.CHEQUE:
+        for sale_cheque in sale.cheques.select_related('status'):
+            sale_cheque.amount = sale.total_amount
+            sale_cheque.customer = sale.customer
+            sale_cheque.updated_by = user
+            sale_cheque.save(update_fields=['amount', 'customer', 'updated_by', 'updated_at'])
+
+    _sync_gate_pass_for_sale(user=user, sale=sale, gate_pass_data=gate_pass)
+
+    for item in touched_items:
+        refresh_item_status(item, user=user)
+
     AuditLog.objects.create(
         actor=user,
         action='auction_sale.updated',
@@ -191,49 +363,28 @@ def update_auction_sale(*, user, sale: AuctionSale, sale_date=None, customer=Non
 def issue_gate_pass(*, user, sale_line_ids, issued_to_name, issued_to_phone='', vehicle_number='', driver_name='', notes='') -> GatePass:
     if not sale_line_ids:
         raise ValidationError({'sale_line_ids': 'At least one sold item is required.'})
-    if len(set(sale_line_ids)) != len(sale_line_ids):
-        raise ValidationError({'sale_line_ids': 'Duplicate sold items are not allowed.'})
-
     sale_lines = list(
-        AuctionSaleLine.objects.select_for_update()
-        .select_related('item', 'sale')
+        AuctionSaleLine.objects.select_for_update(of=('self',))
+        .select_related('item', 'sale', 'sale__customer')
         .filter(id__in=sale_line_ids)
     )
     if len(sale_lines) != len(sale_line_ids):
         raise ValidationError({'sale_line_ids': 'One or more sold items do not exist.'})
-    if GatePassLine.objects.filter(sale_line_id__in=sale_line_ids).exists():
-        raise ValidationError({'sale_line_ids': 'One or more sold items already have a gate pass.'})
-
-    for sale_line in sale_lines:
-        if sale_line.sale.is_cancelled:
-            raise ValidationError({'sale_line_ids': 'Cannot issue gate pass for a cancelled sale.'})
-        if sale_line.item.status != ContainerItem.Status.SOLD:
-            raise ValidationError({'sale_line_ids': f'Item {sale_line.item.lot_number} is not ready for gate pass.'})
-
-    gate_pass = GatePass.objects.create(
-        gate_pass_number=_number('D7-GP'),
-        issued_to_name=issued_to_name,
-        issued_to_phone=issued_to_phone,
-        vehicle_number=vehicle_number,
-        driver_name=driver_name,
-        notes=notes,
-        issued_at=timezone.now(),
-        created_by=user,
-        updated_by=user,
+    sale_ids = {sale_line.sale_id for sale_line in sale_lines}
+    if len(sale_ids) != 1:
+        raise ValidationError({'sale_line_ids': 'A gate pass must belong to exactly one sale.'})
+    sale = sale_lines[0].sale
+    gate_pass = _sync_gate_pass_for_sale(
+        user=user,
+        sale=sale,
+        gate_pass_data={
+            'issued_to_name': issued_to_name,
+            'issued_to_phone': issued_to_phone,
+            'vehicle_number': vehicle_number,
+            'driver_name': driver_name,
+            'notes': notes,
+        },
     )
-
-    for sale_line in sale_lines:
-        GatePassLine.objects.create(
-            gate_pass=gate_pass,
-            sale_line=sale_line,
-            created_by=user,
-            updated_by=user,
-        )
-        item = sale_line.item
-        item.status = ContainerItem.Status.GATE_PASS_ISSUED
-        item.updated_by = user
-        item.save(update_fields=['status', 'updated_by', 'updated_at'])
-
     AuditLog.objects.create(
         actor=user,
         action='gate_pass.issued',
@@ -247,71 +398,30 @@ def issue_gate_pass(*, user, sale_line_ids, issued_to_name, issued_to_phone='', 
 
 @transaction.atomic
 def update_gate_pass(*, user, gate_pass: GatePass, sale_line_ids, issued_to_name, issued_to_phone='', vehicle_number='', driver_name='', notes='') -> GatePass:
-    gate_pass = GatePass.objects.select_for_update().get(id=gate_pass.id)
+    gate_pass = GatePass.objects.select_for_update().select_related('sale').get(id=gate_pass.id)
     if gate_pass.status == GatePass.Status.VERIFIED:
         raise ValidationError({'status': 'Verified gate passes cannot be modified.'})
-    if not sale_line_ids:
-        raise ValidationError({'sale_line_ids': 'At least one sold item is required.'})
-    if len(set(sale_line_ids)) != len(sale_line_ids):
-        raise ValidationError({'sale_line_ids': 'Duplicate sold items are not allowed.'})
-
-    sale_lines = list(
-        AuctionSaleLine.objects.select_for_update()
-        .select_related('item', 'sale')
-        .filter(id__in=sale_line_ids)
+    if gate_pass.sale_id:
+        sale = gate_pass.sale
+    else:
+        sale_lines = list(AuctionSaleLine.objects.select_related('sale').filter(id__in=sale_line_ids))
+        sale_ids = {line.sale_id for line in sale_lines}
+        if len(sale_ids) != 1:
+            raise ValidationError({'sale_line_ids': 'A gate pass must belong to exactly one sale.'})
+        sale = sale_lines[0].sale
+        gate_pass.sale = sale
+        gate_pass.save(update_fields=['sale', 'updated_at'])
+    return _sync_gate_pass_for_sale(
+        user=user,
+        sale=sale,
+        gate_pass_data={
+            'issued_to_name': issued_to_name,
+            'issued_to_phone': issued_to_phone,
+            'vehicle_number': vehicle_number,
+            'driver_name': driver_name,
+            'notes': notes,
+        },
     )
-    if len(sale_lines) != len(sale_line_ids):
-        raise ValidationError({'sale_line_ids': 'One or more sold items do not exist.'})
-
-    current_lines = list(gate_pass.lines.select_related('sale_line__item'))
-    current_ids = {line.sale_line_id for line in current_lines}
-    next_ids = {line.id for line in sale_lines}
-    removed = [line for line in current_lines if line.sale_line_id not in next_ids]
-    added = [line for line in sale_lines if line.id not in current_ids]
-
-    if GatePassLine.objects.filter(sale_line_id__in=[line.id for line in added]).exclude(gate_pass=gate_pass).exists():
-        raise ValidationError({'sale_line_ids': 'One or more sold items already have another gate pass.'})
-
-    for sale_line in added:
-        if sale_line.sale.is_cancelled or sale_line.item.status != ContainerItem.Status.SOLD:
-            raise ValidationError({'sale_line_ids': f'Item {sale_line.item.lot_number} is not ready for gate pass.'})
-
-    for line in removed:
-        item = line.sale_line.item
-        item.status = ContainerItem.Status.SOLD
-        item.updated_by = user
-        item.save(update_fields=['status', 'updated_by', 'updated_at'])
-        line.delete()
-
-    for sale_line in added:
-        GatePassLine.objects.create(gate_pass=gate_pass, sale_line=sale_line, created_by=user, updated_by=user)
-        item = sale_line.item
-        item.status = ContainerItem.Status.GATE_PASS_ISSUED
-        item.updated_by = user
-        item.save(update_fields=['status', 'updated_by', 'updated_at'])
-
-    gate_pass.issued_to_name = issued_to_name
-    gate_pass.issued_to_phone = issued_to_phone
-    gate_pass.vehicle_number = vehicle_number
-    gate_pass.driver_name = driver_name
-    gate_pass.notes = notes
-    gate_pass.print_status = GatePass.PrintStatus.NOT_PRINTED
-    gate_pass.printed_at = None
-    gate_pass.updated_by = user
-    gate_pass.save(update_fields=[
-        'issued_to_name', 'issued_to_phone', 'vehicle_number', 'driver_name',
-        'notes', 'print_status', 'printed_at', 'updated_by', 'updated_at',
-    ])
-
-    AuditLog.objects.create(
-        actor=user,
-        action='gate_pass.updated',
-        entity_type='GatePass',
-        entity_id=str(gate_pass.id),
-        message=f'Updated gate pass {gate_pass.gate_pass_number}',
-        metadata={'line_count': len(next_ids)},
-    )
-    return gate_pass
 
 
 @transaction.atomic
@@ -344,12 +454,6 @@ def verify_gate_pass(*, user, gate_pass: GatePass) -> GatePass:
     gate_pass.verified_by = user
     gate_pass.updated_by = user
     gate_pass.save(update_fields=['status', 'verified_at', 'verified_by', 'updated_by', 'updated_at'])
-
-    for line in gate_pass.lines.select_related('sale_line__item'):
-        item = line.sale_line.item
-        item.status = ContainerItem.Status.RELEASED
-        item.updated_by = user
-        item.save(update_fields=['status', 'updated_by', 'updated_at'])
 
     AuditLog.objects.create(
         actor=user,

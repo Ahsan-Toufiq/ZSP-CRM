@@ -154,14 +154,19 @@ class AuctionSale(UserStampedModel):
 
 class AuctionSaleLine(UserStampedModel):
     sale = models.ForeignKey(AuctionSale, on_delete=models.PROTECT, related_name='lines')
-    item = models.OneToOneField(ContainerItem, on_delete=models.PROTECT, related_name='sale_line')
+    item = models.ForeignKey(ContainerItem, on_delete=models.PROTECT, related_name='sale_lines')
+    quantity = models.PositiveIntegerField(default=1)
     sold_price = models.DecimalField(max_digits=14, decimal_places=2)
     notes = models.TextField(blank=True)
 
     class Meta:
         ordering = ['sale__sale_number', 'item__lot_number']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(quantity__gt=0), name='sale_line_quantity_positive'),
+        ]
         indexes = [
             models.Index(fields=['sold_price']),
+            models.Index(fields=['item']),
         ]
 
     def clean(self):
@@ -184,6 +189,13 @@ class GatePass(UserStampedModel):
         PRINTED = 'printed', 'Printed'
 
     gate_pass_number = models.CharField(max_length=40, unique=True)
+    sale = models.OneToOneField(
+        AuctionSale,
+        on_delete=models.PROTECT,
+        related_name='gate_pass',
+        null=True,
+        blank=True,
+    )
     issued_to_name = models.CharField(max_length=180)
     issued_to_phone = models.CharField(max_length=40, blank=True)
     vehicle_number = models.CharField(max_length=80, blank=True)

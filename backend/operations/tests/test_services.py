@@ -9,7 +9,7 @@ from catalog.models import DropdownOption
 from finance.models import Cheque, ChequeStatus, CustomerLedgerEntry
 from finance.services import change_cheque_status
 from operations.models import AuctionSale, Container, ContainerItem, GatePassLine
-from operations.services import create_auction_sale, issue_gate_pass, mark_gate_pass_printed, update_gate_pass, verify_gate_pass
+from operations.services import create_auction_sale, issue_gate_pass, mark_gate_pass_printed, update_auction_sale, verify_gate_pass
 
 
 @pytest.fixture
@@ -85,7 +85,37 @@ def test_sold_item_cannot_be_sold_again(user, customer, item):
 
 
 @pytest.mark.django_db
-def test_gate_pass_can_be_issued_once_and_then_verified(user, customer, item):
+def test_sale_can_sell_partial_container_quantity(user, customer, item):
+    item.quantity = 3
+    item.save(update_fields=['quantity'])
+
+    first_sale = create_auction_sale(
+        user=user,
+        sale_date=timezone.localdate(),
+        payment_type=AuctionSale.PaymentType.CREDIT,
+        customer=customer,
+        lines=[{'item': item, 'quantity': 2, 'sold_price': Decimal('5000.00')}],
+    )
+
+    item.refresh_from_db()
+    assert first_sale.total_amount == Decimal('10000.00')
+    assert item.status == ContainerItem.Status.AVAILABLE
+
+    second_sale = create_auction_sale(
+        user=user,
+        sale_date=timezone.localdate(),
+        payment_type=AuctionSale.PaymentType.CREDIT,
+        customer=customer,
+        lines=[{'item': item, 'quantity': 1, 'sold_price': Decimal('6000.00')}],
+    )
+
+    item.refresh_from_db()
+    assert second_sale.total_amount == Decimal('6000.00')
+    assert item.status == ContainerItem.Status.SOLD
+
+
+@pytest.mark.django_db
+def test_sale_auto_creates_gate_pass_and_verification_does_not_release_stock(user, customer, item):
     sale = create_auction_sale(
         user=user,
         sale_date=timezone.localdate(),
@@ -94,8 +124,9 @@ def test_gate_pass_can_be_issued_once_and_then_verified(user, customer, item):
         lines=[{'item': item, 'sold_price': Decimal('15000.00')}],
     )
     sale_line = sale.lines.get()
+    gate_pass = sale.gate_pass
 
-    gate_pass = issue_gate_pass(
+    same_gate_pass = issue_gate_pass(
         user=user,
         sale_line_ids=[sale_line.id],
         issued_to_name='Syed Zulfiqar',
@@ -103,19 +134,13 @@ def test_gate_pass_can_be_issued_once_and_then_verified(user, customer, item):
     )
 
     item.refresh_from_db()
-    assert item.status == ContainerItem.Status.GATE_PASS_ISSUED
+    assert same_gate_pass.id == gate_pass.id
+    assert item.status == ContainerItem.Status.SOLD
     assert GatePassLine.objects.filter(sale_line=sale_line).count() == 1
-
-    with pytest.raises(ValidationError):
-        issue_gate_pass(
-            user=user,
-            sale_line_ids=[sale_line.id],
-            issued_to_name='Syed Zulfiqar',
-        )
 
     verify_gate_pass(user=user, gate_pass=gate_pass)
     item.refresh_from_db()
-    assert item.status == ContainerItem.Status.RELEASED
+    assert item.status == ContainerItem.Status.SOLD
 
 
 @pytest.mark.django_db
@@ -149,42 +174,31 @@ def test_cheque_sale_creates_cheque_and_balance_settles_only_when_cleared(user, 
 
 
 @pytest.mark.django_db
-def test_gate_pass_update_removes_item_and_resets_print_status(user, customer, item, second_item):
-    first_sale = create_auction_sale(
+def test_sale_update_changes_gate_pass_lines_and_resets_print_status(user, customer, item, second_item):
+    sale = create_auction_sale(
         user=user,
         sale_date=timezone.localdate(),
         payment_type=AuctionSale.PaymentType.CREDIT,
         customer=customer,
         lines=[{'item': item, 'sold_price': Decimal('15000.00')}],
     )
-    second_sale = create_auction_sale(
-        user=user,
-        sale_date=timezone.localdate(),
-        payment_type=AuctionSale.PaymentType.CREDIT,
-        customer=customer,
-        lines=[{'item': second_item, 'sold_price': Decimal('12000.00')}],
-    )
-    first_line = first_sale.lines.get()
-    second_line = second_sale.lines.get()
-    gate_pass = issue_gate_pass(
-        user=user,
-        sale_line_ids=[first_line.id, second_line.id],
-        issued_to_name='Syed Zulfiqar',
-    )
+    gate_pass = sale.gate_pass
     mark_gate_pass_printed(user=user, gate_pass=gate_pass)
 
-    update_gate_pass(
+    update_auction_sale(
         user=user,
-        gate_pass=gate_pass,
-        sale_line_ids=[first_line.id],
-        issued_to_name='Syed Zulfiqar',
+        sale=sale,
+        customer=customer,
+        lines=[
+            {'id': sale.lines.get().id, 'item': item, 'quantity': 1, 'sold_price': Decimal('16000.00')},
+            {'item': second_item, 'quantity': 1, 'sold_price': Decimal('12000.00')},
+        ],
     )
 
     gate_pass.refresh_from_db()
-    second_item.refresh_from_db()
     assert gate_pass.print_status == gate_pass.PrintStatus.NOT_PRINTED
-    assert second_item.status == ContainerItem.Status.SOLD
-    assert GatePassLine.objects.filter(sale_line=second_line).exists() is False
+    assert gate_pass.lines.count() == 2
+    assert sale.lines.count() == 2
 
 
 @pytest.mark.django_db

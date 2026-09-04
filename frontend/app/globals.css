@@ -335,7 +335,8 @@ h3 {
 
 .record-stack,
 .container-grid,
-.settings-grid {
+.settings-grid,
+.stacked-panels {
   display: grid;
   gap: 14px;
 }
@@ -440,6 +441,61 @@ td select {
   display: block;
   color: var(--muted);
   font-size: 12px;
+}
+
+.badge,
+.chip {
+  gap: 6px;
+}
+
+.chip small {
+  color: var(--muted);
+  font-weight: 700;
+  text-transform: none;
+}
+
+.money-good {
+  color: var(--success);
+}
+
+.money-bad {
+  color: var(--danger);
+}
+
+.icon-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.sale-line-grid {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(220px, 1.4fr) 100px minmax(130px, 0.7fr) minmax(160px, 1fr) 42px;
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.full-span,
+.total-bar {
+  grid-column: 1 / -1;
+}
+
+.total-bar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #e4f5f2;
+  color: var(--brand-dark);
+}
+
+.total-bar strong {
+  font-size: 18px;
 }
 
 .badge,
@@ -686,7 +742,8 @@ td select {
 
   .form-grid,
   .subform,
-  .line-edit {
+  .line-edit,
+  .sale-line-grid {
     grid-template-columns: 1fr;
   }
 

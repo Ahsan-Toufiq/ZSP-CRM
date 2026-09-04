@@ -20,18 +20,20 @@ The system currently supports:
 - Container registry.
 - Container item inventory with unique lot numbers per container.
 - Auction sale recording.
-- One-sale-per-item protection.
+- Quantity-based sale lines against container inventory.
+- Parts inventory aggregation across all containers.
 - Cash sales without mandatory customer.
 - Credit, cheque, and mixed sales requiring a customer.
-- Gate-pass issuing for one or multiple sold items.
-- One-gate-pass-per-sold-item protection.
-- Gate-pass verification that marks items as released.
-- Gate-pass editing before verification.
+- One auction sale can contain multiple items and quantities.
+- Gate pass creation from the auction-sale workflow.
+- Gate-pass editing when the sale is edited.
 - Gate-pass print tracking with a two-copy print layout.
 - Cheque register.
 - System cheque statuses: `Pending`, `Bounced`, `Settled`, `Settled by Cash`, `Cleared`.
 - Custom cheque statuses.
+- Configurable cheque status balance effects.
 - Cheque entry from the auction sale dialog when payment type is cheque.
+- Separately entered cleared cheques allocate to the oldest open balances first.
 - Persisted dropdown values for banks, item categories, item conditions, and units.
 - Ledger-based customer receivables.
 - API-level role permissions.
@@ -100,6 +102,10 @@ Required production values:
 
 ## Production Notes
 
+- `render.yaml` defines separate Render services for backend and frontend plus managed PostgreSQL.
+- Proposed production domains:
+  - Frontend: `https://zsp.digi7.org`
+  - Backend API: `https://zsp-api.digi7.org`
 - Use managed PostgreSQL.
 - Run migrations during deploy.
 - Do not run demo seed data in production.
@@ -107,6 +113,7 @@ Required production values:
 - Keep the backend API origin in CORS/CSRF allowlists.
 - Use separate production users with strong passwords.
 - Add backups before replacing the existing ZSP deployment.
+- Do not switch the live DNS from the Laravel app until data migration and reconciliation are complete.
 
 ## Current Verification
 
@@ -114,11 +121,12 @@ Backend service tests cover:
 
 - Credit sale ledger debit.
 - Customer required for non-cash sale.
-- Duplicate sale prevention for the same item.
-- Gate-pass issue and verify flow.
-- Gate-pass editing and print-status reset.
+- Quantity-based sale validation.
+- Sale-created gate-pass flow.
+- Sale editing with gate-pass line sync and print-status reset.
 - Cheque sale creation.
 - Cheque settlement ledger credit.
+- Split cheque settlement allocation to oldest open sales.
 - Bounced cheque reversal.
 
 Frontend checks cover:

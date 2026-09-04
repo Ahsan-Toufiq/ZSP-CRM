@@ -1,11 +1,15 @@
+from decimal import Decimal
+
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Sum
 from django.utils import timezone
 
 from audit.models import AuditLog
 from catalog.models import DropdownOption
 from catalog.services import ensure_dropdown_option
-from finance.models import Cheque, ChequeStatus, ChequeStatusHistory, CustomerLedgerEntry
+from finance.models import Cheque, ChequeSettlementAllocation, ChequeStatus, ChequeStatusHistory, CustomerLedgerEntry
+from operations.models import AuctionSale
 
 
 @transaction.atomic
@@ -31,6 +35,44 @@ def create_cheque(*, user, **data) -> Cheque:
     return cheque
 
 
+def _active_allocated_amount(sale: AuctionSale) -> Decimal:
+    return sale.cheque_allocations.filter(is_reversed=False).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+
+def _allocate_cheque_to_oldest_sales(*, user, cheque: Cheque) -> None:
+    remaining = Decimal(cheque.amount)
+    sales = (
+        AuctionSale.objects
+        .select_for_update()
+        .filter(
+            customer=cheque.customer,
+            payment_type__in=[
+                AuctionSale.PaymentType.CREDIT,
+                AuctionSale.PaymentType.CHEQUE,
+                AuctionSale.PaymentType.MIXED,
+            ],
+            is_cancelled=False,
+        )
+        .order_by('sale_date', 'created_at')
+    )
+
+    for sale in sales:
+        if remaining <= 0:
+            break
+        outstanding = Decimal(sale.total_amount) - _active_allocated_amount(sale)
+        if outstanding <= 0:
+            continue
+        amount = min(remaining, outstanding)
+        ChequeSettlementAllocation.objects.create(
+            cheque=cheque,
+            sale=sale,
+            amount=amount,
+            created_by=user,
+            updated_by=user,
+        )
+        remaining -= amount
+
+
 @transaction.atomic
 def change_cheque_status(*, user, cheque: Cheque, status: ChequeStatus, notes='') -> Cheque:
     cheque = Cheque.objects.select_for_update().select_related('status', 'customer').get(id=cheque.id)
@@ -53,7 +95,9 @@ def change_cheque_status(*, user, cheque: Cheque, status: ChequeStatus, notes=''
     )
 
     if status.balance_effect == ChequeStatus.BalanceEffect.SETTLES_BALANCE:
-        if cheque.ledger_entries.filter(entry_type=CustomerLedgerEntry.EntryType.CHEQUE_SETTLEMENT).exists():
+        existing_settlement = cheque.ledger_entries.filter(entry_type=CustomerLedgerEntry.EntryType.CHEQUE_SETTLEMENT).exists()
+        active_allocations = cheque.settlement_allocations.filter(is_reversed=False).exists()
+        if existing_settlement and active_allocations:
             raise ValidationError({'status': 'This cheque has already posted a settlement entry.'})
         CustomerLedgerEntry.objects.create(
             customer=cheque.customer,
@@ -65,10 +109,16 @@ def change_cheque_status(*, user, cheque: Cheque, status: ChequeStatus, notes=''
             created_by=user,
             updated_by=user,
         )
+        _allocate_cheque_to_oldest_sales(user=user, cheque=cheque)
     elif status.balance_effect == ChequeStatus.BalanceEffect.REVERSES_SETTLEMENT:
         settled = cheque.ledger_entries.filter(entry_type=CustomerLedgerEntry.EntryType.CHEQUE_SETTLEMENT).exists()
         reversed_once = cheque.ledger_entries.filter(entry_type=CustomerLedgerEntry.EntryType.CHEQUE_REVERSAL).exists()
         if settled and not reversed_once:
+            cheque.settlement_allocations.filter(is_reversed=False).update(
+                is_reversed=True,
+                reversed_at=timezone.now(),
+                updated_by=user,
+            )
             CustomerLedgerEntry.objects.create(
                 customer=cheque.customer,
                 entry_date=cheque.received_date or timezone.localdate(),

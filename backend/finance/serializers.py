@@ -3,7 +3,7 @@ from rest_framework import serializers
 
 from catalog.models import DropdownOption
 from catalog.services import ensure_dropdown_option
-from finance.models import Cheque, ChequeStatus, ChequeStatusHistory, CustomerLedgerEntry
+from finance.models import Cheque, ChequeSettlementAllocation, ChequeStatus, ChequeStatusHistory, CustomerLedgerEntry
 from finance.services import change_cheque_status, create_cheque
 from operations.models import AuctionSale, Customer
 
@@ -15,10 +15,21 @@ class ChequeStatusSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'is_system', 'created_at', 'updated_at']
 
 
+class ChequeSettlementAllocationSerializer(serializers.ModelSerializer):
+    sale_number = serializers.CharField(source='sale.sale_number', read_only=True)
+    sale_date = serializers.DateField(source='sale.sale_date', read_only=True)
+
+    class Meta:
+        model = ChequeSettlementAllocation
+        fields = ['id', 'cheque', 'sale', 'sale_number', 'sale_date', 'amount', 'is_reversed', 'created_at']
+        read_only_fields = fields
+
+
 class ChequeSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     status_name = serializers.CharField(source='status.name', read_only=True)
     name_on_cheque = serializers.CharField(max_length=180)
+    settlement_allocations = ChequeSettlementAllocationSerializer(read_only=True, many=True)
 
     class Meta:
         model = Cheque
@@ -26,9 +37,9 @@ class ChequeSerializer(serializers.ModelSerializer):
             'id', 'cheque_number', 'customer', 'customer_name', 'name_on_cheque',
             'bank_name', 'branch_name', 'account_title', 'amount', 'cheque_date',
             'expiry_date', 'received_date', 'status', 'status_name', 'sale',
-            'notes', 'created_at', 'updated_at',
+            'settlement_allocations', 'notes', 'created_at', 'updated_at',
         ]
-        read_only_fields = ['id', 'customer_name', 'status_name', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'customer_name', 'status_name', 'settlement_allocations', 'created_at', 'updated_at']
 
     def validate(self, attrs):
         cheque_date = attrs.get('cheque_date', getattr(self.instance, 'cheque_date', None))
@@ -73,12 +84,15 @@ class ChequeStatusHistorySerializer(serializers.ModelSerializer):
 
 class CustomerLedgerEntrySerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
+    sale_number = serializers.CharField(source='sale.sale_number', read_only=True)
+    cheque_number = serializers.CharField(source='cheque.cheque_number', read_only=True)
 
     class Meta:
         model = CustomerLedgerEntry
         fields = [
             'id', 'customer', 'customer_name', 'entry_date', 'entry_type',
-            'description', 'debit', 'credit', 'sale', 'cheque', 'created_at',
+            'description', 'debit', 'credit', 'sale', 'sale_number', 'cheque',
+            'cheque_number', 'created_at',
         ]
         read_only_fields = ['id', 'customer_name', 'created_at']
 
@@ -87,10 +101,11 @@ class CustomerBalanceSerializer(serializers.ModelSerializer):
     balance = serializers.SerializerMethodField()
     total_debit = serializers.SerializerMethodField()
     total_credit = serializers.SerializerMethodField()
+    sale_breakdown = serializers.SerializerMethodField()
 
     class Meta:
         model = Customer
-        fields = ['id', 'name', 'phone', 'balance', 'total_debit', 'total_credit']
+        fields = ['id', 'name', 'phone', 'balance', 'total_debit', 'total_credit', 'sale_breakdown']
 
     def _totals(self, obj):
         if not hasattr(obj, '_ledger_totals'):
@@ -105,3 +120,43 @@ class CustomerBalanceSerializer(serializers.ModelSerializer):
 
     def get_balance(self, obj):
         return self.get_total_debit(obj) - self.get_total_credit(obj)
+
+    def get_sale_breakdown(self, obj):
+        sales = obj.auction_sales.filter(is_cancelled=False).prefetch_related(
+            'cheque_allocations__cheque',
+            'lines__item',
+        ).order_by('sale_date', 'created_at')
+        breakdown = []
+        for sale in sales:
+            allocations = [
+                {
+                    'id': str(allocation.id),
+                    'cheque': str(allocation.cheque_id),
+                    'cheque_number': allocation.cheque.cheque_number,
+                    'amount': allocation.amount,
+                    'is_reversed': allocation.is_reversed,
+                    'created_at': allocation.created_at,
+                }
+                for allocation in sale.cheque_allocations.all()
+            ]
+            active_allocated = sum((allocation['amount'] for allocation in allocations if not allocation['is_reversed']), 0)
+            breakdown.append({
+                'id': str(sale.id),
+                'sale_number': sale.sale_number,
+                'sale_date': sale.sale_date,
+                'total_amount': sale.total_amount,
+                'settled_amount': active_allocated,
+                'outstanding_amount': sale.total_amount - active_allocated,
+                'items': [
+                    {
+                        'lot_number': line.item.lot_number,
+                        'part_name': line.item.part_name,
+                        'quantity': line.quantity,
+                        'unit_price': line.sold_price,
+                        'line_total': line.quantity * line.sold_price,
+                    }
+                    for line in sale.lines.all()
+                ],
+                'settlements': allocations,
+            })
+        return breakdown

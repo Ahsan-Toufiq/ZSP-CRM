@@ -23,12 +23,14 @@ Authentication uses Django sessions and CSRF cookies.
 - `GET|PATCH|DELETE /operations/containers/{id}/`
 - `GET|POST /operations/items/`
 - `GET|PATCH|DELETE /operations/items/{id}/`
+- `GET /operations/items/parts-inventory/`
 - `GET|POST /operations/auction-sales/`
-- `GET /operations/auction-sales/sold-without-gate-pass/`
-- `GET|POST /operations/gate-passes/`
+- `GET|PATCH|DELETE /operations/auction-sales/{id}/`
+- `GET /operations/auction-sales/sold-without-gate-pass/` legacy compatibility endpoint
+- `GET|POST /operations/gate-passes/` compatibility endpoint; normal UI flow creates gate passes from sales
 - `GET|PATCH|DELETE /operations/gate-passes/{id}/`
-- `POST /operations/gate-passes/{id}/verify/`
 - `POST /operations/gate-passes/{id}/mark-printed/`
+- `POST /operations/gate-passes/{id}/verify/` compatibility endpoint
 
 ## Finance
 

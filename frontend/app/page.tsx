@@ -6,9 +6,7 @@ import {
   Boxes,
   ChevronDown,
   ChevronRight,
-  ClipboardCheck,
   Container as ContainerIcon,
-  FileCheck2,
   Gavel,
   LayoutDashboard,
   LogIn,
@@ -17,7 +15,6 @@ import {
   Printer,
   RefreshCw,
   Search,
-  ShieldCheck,
   Trash2,
   Users,
   WalletCards,
@@ -29,7 +26,6 @@ import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
 import { destroy, get, list, patch, post } from '@/lib/api';
 import type {
   AuctionSale,
-  AuctionSaleLine,
   Cheque,
   ChequeStatus,
   Container,
@@ -44,24 +40,31 @@ import type {
   UUID,
 } from '@/lib/types';
 
-type Tab = 'dashboard' | 'customers' | 'containers' | 'sales' | 'gate-passes' | 'cheques' | 'settings';
+type Tab = 'dashboard' | 'customers' | 'containers' | 'sales' | 'cheques' | 'settings';
 type ModalState =
   | { type: 'customer'; customer?: Customer }
   | { type: 'container'; container?: Container }
   | { type: 'item'; item?: ContainerItem; containerId?: UUID }
   | { type: 'sale'; sale?: AuctionSale }
-  | { type: 'gate-pass'; gatePass?: GatePass }
   | { type: 'cheque'; cheque?: Cheque }
   | { type: 'cheque-status' }
   | { type: 'dropdown-option'; group?: DropdownOption['group'] }
   | null;
+
+type SaleLineDraft = {
+  key: string;
+  id?: UUID;
+  item: string;
+  quantity: number;
+  sold_price: string;
+  notes: string;
+};
 
 const tabs: { id: Tab; label: string; icon: ReactNode }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={18} /> },
   { id: 'customers', label: 'Customers & Balances', icon: <Users size={18} /> },
   { id: 'containers', label: 'Containers & Inventory', icon: <ContainerIcon size={18} /> },
   { id: 'sales', label: 'Auction Sales', icon: <Gavel size={18} /> },
-  { id: 'gate-passes', label: 'Gate Passes', icon: <FileCheck2 size={18} /> },
   { id: 'cheques', label: 'Cheques', icon: <WalletCards size={18} /> },
   { id: 'settings', label: 'Dropdown Settings', icon: <Boxes size={18} /> },
 ];
@@ -103,14 +106,12 @@ export default function Home() {
   const [containers, setContainers] = useState<Container[]>([]);
   const [items, setItems] = useState<ContainerItem[]>([]);
   const [sales, setSales] = useState<AuctionSale[]>([]);
-  const [soldPendingGatePass, setSoldPendingGatePass] = useState<AuctionSaleLine[]>([]);
-  const [gatePasses, setGatePasses] = useState<GatePass[]>([]);
   const [cheques, setCheques] = useState<Cheque[]>([]);
   const [chequeStatuses, setChequeStatuses] = useState<ChequeStatus[]>([]);
   const [ledgerEntries, setLedgerEntries] = useState<CustomerLedgerEntry[]>([]);
   const [dropdownOptions, setDropdownOptions] = useState<DropdownOption[]>([]);
 
-  const availableItems = useMemo(() => items.filter((item) => item.status === 'available'), [items]);
+  const availableItems = useMemo(() => items.filter((item) => item.status === 'available' && item.available_quantity > 0), [items]);
   const currentTitle = tabs.find((tab) => tab.id === activeTab)?.label ?? 'Dashboard';
 
   async function refreshData() {
@@ -122,8 +123,6 @@ export default function Home() {
       containerData,
       itemData,
       salesData,
-      pendingGatePassData,
-      gatePassData,
       chequeData,
       statusData,
       ledgerData,
@@ -134,8 +133,6 @@ export default function Home() {
       list<Container>('/operations/containers/'),
       list<ContainerItem>('/operations/items/'),
       list<AuctionSale>('/operations/auction-sales/'),
-      list<AuctionSaleLine>('/operations/auction-sales/sold-without-gate-pass/'),
-      list<GatePass>('/operations/gate-passes/'),
       list<Cheque>('/finance/cheques/'),
       list<ChequeStatus>('/finance/cheque-statuses/'),
       list<CustomerLedgerEntry>('/finance/ledger/?page_size=200'),
@@ -147,8 +144,6 @@ export default function Home() {
     setContainers(valueOf(containerData, emptyPage<Container>()).results);
     setItems(valueOf(itemData, emptyPage<ContainerItem>()).results);
     setSales(valueOf(salesData, emptyPage<AuctionSale>()).results);
-    setSoldPendingGatePass(valueOf(pendingGatePassData, emptyPage<AuctionSaleLine>()).results);
-    setGatePasses(valueOf(gatePassData, emptyPage<GatePass>()).results);
     setCheques(valueOf(chequeData, emptyPage<Cheque>()).results);
     setChequeStatuses(valueOf(statusData, emptyPage<ChequeStatus>()).results);
     setLedgerEntries(valueOf(ledgerData, emptyPage<CustomerLedgerEntry>()).results);
@@ -237,11 +232,6 @@ export default function Home() {
     setRefreshKey((key) => key + 1);
   }
 
-  async function verifyGatePass(gatePass: GatePass) {
-    await post(`/operations/gate-passes/${gatePass.id}/verify/`, {});
-    setRefreshKey((key) => key + 1);
-  }
-
   async function printGatePass(gatePass: GatePass) {
     const printWindow = window.open('', '_blank', 'width=920,height=720');
     if (!printWindow) {
@@ -256,6 +246,15 @@ export default function Home() {
     setRefreshKey((key) => key + 1);
   }
 
+  async function printSaleGatePass(sale: AuctionSale) {
+    if (!sale.gate_pass) {
+      setMessage('This sale does not have a gate pass yet.');
+      return;
+    }
+    const gatePass = await get<GatePass>(`/operations/gate-passes/${sale.gate_pass.id}/`);
+    await printGatePass(gatePass);
+  }
+
   if (!isAuthenticated) {
     return (
       <main className="login-screen">
@@ -265,7 +264,7 @@ export default function Home() {
             <div>
               <p className="eyebrow">ZSP spare-parts operations</p>
               <h1>Secure auction control</h1>
-              <p className="muted">Containers, sold lots, gate release, cheques, and customer balances in one controlled workflow.</p>
+              <p className="muted">Containers, sold lots, gate passes, cheques, and customer balances in one controlled workflow.</p>
             </div>
           </div>
           <form onSubmit={handleLogin} className="login-form">
@@ -297,20 +296,18 @@ export default function Home() {
         </header>
         {message ? <div className="alert">{message}</div> : null}
         {loading ? <div className="empty-state">Loading operational data...</div> : null}
-        {!loading && activeTab === 'dashboard' ? <Dashboard summary={summary} soldPendingGatePass={soldPendingGatePass} /> : null}
+        {!loading && activeTab === 'dashboard' ? <Dashboard summary={summary} /> : null}
         {!loading && activeTab === 'customers' ? <CustomersPanel customers={customers} ledgerEntries={ledgerEntries} expanded={expandedCustomers} onToggle={(id) => toggleSet(setExpandedCustomers, id)} onAdd={() => setModal({ type: 'customer' })} onEdit={(customer) => setModal({ type: 'customer', customer })} onStatus={(customer) => quickPatch(`/operations/customers/${customer.id}/`, { is_active: !customer.is_active })} /> : null}
         {!loading && activeTab === 'containers' ? <ContainersPanel containers={containers} items={items} expanded={expandedContainers} onToggle={(id) => toggleSet(setExpandedContainers, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} /> : null}
-        {!loading && activeTab === 'sales' ? <SalesPanel sales={sales} onAdd={() => setModal({ type: 'sale' })} onEdit={(sale) => setModal({ type: 'sale', sale })} /> : null}
-        {!loading && activeTab === 'gate-passes' ? <GatePassPanel gatePasses={gatePasses} onAdd={() => setModal({ type: 'gate-pass' })} onEdit={(gatePass) => setModal({ type: 'gate-pass', gatePass })} onPrint={printGatePass} onVerify={verifyGatePass} /> : null}
+        {!loading && activeTab === 'sales' ? <SalesPanel sales={sales} onAdd={() => setModal({ type: 'sale' })} onEdit={(sale) => setModal({ type: 'sale', sale })} onPrint={printSaleGatePass} /> : null}
         {!loading && activeTab === 'cheques' ? <ChequesPanel cheques={cheques} statuses={chequeStatuses} onAdd={() => setModal({ type: 'cheque' })} onEdit={(cheque) => setModal({ type: 'cheque', cheque })} onStatus={markChequeStatus} onAddStatus={() => setModal({ type: 'cheque-status' })} /> : null}
-        {!loading && activeTab === 'settings' ? <SettingsPanel options={dropdownOptions} onAdd={(group) => setModal({ type: 'dropdown-option', group })} /> : null}
+        {!loading && activeTab === 'settings' ? <SettingsPanel options={dropdownOptions} chequeStatuses={chequeStatuses} onAdd={(group) => setModal({ type: 'dropdown-option', group })} onAddChequeStatus={() => setModal({ type: 'cheque-status' })} /> : null}
       </section>
       <ModalShell modal={modal} onClose={() => setModal(null)}>
         {modal?.type === 'customer' ? <CustomerForm customer={modal.customer} onSave={save} /> : null}
         {modal?.type === 'container' ? <ContainerForm container={modal.container} onSave={save} /> : null}
         {modal?.type === 'item' ? <ItemForm item={modal.item} containerId={modal.containerId} containers={containers} options={dropdownOptions} onSave={save} /> : null}
         {modal?.type === 'sale' ? <SaleForm sale={modal.sale} customers={customers} availableItems={availableItems} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} onAddCustomer={() => setModal({ type: 'customer' })} /> : null}
-        {modal?.type === 'gate-pass' ? <GatePassForm gatePass={modal.gatePass} pending={soldPendingGatePass} onSave={save} /> : null}
         {modal?.type === 'cheque' ? <ChequeForm cheque={modal.cheque} customers={customers} statuses={chequeStatuses} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} /> : null}
         {modal?.type === 'cheque-status' ? <ChequeStatusForm onSave={save} /> : null}
         {modal?.type === 'dropdown-option' ? <DropdownOptionForm group={modal.group} onSave={save} /> : null}
@@ -319,8 +316,8 @@ export default function Home() {
   );
 }
 
-function Dashboard({ summary, soldPendingGatePass }: { summary: DashboardSummary | null; soldPendingGatePass: AuctionSaleLine[] }) {
-  return <div className="dashboard-grid"><Metric icon={<ContainerIcon size={22} />} label="Containers" value={summary?.containers ?? 0} /><Metric icon={<Boxes size={22} />} label="Inventory items" value={summary?.items.total ?? 0} /><Metric icon={<Gavel size={22} />} label="Auction sales" value={summary?.auction_sales ?? 0} /><Metric icon={<Banknote size={22} />} label="Receivable" value={money(summary?.customer_receivable ?? 0)} tone="cash" /><section className="panel span-2"><div className="section-head"><div><h2>Gate exposure</h2><p className="muted">Sold inventory must be controlled until a pass is printed and verified.</p></div></div><div className="metric-row"><Metric compact label="Sold, no pass" value={soldPendingGatePass.length} tone="warning" /><Metric compact label="Issued" value={summary?.gate_passes.issued ?? 0} /><Metric compact label="Verified" value={summary?.gate_passes.verified ?? 0} tone="success" /></div></section><section className="panel span-2"><h2>Inventory state</h2><div className="status-strip">{Object.entries(summary?.items.by_status ?? {}).map(([status, count]) => <div key={status}><span className={statusClass(status)}>{status}</span><strong>{count}</strong></div>)}</div></section></div>;
+function Dashboard({ summary }: { summary: DashboardSummary | null }) {
+  return <div className="dashboard-grid"><Metric icon={<ContainerIcon size={22} />} label="Containers" value={summary?.containers ?? 0} /><Metric icon={<Boxes size={22} />} label="Inventory items" value={summary?.items.total ?? 0} /><Metric icon={<Gavel size={22} />} label="Auction sales" value={summary?.auction_sales ?? 0} /><Metric icon={<Banknote size={22} />} label="Receivable" value={money(summary?.customer_receivable ?? 0)} tone="cash" /><section className="panel span-2"><div className="section-head"><div><h2>Gate pass print queue</h2><p className="muted">Gate passes are created from sales and controlled by print status.</p></div></div><div className="metric-row"><Metric compact label="Not printed" value={summary?.gate_passes.not_printed ?? 0} tone="warning" /><Metric compact label="Printed" value={summary?.gate_passes.printed ?? 0} tone="success" /><Metric compact label="Verified" value={summary?.gate_passes.verified ?? 0} /></div></section><section className="panel span-2"><h2>Inventory state</h2><div className="status-strip">{Object.entries(summary?.items.by_status ?? {}).map(([status, count]) => <div key={status}><span className={statusClass(status)}>{status}</span><strong>{count}</strong></div>)}</div></section></div>;
 }
 
 function Metric({ label, value, icon, tone = '', compact = false }: { label: string; value: string | number; icon?: ReactNode; tone?: string; compact?: boolean }) {
@@ -328,29 +325,25 @@ function Metric({ label, value, icon, tone = '', compact = false }: { label: str
 }
 
 function CustomersPanel({ customers, ledgerEntries, expanded, onToggle, onAdd, onEdit, onStatus }: { customers: Customer[]; ledgerEntries: CustomerLedgerEntry[]; expanded: Set<UUID>; onToggle: (id: UUID) => void; onAdd: () => void; onEdit: (customer: Customer) => void; onStatus: (customer: Customer) => void }) {
-  return <section className="panel"><div className="section-head"><div><h2>Customers and balance breakdown</h2><p className="muted">Balances are calculated from sales, cheque settlements, reversals, and adjustments.</p></div><button className="btn primary" onClick={onAdd}><Plus size={18} /> Customer</button></div><div className="record-stack">{customers.map((customer) => { const entries = ledgerEntries.filter((entry) => entry.customer === customer.id); return <article className="record-card" key={customer.id}><button className="record-main" onClick={() => onToggle(customer.id)}>{expanded.has(customer.id) ? <ChevronDown size={18} /> : <ChevronRight size={18} />}<div><strong>{customer.name}</strong><span>{customer.phone} · {customer.customer_type}</span></div><b>{money(customer.balance)}</b><span className={customer.is_active ? 'badge good' : 'badge bad'}>{customer.is_active ? 'Active' : 'Inactive'}</span></button><div className="record-actions"><button className="icon-btn" onClick={() => onEdit(customer)} aria-label={`Edit ${customer.name}`}><Pencil size={16} /></button><button className="btn small" onClick={() => onStatus(customer)}>{customer.is_active ? 'Mark inactive' : 'Mark active'}</button></div>{expanded.has(customer.id) ? <DataTable headers={['Date', 'Type', 'Description', 'Debit', 'Credit']} rows={entries.map((entry) => [entry.entry_date, entry.entry_type, entry.description, money(entry.debit), money(entry.credit)])} /> : null}</article>; })}</div></section>;
+  return <section className="panel"><div className="section-head"><div><h2>Customers and balance breakdown</h2><p className="muted">Balances are calculated from sales, cheque settlements, reversals, and adjustments.</p></div><button className="btn primary" onClick={onAdd}><Plus size={18} /> Customer</button></div><div className="record-stack">{customers.map((customer) => { const entries = ledgerEntries.filter((entry) => entry.customer === customer.id); const balance = Number(customer.balance); return <article className="record-card" key={customer.id}><button className="record-main" onClick={() => onToggle(customer.id)}>{expanded.has(customer.id) ? <ChevronDown size={18} /> : <ChevronRight size={18} />}<div><strong>{customer.name}</strong><span>{customer.phone} · {customer.customer_type}</span></div><b className={balance >= 0 ? 'money-good' : 'money-bad'}>{money(customer.balance)}</b><span className={customer.is_active ? 'badge good' : 'badge bad'}>{customer.is_active ? 'Active' : 'Inactive'}</span></button><div className="record-actions"><button className="icon-btn" onClick={() => onEdit(customer)} aria-label={`Edit ${customer.name}`}><Pencil size={16} /></button><button className="btn small" onClick={() => onStatus(customer)}>{customer.is_active ? 'Mark inactive' : 'Mark active'}</button></div>{expanded.has(customer.id) ? <DataTable headers={['Date', 'Type', 'Description', 'Debit', 'Credit', 'Ref']} rows={entries.map((entry) => [entry.entry_date, entry.entry_type, entry.description, <span className="money-good" key="debit">{money(entry.debit)}</span>, <span className="money-bad" key="credit">{money(entry.credit)}</span>, entry.sale_number || entry.cheque_number || '-'])} /> : null}</article>; })}</div></section>;
 }
 
 function ContainersPanel({ containers, items, expanded, onToggle, onAdd, onEdit, onAddItem, onEditItem, onDeleteItem }: { containers: Container[]; items: ContainerItem[]; expanded: Set<UUID>; onToggle: (id: UUID) => void; onAdd: () => void; onEdit: (container: Container) => void; onAddItem: (containerId: UUID) => void; onEditItem: (item: ContainerItem) => void; onDeleteItem: (item: ContainerItem) => void }) {
-  return <section className="panel"><div className="section-head"><div><h2>Containers and inventory</h2><p className="muted">Original container inventory changes only when a user intentionally adds, edits, or deletes items here.</p></div><button className="btn primary" onClick={onAdd}><Plus size={18} /> Container</button></div><div className="container-grid">{containers.map((container) => { const containerItems = items.filter((item) => item.container === container.id); return <article className="container-card" key={container.id}><div className="container-top"><button className="record-main compact-main" onClick={() => onToggle(container.id)}>{expanded.has(container.id) ? <ChevronDown size={18} /> : <ChevronRight size={18} />}<div><strong>{container.reference}</strong><span>{container.origin_country || 'Origin not set'} · {container.supplier_name || 'Supplier not set'}</span></div></button><span className={statusClass(container.status)}>{container.status}</span></div><div className="container-meta"><span>{container.arrival_date || 'No arrival date'}</span><span>{containerItems.length} items</span></div><div className="record-actions"><button className="btn small" onClick={() => onAddItem(container.id)}><Plus size={16} /> Add inventory</button><button className="icon-btn" onClick={() => onEdit(container)} aria-label={`Edit ${container.reference}`}><Pencil size={16} /></button></div>{expanded.has(container.id) ? <DataTable headers={['Lot', 'Part', 'Category', 'Qty', 'Condition', 'Status', 'Actions']} rows={containerItems.map((item) => [item.lot_number, <div key={item.id}><strong>{item.part_name}</strong><span className="cell-note">{item.part_number || 'No part number'}</span></div>, item.category || '-', `${item.quantity} ${item.unit}`, item.condition, <span key="status" className={statusClass(item.status)}>{item.status}</span>, <div className="table-actions" key="actions"><button className="icon-btn" onClick={() => onEditItem(item)} aria-label={`Edit ${item.part_name}`}><Pencil size={16} /></button><button className="icon-btn danger" onClick={() => onDeleteItem(item)} aria-label={`Delete ${item.part_name}`}><Trash2 size={16} /></button></div>])} /> : null}</article>; })}</div></section>;
+  const partsInventory = Object.values(items.reduce<Record<string, { key: string; part: string; partNumber: string; category: string; total: number; sold: number; available: number; unit: string }>>((acc, item) => { const key = `${item.part_name}|${item.part_number}|${item.category}|${item.unit}`; if (!acc[key]) acc[key] = { key, part: item.part_name, partNumber: item.part_number, category: item.category, total: 0, sold: 0, available: 0, unit: item.unit }; acc[key].total += item.quantity; acc[key].sold += item.sold_quantity; acc[key].available += item.available_quantity; return acc; }, {}));
+  return <div className="stacked-panels"><section className="panel"><div className="section-head"><div><h2>Parts inventory</h2><p className="muted">Accumulated stock across all containers, calculated from container quantities minus auctioned quantities.</p></div></div><DataTable headers={['Part', 'Part number', 'Category', 'Total', 'Sold', 'Available']} rows={partsInventory.map((part) => [part.part, part.partNumber || '-', part.category || '-', `${part.total} ${part.unit}`, `${part.sold} ${part.unit}`, <strong key={part.key}>{part.available} {part.unit}</strong>])} /></section><section className="panel"><div className="section-head"><div><h2>Container inventory</h2><p className="muted">Original container inventory changes only when a user intentionally adds, edits, or deletes items here.</p></div><button className="btn primary" onClick={onAdd}><Plus size={18} /> Container</button></div><div className="container-grid">{containers.map((container) => { const containerItems = items.filter((item) => item.container === container.id); return <article className="container-card" key={container.id}><div className="container-top"><button className="record-main compact-main" onClick={() => onToggle(container.id)}>{expanded.has(container.id) ? <ChevronDown size={18} /> : <ChevronRight size={18} />}<div><strong>{container.reference}</strong><span>{container.origin_country || 'Origin not set'} · {container.supplier_name || 'Supplier not set'}</span></div></button><span className={statusClass(container.status)}>{container.status}</span></div><div className="container-meta"><span>{container.arrival_date || 'No arrival date'}</span><span>{containerItems.length} items</span></div><div className="record-actions"><button className="btn small" onClick={() => onAddItem(container.id)}><Plus size={16} /> Add inventory</button><button className="icon-btn" onClick={() => onEdit(container)} aria-label={`Edit ${container.reference}`}><Pencil size={16} /></button></div>{expanded.has(container.id) ? <DataTable headers={['Lot', 'Part', 'Category', 'Qty', 'Sold', 'Available', 'Condition', 'Status', 'Actions']} rows={containerItems.map((item) => [item.lot_number, <div key={item.id}><strong>{item.part_name}</strong><span className="cell-note">{item.part_number || 'No part number'}</span></div>, item.category || '-', `${item.quantity} ${item.unit}`, `${item.sold_quantity} ${item.unit}`, `${item.available_quantity} ${item.unit}`, item.condition, <span key="status" className={statusClass(item.status)}>{item.status}</span>, <div className="table-actions" key="actions"><button className="icon-btn" onClick={() => onEditItem(item)} aria-label={`Edit ${item.part_name}`}><Pencil size={16} /></button><button className="icon-btn danger" onClick={() => onDeleteItem(item)} aria-label={`Delete ${item.part_name}`}><Trash2 size={16} /></button></div>])} /> : null}</article>; })}</div></section></div>;
 }
 
-function SalesPanel({ sales, onAdd, onEdit }: { sales: AuctionSale[]; onAdd: () => void; onEdit: (sale: AuctionSale) => void }) {
-  return <section className="panel"><div className="section-head"><div><h2>Auction sale ledger</h2><p className="muted">Cheque sales create the cheque record from the same sale dialog.</p></div><button className="btn primary" onClick={onAdd}><Gavel size={18} /> Record sale</button></div><DataTable headers={['Sale', 'Date', 'Customer', 'Payment', 'Total', 'Items', 'Actions']} rows={sales.map((sale) => [sale.sale_number, sale.sale_date, sale.customer_name || 'Cash sale', sale.payment_type, money(sale.total_amount), sale.lines.length, <button className="icon-btn" key="edit" onClick={() => onEdit(sale)} aria-label={`Edit ${sale.sale_number}`}><Pencil size={16} /></button>])} /></section>;
-}
-
-function GatePassPanel({ gatePasses, onAdd, onEdit, onPrint, onVerify }: { gatePasses: GatePass[]; onAdd: () => void; onEdit: (gatePass: GatePass) => void; onPrint: (gatePass: GatePass) => void; onVerify: (gatePass: GatePass) => void }) {
-  const ordered = [...gatePasses].sort((a, b) => new Date(b.issued_at).getTime() - new Date(a.issued_at).getTime());
-  return <section className="panel"><div className="section-head"><div><h2>Gate passes</h2><p className="muted">Print two copies, stamp them, then verify the pass at release.</p></div><button className="btn primary" onClick={onAdd}><ClipboardCheck size={18} /> Issue pass</button></div><DataTable headers={['Gate pass', 'Issued to', 'Vehicle', 'Release', 'Print', 'Items', 'Actions']} rows={ordered.map((pass) => [pass.gate_pass_number, pass.issued_to_name, pass.vehicle_number || '-', <span key="release" className={statusClass(pass.status)}>{pass.status}</span>, <span key="print" className={statusClass(pass.print_status)}>{pass.print_status.replace('_', ' ')}</span>, pass.lines.length, <div className="table-actions" key="actions"><button className="icon-btn" onClick={() => onEdit(pass)} aria-label={`Edit ${pass.gate_pass_number}`}><Pencil size={16} /></button><button className="icon-btn" onClick={() => onPrint(pass)} aria-label={`Print ${pass.gate_pass_number}`}><Printer size={16} /></button>{pass.status === 'issued' ? <button className="icon-btn success" onClick={() => onVerify(pass)} aria-label={`Verify ${pass.gate_pass_number}`}><ShieldCheck size={16} /></button> : null}</div>])} /></section>;
+function SalesPanel({ sales, onAdd, onEdit, onPrint }: { sales: AuctionSale[]; onAdd: () => void; onEdit: (sale: AuctionSale) => void; onPrint: (sale: AuctionSale) => void }) {
+  return <section className="panel"><div className="section-head"><div><h2>Auction sale ledger</h2><p className="muted">Each sale can contain multiple items, creates the gate pass automatically, and prints from this row.</p></div><button className="btn primary" onClick={onAdd}><Gavel size={18} /> Record sale</button></div><DataTable headers={['Sale', 'Date', 'Customer', 'Payment', 'Total', 'Items', 'Gate pass', 'Actions']} rows={sales.map((sale) => [sale.sale_number, sale.sale_date, sale.customer_name || 'Cash sale', sale.payment_type, money(sale.total_amount), sale.lines.reduce((total, line) => total + line.quantity, 0), sale.gate_pass ? <span key="print" className={statusClass(sale.gate_pass.print_status)}>{sale.gate_pass.print_status.replace('_', ' ')}</span> : <span key="missing" className="badge bad">missing</span>, <div className="table-actions" key="actions"><button className="icon-btn" onClick={() => onEdit(sale)} aria-label={`Edit ${sale.sale_number}`}><Pencil size={16} /></button><button className="icon-btn" onClick={() => onPrint(sale)} aria-label={`Print gate pass for ${sale.sale_number}`} disabled={!sale.gate_pass}><Printer size={16} /></button></div>])} /></section>;
 }
 
 function ChequesPanel({ cheques, statuses, onAdd, onEdit, onStatus, onAddStatus }: { cheques: Cheque[]; statuses: ChequeStatus[]; onAdd: () => void; onEdit: (cheque: Cheque) => void; onStatus: (cheque: Cheque, statusId: UUID) => void; onAddStatus: () => void }) {
   return <section className="panel"><div className="section-head"><div><h2>Cheque control</h2><p className="muted">Receivables reduce only when a cheque reaches a settlement status.</p></div><div className="head-actions"><button className="btn" onClick={onAddStatus}><Plus size={18} /> Status</button><button className="btn primary" onClick={onAdd}><Plus size={18} /> Cheque</button></div></div><DataTable headers={['Cheque', 'Customer', 'Name on cheque', 'Bank', 'Amount', 'Dates', 'Status', 'Actions']} rows={cheques.map((cheque) => [cheque.cheque_number, cheque.customer_name, cheque.name_on_cheque || '-', cheque.bank_name, money(cheque.amount), <div key="dates">Cheque: {cheque.cheque_date}<span className="cell-note">Expiry: {cheque.expiry_date}</span></div>, <select key="status" value={cheque.status} onChange={(event) => onStatus(cheque, event.target.value)}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select>, <button className="icon-btn" key="edit" onClick={() => onEdit(cheque)} aria-label={`Edit ${cheque.cheque_number}`}><Pencil size={16} /></button>])} /></section>;
 }
 
-function SettingsPanel({ options, onAdd }: { options: DropdownOption[]; onAdd: (group?: DropdownOption['group']) => void }) {
+function SettingsPanel({ options, chequeStatuses, onAdd, onAddChequeStatus }: { options: DropdownOption[]; chequeStatuses: ChequeStatus[]; onAdd: (group?: DropdownOption['group']) => void; onAddChequeStatus: () => void }) {
   const groups: DropdownOption['group'][] = ['bank', 'item_category', 'item_condition', 'item_unit'];
-  return <section className="panel"><div className="section-head"><div><h2>Dropdown settings</h2><p className="muted">Persisted values here appear in future entry dialogs for all users.</p></div><button className="btn primary" onClick={() => onAdd()}><Plus size={18} /> Dropdown value</button></div><div className="settings-grid">{groups.map((group) => <article className="option-card" key={group}><div className="section-head slim"><h3>{group.replace('_', ' ')}</h3><button className="icon-btn" onClick={() => onAdd(group)} aria-label={`Add ${group}`}><Plus size={16} /></button></div><div className="chips">{options.filter((option) => option.group === group && option.is_active).map((option) => <span className="chip" key={option.id}>{option.label}</span>)}</div></article>)}</div></section>;
+  return <section className="panel"><div className="section-head"><div><h2>Dropdown settings</h2><p className="muted">Persisted values here appear in future entry dialogs for all users.</p></div><button className="btn primary" onClick={() => onAdd()}><Plus size={18} /> Dropdown value</button></div><div className="settings-grid">{groups.map((group) => <article className="option-card" key={group}><div className="section-head slim"><h3>{group.replace('_', ' ')}</h3><button className="icon-btn" onClick={() => onAdd(group)} aria-label={`Add ${group}`}><Plus size={16} /></button></div><div className="chips">{options.filter((option) => option.group === group && option.is_active).map((option) => <span className="chip" key={option.id}>{option.label}</span>)}</div></article>)}<article className="option-card"><div className="section-head slim"><h3>cheque statuses</h3><button className="icon-btn" onClick={onAddChequeStatus} aria-label="Add cheque status"><Plus size={16} /></button></div><div className="chips">{chequeStatuses.filter((status) => status.is_active).map((status) => <span className="chip" key={status.id}>{status.name}<small>{status.balance_effect.replaceAll('_', ' ')}</small></span>)}</div></article></div></section>;
 }
 
 function CustomerForm({ customer, onSave }: { customer?: Customer; onSave: (path: string, payload: unknown, method?: 'post' | 'patch') => void }) {
@@ -368,14 +361,14 @@ function ItemForm({ item, containerId, containers, options, onSave }: { item?: C
 
 function SaleForm({ sale, customers, availableItems, banks, onSave, onAddCustomer }: { sale?: AuctionSale; customers: Customer[]; availableItems: ContainerItem[]; banks: string[]; onSave: (path: string, payload: unknown, method?: 'post' | 'patch') => void; onAddCustomer: () => void }) {
   const [paymentType, setPaymentType] = useState(sale?.payment_type || 'cash');
-  const firstLine = sale?.lines[0];
-  return <FormFrame title={sale ? 'Edit sale' : 'Record auction sale'} onSubmit={(form) => { if (sale) { onSave(`/operations/auction-sales/${sale.id}/`, { sale_date: form.sale_date, customer: form.customer || null, notes: form.notes || '', lines: sale.lines.map((line) => ({ id: line.id, sold_price: form[`sold_price_${line.id}`], notes: form[`notes_${line.id}`] || '' })) }, 'patch'); return; } const payload: Record<string, unknown> = { sale_date: form.sale_date, customer: form.customer || null, payment_type: paymentType, notes: form.notes || '', lines: [{ item: form.item, sold_price: form.sold_price, notes: form.line_notes || '' }] }; if (paymentType === 'cheque') { payload.cheque = { cheque_number: form.cheque_number, name_on_cheque: form.name_on_cheque, bank_name: form.bank_name, branch_name: form.branch_name || '', account_title: form.account_title || '', amount: form.sold_price, cheque_date: form.cheque_date, expiry_date: form.expiry_date, received_date: form.received_date || null, notes: form.cheque_notes || '' }; } onSave('/operations/auction-sales/', payload); }}><div className="inline-between"><span className="form-note">Customer is mandatory unless payment type is cash.</span><button type="button" className="btn small" onClick={onAddCustomer}><Plus size={16} /> New customer</button></div><Field name="sale_date" label="Sale date" type="date" defaultValue={sale?.sale_date} required />{!sale ? <Select name="payment_type" label="Payment type" value={paymentType} onChange={setPaymentType} options={[['cash', 'Cash'], ['credit', 'Credit'], ['cheque', 'Cheque'], ['mixed', 'Mixed']]} required /> : null}<Select name="customer" label="Customer" defaultValue={sale?.customer || ''} options={customers.map((customer) => [customer.id, customer.name])} required={paymentType !== 'cash' || Boolean(sale?.customer)} />{!sale ? <Select name="item" label="Available item" options={availableItems.map((item) => [item.id, `${item.container_reference} / ${item.lot_number} - ${item.part_name}`])} required /> : <div className="locked-row">Item: {firstLine?.item.container_reference} / {firstLine?.item.lot_number} - {firstLine?.item.part_name}</div>}{!sale ? <Field name="sold_price" label="Sold price" type="number" required /> : sale.lines.map((line) => <div className="line-edit" key={line.id}><Field name={`sold_price_${line.id}`} label={`Sold price: ${line.item.lot_number}`} type="number" defaultValue={line.sold_price} required /><Field name={`notes_${line.id}`} label="Line notes" defaultValue={line.notes} /></div>)}{paymentType === 'cheque' && !sale ? <ChequeFields banks={banks} /> : null}<Field name="notes" label="Sale notes" defaultValue={sale?.notes} textarea /></FormFrame>;
-}
-
-function GatePassForm({ gatePass, pending, onSave }: { gatePass?: GatePass; pending: AuctionSaleLine[]; onSave: (path: string, payload: unknown, method?: 'post' | 'patch') => void }) {
-  const currentLines = gatePass?.lines.map((line) => line.sale_line) ?? [];
-  const options = [...currentLines, ...pending.filter((line) => !currentLines.some((current) => current.id === line.id))];
-  return <FormFrame title={gatePass ? 'Edit gate pass' : 'Issue gate pass'} onSubmit={(form, raw) => onSave(gatePass ? `/operations/gate-passes/${gatePass.id}/` : '/operations/gate-passes/', { issued_to_name: form.issued_to_name, issued_to_phone: form.issued_to_phone || '', vehicle_number: form.vehicle_number || '', driver_name: form.driver_name || '', notes: form.notes || '', sale_line_ids: raw.getAll('sale_line_ids') }, gatePass ? 'patch' : 'post')}><Select name="sale_line_ids" label="Sold items for gate pass" defaultValue={currentLines.map((line) => line.id)} options={options.map((line) => [line.id, `${line.item.container_reference} / ${line.item.lot_number} - ${line.item.part_name} (${money(line.sold_price)})`])} required multiple /><Field name="issued_to_name" label="Issued to" defaultValue={gatePass?.issued_to_name} required /><Field name="issued_to_phone" label="Phone" defaultValue={gatePass?.issued_to_phone} /><Field name="vehicle_number" label="Vehicle number" defaultValue={gatePass?.vehicle_number} /><Field name="driver_name" label="Driver name" defaultValue={gatePass?.driver_name} /><Field name="notes" label="Notes" defaultValue={gatePass?.notes} textarea /></FormFrame>;
+  const saleItems = sale?.lines.map((line) => line.item) ?? [];
+  const selectableItems = [...saleItems, ...availableItems].filter((item, index, all) => all.findIndex((candidate) => candidate.id === item.id) === index);
+  const [lineRows, setLineRows] = useState<SaleLineDraft[]>(() => sale?.lines.map((line) => ({ key: line.id, id: line.id, item: line.item.id, quantity: line.quantity, sold_price: line.sold_price, notes: line.notes })) ?? [{ key: crypto.randomUUID(), item: '', quantity: 1, sold_price: '', notes: '' }]);
+  const saleTotal = lineRows.reduce((total, line) => total + (Number(line.quantity || 0) * Number(line.sold_price || 0)), 0);
+  const updateLine = (key: string, updates: Partial<(typeof lineRows)[number]>) => setLineRows((rows) => rows.map((row) => row.key === key ? { ...row, ...updates } : row));
+  const addLine = () => setLineRows((rows) => [...rows, { key: crypto.randomUUID(), item: '', quantity: 1, sold_price: '', notes: '' }]);
+  const removeLine = (key: string) => setLineRows((rows) => rows.length === 1 ? rows : rows.filter((row) => row.key !== key));
+  return <FormFrame title={sale ? 'Edit sale' : 'Record auction sale'} onSubmit={(form) => { const lines = lineRows.map((line) => ({ ...(line.id ? { id: line.id } : {}), item: line.item, quantity: Number(line.quantity), sold_price: line.sold_price, notes: line.notes || '' })); const payload: Record<string, unknown> = { sale_date: form.sale_date, customer: form.customer || null, notes: form.notes || '', lines, gate_pass: { issued_to_name: form.issued_to_name || '', issued_to_phone: form.issued_to_phone || '', vehicle_number: form.vehicle_number || '', driver_name: form.driver_name || '', notes: form.gate_pass_notes || '' } }; if (!sale) payload.payment_type = paymentType; if (paymentType === 'cheque' && !sale) { payload.cheque = { cheque_number: form.cheque_number, name_on_cheque: form.name_on_cheque, bank_name: form.bank_name, branch_name: form.branch_name || '', account_title: form.account_title || '', cheque_date: form.cheque_date, expiry_date: form.expiry_date, received_date: form.received_date || null, notes: form.cheque_notes || '' }; } onSave(sale ? `/operations/auction-sales/${sale.id}/` : '/operations/auction-sales/', payload, sale ? 'patch' : 'post'); }}><div className="inline-between"><span className="form-note">Customer is mandatory unless payment type is cash. Cash sales do not enter customer balances.</span><button type="button" className="btn small" onClick={onAddCustomer}><Plus size={16} /> New customer</button></div><Field name="sale_date" label="Sale date" type="date" defaultValue={sale?.sale_date} required />{!sale ? <Select name="payment_type" label="Payment type" value={paymentType} onChange={setPaymentType} options={[['cash', 'Cash'], ['credit', 'Credit'], ['cheque', 'Cheque'], ['mixed', 'Mixed']]} required /> : <div className="locked-row">Payment type: {sale.payment_type}</div>}<Select name="customer" label="Customer" defaultValue={sale?.customer || ''} options={customers.map((customer) => [customer.id, customer.name])} required={paymentType !== 'cash' || Boolean(sale?.customer)} /><div className="subform full-span"><div className="inline-between"><h3>Sale items</h3><button type="button" className="btn small" onClick={addLine}><Plus size={16} /> Item</button></div>{lineRows.map((line, index) => { const selected = selectableItems.find((item) => item.id === line.item); return <div className="sale-line-grid" key={line.key}><div className="field"><label htmlFor={`item-${line.key}`}>Item {index + 1}</label><select id={`item-${line.key}`} required value={line.item} onChange={(event) => updateLine(line.key, { item: event.currentTarget.value })}><option value="">Select...</option>{selectableItems.map((item) => <option key={item.id} value={item.id}>{item.container_reference} / {item.lot_number} - {item.part_name} ({item.available_quantity} available)</option>)}</select></div><div className="field"><label htmlFor={`qty-${line.key}`}>Qty</label><input id={`qty-${line.key}`} type="number" min="1" max={selected ? Math.max(selected.available_quantity, line.quantity) : undefined} required value={line.quantity} onChange={(event) => updateLine(line.key, { quantity: Number(event.currentTarget.value) })} /></div><div className="field"><label htmlFor={`price-${line.key}`}>Unit price</label><input id={`price-${line.key}`} type="number" min="1" required value={line.sold_price} onChange={(event) => updateLine(line.key, { sold_price: event.currentTarget.value })} /></div><div className="field"><label htmlFor={`notes-${line.key}`}>Notes</label><input id={`notes-${line.key}`} value={line.notes} onChange={(event) => updateLine(line.key, { notes: event.currentTarget.value })} /></div><button type="button" className="icon-btn danger" onClick={() => removeLine(line.key)} aria-label="Remove sale line"><Trash2 size={16} /></button></div>; })}<div className="total-bar"><span>Sale total</span><strong>{money(saleTotal)}</strong></div></div>{paymentType === 'cheque' && !sale ? <ChequeFields banks={banks} /> : null}<div className="subform full-span"><h3>Gate pass details</h3><Field name="issued_to_name" label="Issued to" defaultValue={sale?.gate_pass?.issued_to_name || sale?.customer_name || ''} /><Field name="issued_to_phone" label="Phone" /><Field name="vehicle_number" label="Vehicle number" defaultValue={sale?.gate_pass?.vehicle_number || ''} /><Field name="driver_name" label="Driver name" defaultValue={sale?.gate_pass?.driver_name || ''} /><Field name="gate_pass_notes" label="Gate pass notes" textarea /></div><Field name="notes" label="Sale notes" defaultValue={sale?.notes} textarea /></FormFrame>;
 }
 
 function ChequeForm({ cheque, customers, statuses, banks, onSave }: { cheque?: Cheque; customers: Customer[]; statuses: ChequeStatus[]; banks: string[]; onSave: (path: string, payload: unknown, method?: 'post' | 'patch') => void }) {
@@ -416,7 +409,7 @@ function Select({ name, label, options, required = false, multiple = false, defa
 }
 
 function OptionText({ name, label, options, required = false, defaultValue = '' }: { name: string; label: string; options: string[]; required?: boolean; defaultValue?: string | null }) {
-  return <div className="field"><label htmlFor={name}>{label}</label><input id={name} name={name} required={required} defaultValue={defaultValue ?? ''} list={`${name}-options`} /><datalist id={`${name}-options`}>{options.map((option) => <option key={option} value={option} />)}</datalist><span className="help-text">Add new persistent values from Dropdown Settings.</span></div>;
+  return <div className="field"><label htmlFor={name}>{label}</label><input id={name} name={name} required={required} defaultValue={defaultValue ?? ''} list={`${name}-options`} placeholder="+ Add new or select existing" /><datalist id={`${name}-options`}>{options.map((option) => <option key={option} value={option} />)}</datalist><span className="help-text">Type a new value here and it will be saved for future entries.</span></div>;
 }
 
 function DataTable({ headers, rows }: { headers: string[]; rows: React.ReactNode[][] }) {
@@ -425,6 +418,6 @@ function DataTable({ headers, rows }: { headers: string[]; rows: React.ReactNode
 }
 
 function gatePassPrintHtml(gatePass: GatePass) {
-  const copies = [1, 2].map((copy) => `<section class="copy"><header><div><h1>ZSP Gate Pass</h1><p>Digi7 controlled inventory release</p></div><strong>${gatePass.gate_pass_number}</strong></header><div class="grid"><p><b>Issued to</b><span>${gatePass.issued_to_name}</span></p><p><b>Phone</b><span>${gatePass.issued_to_phone || '-'}</span></p><p><b>Vehicle</b><span>${gatePass.vehicle_number || '-'}</span></p><p><b>Driver</b><span>${gatePass.driver_name || '-'}</span></p><p><b>Copy</b><span>${copy} of 2</span></p><p><b>Issued at</b><span>${new Date(gatePass.issued_at).toLocaleString()}</span></p></div><table><thead><tr><th>Lot</th><th>Part</th><th>Container</th><th>Sold price</th></tr></thead><tbody>${gatePass.lines.map((line) => `<tr><td>${line.sale_line.item.lot_number}</td><td>${line.sale_line.item.part_name}</td><td>${line.sale_line.item.container_reference}</td><td>${money(line.sale_line.sold_price)}</td></tr>`).join('')}</tbody></table><footer><div><span></span><b>Issued by</b></div><div class="stamp"><span></span><b>Authorisation stamp</b></div><div><span></span><b>Gatekeeper</b></div></footer></section>`).join('');
+  const copies = [1, 2].map((copy) => `<section class="copy"><header><div><h1>ZSP Gate Pass</h1><p>Digi7 controlled inventory release</p></div><strong>${gatePass.gate_pass_number}</strong></header><div class="grid"><p><b>Issued to</b><span>${gatePass.issued_to_name}</span></p><p><b>Phone</b><span>${gatePass.issued_to_phone || '-'}</span></p><p><b>Vehicle</b><span>${gatePass.vehicle_number || '-'}</span></p><p><b>Driver</b><span>${gatePass.driver_name || '-'}</span></p><p><b>Copy</b><span>${copy} of 2</span></p><p><b>Issued at</b><span>${new Date(gatePass.issued_at).toLocaleString()}</span></p></div><table><thead><tr><th>Lot</th><th>Part</th><th>Container</th><th>Qty</th><th>Unit price</th><th>Total</th></tr></thead><tbody>${gatePass.lines.map((line) => `<tr><td>${line.sale_line.item.lot_number}</td><td>${line.sale_line.item.part_name}</td><td>${line.sale_line.item.container_reference}</td><td>${line.sale_line.quantity} ${line.sale_line.item.unit}</td><td>${money(line.sale_line.sold_price)}</td><td>${money(line.sale_line.line_total)}</td></tr>`).join('')}</tbody></table><footer><div><span></span><b>Issued by</b></div><div class="stamp"><span></span><b>Authorisation stamp</b></div><div><span></span><b>Gatekeeper</b></div></footer></section>`).join('');
   return `<!doctype html><html><head><title>${gatePass.gate_pass_number}</title><style>body{font-family:Arial,sans-serif;margin:0;color:#111827;background:#fff}.copy{page-break-after:always;padding:28px;min-height:92vh;border:2px solid #111827;margin:18px}header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111827;padding-bottom:16px}h1{margin:0;font-size:28px}p{margin:0}header p{color:#4b5563;margin-top:4px}header strong{font-size:20px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:22px 0}.grid p{border:1px solid #d1d5db;padding:10px}.grid b{display:block;font-size:11px;text-transform:uppercase;color:#4b5563}.grid span{display:block;margin-top:5px;font-size:15px}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{border:1px solid #111827;padding:10px;text-align:left}th{background:#f3f4f6}footer{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-top:60px}footer span{display:block;height:72px;border:1px dashed #6b7280;margin-bottom:8px}.stamp span{height:96px}footer b{font-size:12px;text-transform:uppercase;color:#374151}@media print{.copy{margin:0;border:2px solid #111827}.copy:last-child{page-break-after:auto}}</style></head><body>${copies}</body></html>`;
 }

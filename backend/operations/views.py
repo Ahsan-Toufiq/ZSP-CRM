@@ -1,4 +1,4 @@
-from django.db.models import Count
+from django.db.models import Count, Sum
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
@@ -62,9 +62,48 @@ class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
             raise ValidationError({'item': 'Only available inventory can be deleted.'})
         instance.delete()
 
+    @action(detail=False, methods=['get'], url_path='parts-inventory')
+    def parts_inventory(self, request):
+        rows = (
+            ContainerItem.objects
+            .values('part_name', 'part_number', 'category', 'unit')
+            .annotate(total_quantity=Sum('quantity'))
+            .order_by('part_name', 'part_number')
+        )
+        sale_totals = (
+            AuctionSaleLine.objects
+            .filter(sale__is_cancelled=False)
+            .values('item__part_name', 'item__part_number', 'item__category', 'item__unit')
+            .annotate(sold_quantity=Sum('quantity'))
+        )
+        sold_by_key = {
+            (
+                row['item__part_name'],
+                row['item__part_number'],
+                row['item__category'],
+                row['item__unit'],
+            ): row['sold_quantity'] or 0
+            for row in sale_totals
+        }
+        data = []
+        for row in rows:
+            key = (row['part_name'], row['part_number'], row['category'], row['unit'])
+            sold_quantity = sold_by_key.get(key, 0)
+            total_quantity = row['total_quantity'] or 0
+            data.append({
+                'part_name': row['part_name'],
+                'part_number': row['part_number'],
+                'category': row['category'],
+                'unit': row['unit'],
+                'total_quantity': total_quantity,
+                'sold_quantity': sold_quantity,
+                'available_quantity': max(total_quantity - sold_quantity, 0),
+            })
+        return Response(data)
+
 
 class AuctionSaleViewSet(viewsets.ModelViewSet):
-    queryset = AuctionSale.objects.select_related('customer').prefetch_related('lines__item__container')
+    queryset = AuctionSale.objects.select_related('customer').prefetch_related('lines__item__container', 'gate_pass')
     permission_classes = [OperationsPermission]
     filterset_fields = ['payment_type', 'is_cancelled', 'customer']
     search_fields = ['sale_number', 'customer__name', 'notes']

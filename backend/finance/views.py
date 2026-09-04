@@ -92,6 +92,8 @@ def dashboard_summary(request):
         'gate_passes': {
             'issued': GatePass.objects.filter(status=GatePass.Status.ISSUED).count(),
             'verified': GatePass.objects.filter(status=GatePass.Status.VERIFIED).count(),
+            'not_printed': GatePass.objects.filter(print_status=GatePass.PrintStatus.NOT_PRINTED).count(),
+            'printed': GatePass.objects.filter(print_status=GatePass.PrintStatus.PRINTED).count(),
         },
         'cheques_by_status': {row['status__name']: row['count'] for row in cheque_counts},
         'customer_receivable': receivable,

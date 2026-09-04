@@ -75,6 +75,28 @@ class ChequeStatusHistory(UserStampedModel):
         ordering = ['-created_at']
 
 
+class ChequeSettlementAllocation(UserStampedModel):
+    cheque = models.ForeignKey(Cheque, on_delete=models.PROTECT, related_name='settlement_allocations')
+    sale = models.ForeignKey(AuctionSale, on_delete=models.PROTECT, related_name='cheque_allocations')
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    is_reversed = models.BooleanField(default=False)
+    reversed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['sale__sale_date', 'created_at']
+        constraints = [
+            models.UniqueConstraint(fields=['cheque', 'sale'], name='unique_cheque_allocation_per_sale'),
+            models.CheckConstraint(condition=models.Q(amount__gt=0), name='cheque_allocation_amount_positive'),
+        ]
+        indexes = [
+            models.Index(fields=['cheque', 'is_reversed']),
+            models.Index(fields=['sale', 'is_reversed']),
+        ]
+
+    def __str__(self) -> str:
+        return f'{self.cheque.cheque_number} -> {self.sale.sale_number}: {self.amount}'
+
+
 class CustomerLedgerEntry(UserStampedModel):
     class EntryType(models.TextChoices):
         SALE = 'sale', 'Sale'

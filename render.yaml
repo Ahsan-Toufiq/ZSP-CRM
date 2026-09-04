@@ -1,0 +1,51 @@
+databases:
+  - name: digi7-zsp-postgres
+    databaseName: digi7_zsp
+    user: digi7_zsp
+    region: singapore
+    plan: basic-256mb
+
+services:
+  - type: web
+    name: digi7-zsp-backend
+    runtime: docker
+    region: singapore
+    plan: 0.5c-512mb
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    healthCheckPath: /healthz/
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: digi7-zsp-postgres
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: false
+      - key: ALLOWED_HOSTS
+        value: zsp-api.digi7.org,digi7-zsp-backend.onrender.com
+      - key: CORS_ALLOWED_ORIGINS
+        value: https://zsp.digi7.org
+      - key: CSRF_TRUSTED_ORIGINS
+        value: https://zsp.digi7.org,https://zsp-api.digi7.org
+      - key: SESSION_COOKIE_SECURE
+        value: true
+      - key: CSRF_COOKIE_SECURE
+        value: true
+      - key: TIME_ZONE
+        value: Asia/Karachi
+      - key: LOGIN_THROTTLE_RATE
+        value: 8/min
+
+  - type: web
+    name: digi7-zsp-frontend
+    runtime: node
+    region: singapore
+    plan: 0.5c-512mb
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start -- --hostname 0.0.0.0 --port $PORT
+    envVars:
+      - key: NEXT_PUBLIC_API_BASE_URL
+        value: https://zsp-api.digi7.org/api
