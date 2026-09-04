@@ -2,6 +2,9 @@
 set -eu
 
 if [ "$#" -gt 0 ]; then
+    if [ "$#" -eq 1 ]; then
+        exec /bin/sh -c "$1"
+    fi
     exec "$@"
 fi
 
