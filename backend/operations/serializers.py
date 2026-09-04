@@ -94,7 +94,7 @@ class ContainerItemSerializer(serializers.ModelSerializer):
 
 
 class AuctionSaleLineReadSerializer(serializers.ModelSerializer):
-    item = ContainerItemSerializer(read_only=True)
+    item = serializers.SerializerMethodField()
     line_total = serializers.SerializerMethodField()
 
     class Meta:
@@ -103,6 +103,33 @@ class AuctionSaleLineReadSerializer(serializers.ModelSerializer):
 
     def get_line_total(self, obj):
         return obj.quantity * obj.sold_price
+
+    def get_item(self, obj):
+        item = obj.item
+        sold_quantity = getattr(obj, 'item_sold_quantity_total', None)
+        if sold_quantity is None:
+            sold_quantity = getattr(item, 'sold_quantity_total', None)
+        if sold_quantity is None:
+            sold_quantity = sold_quantity_for_item(item)
+        return {
+            'id': str(item.id),
+            'container': str(item.container_id),
+            'container_reference': item.container.reference,
+            'lot_number': item.lot_number,
+            'part_name': item.part_name,
+            'part_number': item.part_number,
+            'description': item.description,
+            'category': item.category,
+            'condition': item.condition,
+            'quantity': item.quantity,
+            'unit': item.unit,
+            'reserve_price': item.reserve_price,
+            'status': item.status,
+            'sold_quantity': sold_quantity,
+            'available_quantity': max(int(item.quantity) - int(sold_quantity or 0), 0),
+            'created_at': item.created_at,
+            'updated_at': item.updated_at,
+        }
 
 
 class AuctionSaleLineWriteSerializer(serializers.Serializer):

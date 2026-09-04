@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from django.db.models import Count, DecimalField, IntegerField, Q, Sum, Value
+from django.db.models import Count, DecimalField, IntegerField, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -23,6 +23,23 @@ from operations.serializers import (
     GatePassUpdateSerializer,
 )
 from operations.services import mark_gate_pass_printed, verify_gate_pass
+
+
+def sale_line_queryset():
+    return (
+        AuctionSaleLine.objects
+        .select_related('item', 'item__container', 'sale', 'sale__customer')
+        .annotate(
+            item_sold_quantity_total=Coalesce(
+                Sum(
+                    'item__sale_lines__quantity',
+                    filter=Q(item__sale_lines__sale__is_cancelled=False),
+                ),
+                Value(0),
+                output_field=IntegerField(),
+            ),
+        )
+    )
 
 
 class UserStampedMixin:
@@ -153,11 +170,18 @@ class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
 
 
 class AuctionSaleViewSet(viewsets.ModelViewSet):
-    queryset = AuctionSale.objects.select_related('customer').prefetch_related('lines__item__container', 'gate_pass')
     permission_classes = [OperationsPermission]
     filterset_fields = ['payment_type', 'is_cancelled', 'customer']
     search_fields = ['sale_number', 'customer__name', 'notes']
     ordering_fields = ['sale_date', 'created_at', 'total_amount']
+
+    def get_queryset(self):
+        return (
+            AuctionSale.objects
+            .select_related('customer')
+            .prefetch_related(Prefetch('lines', queryset=sale_line_queryset()), 'gate_pass')
+            .order_by('-sale_date', '-created_at')
+        )
 
     def get_serializer_class(self):
         if self.action == 'create':
@@ -171,6 +195,16 @@ class AuctionSaleViewSet(viewsets.ModelViewSet):
         queryset = (
             AuctionSaleLine.objects
             .select_related('sale', 'sale__customer', 'item', 'item__container')
+            .annotate(
+                item_sold_quantity_total=Coalesce(
+                    Sum(
+                        'item__sale_lines__quantity',
+                        filter=Q(item__sale_lines__sale__is_cancelled=False),
+                    ),
+                    Value(0),
+                    output_field=IntegerField(),
+                ),
+            )
             .filter(gate_pass_line__isnull=True, sale__is_cancelled=False, item__status=ContainerItem.Status.SOLD)
             .order_by('-sale__sale_date')
         )
@@ -182,11 +216,18 @@ class AuctionSaleViewSet(viewsets.ModelViewSet):
 
 
 class GatePassViewSet(viewsets.ModelViewSet):
-    queryset = GatePass.objects.prefetch_related('lines__sale_line__item__container', 'lines__sale_line__sale')
     permission_classes = [OperationsPermission]
     filterset_fields = ['status']
     search_fields = ['gate_pass_number', 'issued_to_name', 'issued_to_phone', 'vehicle_number', 'driver_name']
     ordering_fields = ['issued_at', 'created_at']
+
+    def get_queryset(self):
+        return (
+            GatePass.objects
+            .select_related('sale', 'verified_by')
+            .prefetch_related(Prefetch('lines__sale_line', queryset=sale_line_queryset()))
+            .order_by('-issued_at')
+        )
 
     def get_serializer_class(self):
         if self.action == 'create':
