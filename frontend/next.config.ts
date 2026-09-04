@@ -1,6 +1,9 @@
 import type { NextConfig } from 'next';
 
-const backendOrigin = process.env.BACKEND_API_ORIGIN ?? 'http://127.0.0.1:8000';
+const backendOrigin = process.env.BACKEND_API_ORIGIN
+  ?? (process.env.NODE_ENV === 'production'
+    ? 'https://digi7-zsp-backend.onrender.com'
+    : 'http://127.0.0.1:8000');
 
 const nextConfig: NextConfig = {
   experimental: {},
