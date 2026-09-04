@@ -36,6 +36,18 @@ def test_customer_without_transactions_can_be_deleted(api_client):
 
 
 @pytest.mark.django_db
+def test_customer_type_defaults_when_omitted(api_client):
+    response = api_client.post(
+        '/api/operations/customers/',
+        {'name': 'Default Type Customer', 'phone': '+923001231233'},
+        format='json',
+    )
+
+    assert response.status_code == 201
+    assert response.data['customer_type'] == Customer.CustomerType.INDIVIDUAL
+
+
+@pytest.mark.django_db
 def test_customer_with_transactions_cannot_be_deleted(api_client, admin_user):
     customer = Customer.objects.create(name='Keep Me', phone='+923001231232')
     item = PartInventory.objects.create(part_name='Door', quantity=1, unit='piece')

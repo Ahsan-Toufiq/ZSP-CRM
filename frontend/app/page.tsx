@@ -10,12 +10,15 @@ import {
   Gavel,
   LayoutDashboard,
   LogIn,
+  LogOut,
   Pencil,
   Plus,
   Printer,
   RefreshCw,
   Search,
+  ShieldCheck,
   Trash2,
+  UserPlus,
   Users,
   WalletCards,
   X,
@@ -35,13 +38,14 @@ import type {
   DashboardSummary,
   DropdownOption,
   GatePass,
+  ManagedUser,
   Paginated,
   PartInventory,
   User,
   UUID,
 } from '@/lib/types';
 
-type Tab = 'dashboard' | 'customers' | 'containers' | 'sales' | 'cheques' | 'settings';
+type Tab = 'dashboard' | 'customers' | 'containers' | 'sales' | 'cheques' | 'settings' | 'users';
 type ModalState =
   | { type: 'customer'; customer?: Customer }
   | { type: 'container'; container?: Container }
@@ -51,6 +55,7 @@ type ModalState =
   | { type: 'cheque'; cheque?: Cheque }
   | { type: 'cheque-status' }
   | { type: 'dropdown-option'; group?: DropdownOption['group'] }
+  | { type: 'user'; user?: ManagedUser }
   | null;
 
 type SaleLineDraft = {
@@ -71,7 +76,11 @@ const tabs: { id: Tab; label: string; icon: ReactNode }[] = [
   { id: 'sales', label: 'Auction Sales', icon: <Gavel size={18} /> },
   { id: 'cheques', label: 'Cheques', icon: <WalletCards size={18} /> },
   { id: 'settings', label: 'Dropdown Settings', icon: <Boxes size={18} /> },
+  { id: 'users', label: 'Users', icon: <ShieldCheck size={18} /> },
 ];
+
+const roleOptions = ['Admin', 'Operations', 'Finance', 'Gatekeeper'];
+const tabOptions: { id: Tab; label: string }[] = tabs.map((tab) => ({ id: tab.id, label: tab.label }));
 
 const emptyPage = <T,>(): Paginated<T> => ({ count: 0, next: null, previous: null, results: [] });
 const valueOf = <T,>(result: PromiseSettledResult<T>, fallback: T): T => result.status === 'fulfilled' ? result.value : fallback;
@@ -118,7 +127,9 @@ export default function Home() {
   const [expandedCustomers, setExpandedCustomers] = useState<Set<UUID>>(new Set());
   const [message, setMessage] = useState('');
   const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deletingPath, setDeletingPath] = useState('');
   const loadToken = useRef(0);
 
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
@@ -131,8 +142,29 @@ export default function Home() {
   const [chequeStatuses, setChequeStatuses] = useState<ChequeStatus[]>([]);
   const [ledgerEntries, setLedgerEntries] = useState<CustomerLedgerEntry[]>([]);
   const [dropdownOptions, setDropdownOptions] = useState<DropdownOption[]>([]);
+  const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([]);
 
   const availableItems = useMemo(() => parts.filter((part) => part.available_quantity > 0), [parts]);
+  const visibleTabs = useMemo(() => {
+    const allowed = new Set(currentUser?.access_tabs ?? []);
+    return tabs.filter((tab) => allowed.has(tab.id));
+  }, [currentUser]);
+  const itemsByContainer = useMemo(() => {
+    const grouped = new Map<UUID, ContainerItem[]>();
+    for (const item of items) {
+      const existing = grouped.get(item.container);
+      existing ? existing.push(item) : grouped.set(item.container, [item]);
+    }
+    return grouped;
+  }, [items]);
+  const ledgerByCustomer = useMemo(() => {
+    const grouped = new Map<UUID, CustomerLedgerEntry[]>();
+    for (const entry of ledgerEntries) {
+      const existing = grouped.get(entry.customer);
+      existing ? existing.push(entry) : grouped.set(entry.customer, [entry]);
+    }
+    return grouped;
+  }, [ledgerEntries]);
   const currentTitle = tabs.find((tab) => tab.id === activeTab)?.label ?? 'Dashboard';
 
   async function loadTabData(tab: Tab) {
@@ -212,6 +244,11 @@ export default function Home() {
           setDropdownOptions(valueOf(optionData, emptyPage<DropdownOption>()).results);
         }
       }
+
+      if (tab === 'users') {
+        const userData = await list<ManagedUser>('/auth/users/?page_size=200');
+        if (loadToken.current === token) setManagedUsers(userData.results);
+      }
     } catch (error) {
       if (loadToken.current === token) {
         setMessage(error instanceof Error ? error.message : 'Unable to load data.');
@@ -246,10 +283,14 @@ export default function Home() {
   useEffect(() => {
     if (!isAuthenticated) return;
     const handle = window.setTimeout(() => {
-      void loadTabData(activeTab);
+      if (visibleTabs.length > 0 && !visibleTabs.some((tab) => tab.id === activeTab)) {
+        setActiveTab(visibleTabs[0].id);
+        return;
+      }
+      if (visibleTabs.length > 0) void loadTabData(activeTab);
     }, 0);
     return () => window.clearTimeout(handle);
-  }, [activeTab, isAuthenticated]);
+  }, [activeTab, isAuthenticated, visibleTabs]);
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -268,6 +309,22 @@ export default function Home() {
       setAuthError(error instanceof Error ? error.message : 'Login failed.');
     } finally {
       setAuthSubmitting(false);
+    }
+  }
+
+  async function handleLogout() {
+    if (signingOut) return;
+    setSigningOut(true);
+    setMessage('');
+    try {
+      await post('/auth/logout/', {});
+      setAuthenticated(false);
+      setCurrentUser(null);
+      setActiveTab('dashboard');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to sign out.');
+    } finally {
+      setSigningOut(false);
     }
   }
 
@@ -311,11 +368,14 @@ export default function Home() {
   async function remove(path: string) {
     if (!window.confirm('Delete this record? This cannot be undone.')) return;
     setMessage('');
+    setDeletingPath(path);
     try {
       await destroy(path);
       await loadTabData(activeTab);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to delete record.');
+    } finally {
+      setDeletingPath('');
     }
   }
 
@@ -404,8 +464,9 @@ export default function Home() {
           <div><strong>ZSP Control</strong><span>{currentUser?.full_name ?? 'Operations'}</span></div>
         </div>
         <nav className="nav">
-          {tabs.map((tab) => <button key={tab.id} className={activeTab === tab.id ? 'active' : ''} onClick={() => setActiveTab(tab.id)}>{tab.icon}<span>{tab.label}</span></button>)}
+          {visibleTabs.map((tab) => <button key={tab.id} className={activeTab === tab.id ? 'active' : ''} onClick={() => setActiveTab(tab.id)}>{tab.icon}<span>{tab.label}</span></button>)}
         </nav>
+        <button className="btn sidebar-signout" onClick={handleLogout} disabled={signingOut}>{signingOut ? <ProcessingLoader /> : <LogOut size={18} />} {signingOut ? 'Signing out...' : 'Sign out'}</button>
       </aside>
       <section className="main">
         <header className="topbar">
@@ -413,13 +474,15 @@ export default function Home() {
           <button className="btn" onClick={() => loadTabData(activeTab)} disabled={loading}>{loading ? <ProcessingLoader /> : <RefreshCw size={18} />} Refresh</button>
         </header>
         {message ? <div className="alert">{message}</div> : null}
+        {visibleTabs.length === 0 ? <div className="empty-state"><ShieldCheck size={22} /> No product tabs are enabled for this account.</div> : null}
         {loading ? <LoadingState label={`Loading ${currentTitle.toLowerCase()}...`} /> : null}
         {!loading && activeTab === 'dashboard' ? <Dashboard summary={summary} /> : null}
-        {!loading && activeTab === 'customers' ? <CustomersPanel customers={customers} ledgerEntries={ledgerEntries} expanded={expandedCustomers} onToggle={(id) => toggleSet(setExpandedCustomers, id)} onAdd={() => setModal({ type: 'customer' })} onEdit={(customer) => setModal({ type: 'customer', customer })} onDelete={(customer) => remove(`/operations/customers/${customer.id}/`)} onStatus={(customer) => quickPatch(`/operations/customers/${customer.id}/`, { is_active: !customer.is_active })} /> : null}
-        {!loading && activeTab === 'containers' ? <ContainersPanel containers={containers} items={items} parts={parts} expanded={expandedContainers} onToggle={(id) => toggleSet(setExpandedContainers, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} /> : null}
+        {!loading && activeTab === 'customers' ? <CustomersPanel customers={customers} ledgerByCustomer={ledgerByCustomer} expanded={expandedCustomers} onToggle={(id) => toggleSet(setExpandedCustomers, id)} onAdd={() => setModal({ type: 'customer' })} onEdit={(customer) => setModal({ type: 'customer', customer })} onDelete={(customer) => remove(`/operations/customers/${customer.id}/`)} onStatus={(customer) => quickPatch(`/operations/customers/${customer.id}/`, { is_active: !customer.is_active })} /> : null}
+        {!loading && activeTab === 'containers' ? <ContainersPanel containers={containers} itemsByContainer={itemsByContainer} parts={parts} expanded={expandedContainers} onToggle={(id) => toggleSet(setExpandedContainers, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} /> : null}
         {!loading && activeTab === 'sales' ? <SalesPanel sales={sales} onAdd={() => { setNewSaleCustomer(null); setModal({ type: 'sale' }); }} onEdit={(sale) => { setNewSaleCustomer(null); setModal({ type: 'sale', sale }); }} onPrint={printSaleGatePass} /> : null}
         {!loading && activeTab === 'cheques' ? <ChequesPanel cheques={cheques} statuses={chequeStatuses} onAdd={() => setModal({ type: 'cheque' })} onEdit={(cheque) => setModal({ type: 'cheque', cheque })} onStatus={markChequeStatus} onAddStatus={() => setModal({ type: 'cheque-status' })} /> : null}
         {!loading && activeTab === 'settings' ? <SettingsPanel options={dropdownOptions} chequeStatuses={chequeStatuses} onAdd={(group) => setModal({ type: 'dropdown-option', group })} onAddChequeStatus={() => setModal({ type: 'cheque-status' })} /> : null}
+        {!loading && activeTab === 'users' ? <UsersPanel users={managedUsers} currentUserId={currentUser?.id} deletingPath={deletingPath} onAdd={() => setModal({ type: 'user' })} onEdit={(user) => setModal({ type: 'user', user })} onDelete={(user) => remove(`/auth/users/${user.id}/`)} /> : null}
       </section>
       <ModalShell modal={modal} onClose={() => setModal(null)}>
         {modal?.type === 'customer' ? <CustomerForm customer={modal.customer} onSave={save} isSaving={saving} /> : null}
@@ -430,6 +493,7 @@ export default function Home() {
         {modal?.type === 'cheque' ? <ChequeForm cheque={modal.cheque} customers={customers} statuses={chequeStatuses} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'cheque-status' ? <ChequeStatusForm onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'dropdown-option' ? <DropdownOptionForm group={modal.group} onSave={save} isSaving={saving} /> : null}
+        {modal?.type === 'user' ? <UserForm user={modal.user} onSave={save} isSaving={saving} /> : null}
       </ModalShell>
       {saleCustomerOverlayOpen ? <ModalShell modal={{ type: 'customer' }} onClose={() => setSaleCustomerOverlayOpen(false)}><CustomerForm onSave={saveSaleCustomer} isSaving={saving} /></ModalShell> : null}
     </main>
@@ -444,12 +508,16 @@ function Metric({ label, value, icon, tone = '', compact = false }: { label: str
   return <div className={`metric-card ${tone} ${compact ? 'compact' : ''}`}>{icon ? <span className="metric-icon">{icon}</span> : null}<div><span>{label}</span><strong>{value}</strong></div></div>;
 }
 
-function CustomersPanel({ customers, ledgerEntries, expanded, onToggle, onAdd, onEdit, onDelete, onStatus }: { customers: Customer[]; ledgerEntries: CustomerLedgerEntry[]; expanded: Set<UUID>; onToggle: (id: UUID) => void; onAdd: () => void; onEdit: (customer: Customer) => void; onDelete: (customer: Customer) => void; onStatus: (customer: Customer) => void }) {
-  return <section className="panel"><div className="section-head"><div><h2>Customers and balance breakdown</h2><p className="muted">Balances are calculated from sales, cheque settlements, reversals, and adjustments.</p></div><button className="btn primary" onClick={onAdd}><Plus size={18} /> Customer</button></div><div className="record-stack">{customers.map((customer) => { const entries = ledgerEntries.filter((entry) => entry.customer === customer.id); const balance = Number(customer.balance); return <article className="record-card" key={customer.id}><button className="record-main" onClick={() => onToggle(customer.id)}>{expanded.has(customer.id) ? <ChevronDown size={18} /> : <ChevronRight size={18} />}<div><strong>{customer.name}</strong><span>{customer.phone} · {customer.customer_type}</span></div><b className={balance > 0 ? 'money-bad' : 'money-good'}>{money(customer.balance)}</b><span className={customer.is_active ? 'badge good' : 'badge bad'}>{customer.is_active ? 'Active' : 'Inactive'}</span></button><div className="record-actions"><button className="icon-btn" onClick={() => onEdit(customer)} aria-label={`Edit ${customer.name}`}><Pencil size={16} /></button><button className="icon-btn danger" onClick={() => onDelete(customer)} aria-label={`Delete ${customer.name}`} disabled={!customer.can_delete} title={customer.can_delete ? `Delete ${customer.name}` : 'Customers with transactions cannot be deleted.'}><Trash2 size={16} /></button><button className="btn small" onClick={() => onStatus(customer)}>{customer.is_active ? 'Mark inactive' : 'Mark active'}</button></div>{expanded.has(customer.id) ? <DataTable headers={['Date', 'Type', 'Description', 'Debit', 'Credit', 'Ref']} rows={entries.map((entry) => [entry.entry_date, entry.entry_type, entry.description, <span className="money-bad" key="debit">{money(entry.debit)}</span>, <span className="money-good" key="credit">{money(entry.credit)}</span>, entry.sale_number || entry.cheque_number || '-'])} /> : null}</article>; })}</div></section>;
+function UsersPanel({ users, currentUserId, deletingPath, onAdd, onEdit, onDelete }: { users: ManagedUser[]; currentUserId?: number; deletingPath: string; onAdd: () => void; onEdit: (user: ManagedUser) => void; onDelete: (user: ManagedUser) => void }) {
+  return <section className="panel"><div className="section-head"><div><h2>User access control</h2><p className="muted">Create staff accounts and control which product tabs each user can open.</p></div><button className="btn primary" onClick={onAdd}><UserPlus size={18} /> User</button></div><DataTable headers={['User', 'Roles', 'Allowed tabs', 'Status', 'Actions']} rows={users.map((user) => [<div key={user.id}><strong>{user.full_name}</strong><span className="cell-note">{user.username} · {user.email || 'No email'}</span></div>, <div className="chips" key="roles">{user.roles.length ? user.roles.map((role) => <span className="chip" key={role}>{role}</span>) : <span className="muted">No roles</span>}</div>, <div className="chips" key="tabs">{user.access_tabs.length ? user.access_tabs.map((tab) => <span className="chip" key={tab}>{tab}</span>) : <span className="muted">No tab access</span>}</div>, <span key="status" className={user.is_active ? 'badge good' : 'badge bad'}>{user.is_active ? 'Active' : 'Inactive'}</span>, <div className="table-actions" key="actions"><button className="icon-btn" onClick={() => onEdit(user)} aria-label={`Edit ${user.username}`}><Pencil size={16} /></button><button className="icon-btn danger" onClick={() => onDelete(user)} aria-label={`Delete ${user.username}`} disabled={user.id === currentUserId || deletingPath === `/auth/users/${user.id}/`} title={user.id === currentUserId ? 'You cannot delete your own account.' : `Delete ${user.username}`}>{deletingPath === `/auth/users/${user.id}/` ? <ProcessingLoader /> : <Trash2 size={16} />}</button></div>])} /></section>;
 }
 
-function ContainersPanel({ containers, items, parts, expanded, onToggle, onAdd, onEdit, onAddItem, onEditItem, onDeleteItem, onAddPart, onEditPart, onDeletePart }: { containers: Container[]; items: ContainerItem[]; parts: PartInventory[]; expanded: Set<UUID>; onToggle: (id: UUID) => void; onAdd: () => void; onEdit: (container: Container) => void; onAddItem: (containerId: UUID) => void; onEditItem: (item: ContainerItem) => void; onDeleteItem: (item: ContainerItem) => void; onAddPart: () => void; onEditPart: (part: PartInventory) => void; onDeletePart: (part: PartInventory) => void }) {
-  return <div className="stacked-panels"><section className="panel"><div className="section-head"><div><h2>Parts inventory</h2><p className="muted">Sellable stock. Container edits add or subtract here, and manual edits handle opened or split parts.</p></div><button className="btn primary" onClick={onAddPart}><Plus size={18} /> Part</button></div><DataTable headers={['Part', 'Part number', 'Category', 'Condition', 'Stock', 'Sold', 'Available', 'Actions']} rows={parts.map((part) => [<div key={part.id}><strong>{part.part_name}</strong><span className="cell-note">{part.description || 'No description'}</span></div>, part.part_number || '-', part.category || '-', part.condition || '-', `${part.quantity} ${part.unit}`, `${part.sold_quantity} ${part.unit}`, <strong key="available">{part.available_quantity} {part.unit}</strong>, <div className="table-actions" key="actions"><button className="icon-btn" onClick={() => onEditPart(part)} aria-label={`Edit ${part.part_name}`}><Pencil size={16} /></button><button className="icon-btn danger" onClick={() => onDeletePart(part)} aria-label={`Delete ${part.part_name}`} disabled={part.sold_quantity > 0} title={part.sold_quantity > 0 ? 'Parts with sold quantity cannot be deleted.' : `Delete ${part.part_name}`}><Trash2 size={16} /></button></div>])} /></section><section className="panel"><div className="section-head"><div><h2>Container inventory</h2><p className="muted">Original received manifest. Changes here intentionally apply a delta to parts inventory.</p></div><button className="btn primary" onClick={onAdd}><Plus size={18} /> Container</button></div><div className="container-grid">{containers.map((container) => { const containerItems = items.filter((item) => item.container === container.id); return <article className="container-card" key={container.id}><div className="container-top"><button className="record-main compact-main" onClick={() => onToggle(container.id)}>{expanded.has(container.id) ? <ChevronDown size={18} /> : <ChevronRight size={18} />}<div><strong>{container.reference}</strong><span>{container.origin_country || 'Origin not set'} · {container.supplier_name || 'Supplier not set'}</span></div></button><span className={statusClass(container.status)}>{container.status}</span></div><div className="container-meta"><span>{container.arrival_date || 'No arrival date'}</span><span>{containerItems.length} manifest items</span></div><div className="record-actions"><button className="btn small" onClick={() => onAddItem(container.id)}><Plus size={16} /> Add manifest item</button><button className="icon-btn" onClick={() => onEdit(container)} aria-label={`Edit ${container.reference}`}><Pencil size={16} /></button></div>{expanded.has(container.id) ? <DataTable headers={['Lot', 'Part', 'Part number', 'Category', 'Condition', 'Qty', 'Actions']} rows={containerItems.map((item) => [item.lot_number || '-', item.part_name, item.part_number || '-', item.category || '-', item.condition || '-', `${item.quantity} ${item.unit}`, <div className="table-actions" key="actions"><button className="icon-btn" onClick={() => onEditItem(item)} aria-label={`Edit ${item.part_name}`}><Pencil size={16} /></button><button className="icon-btn danger" onClick={() => onDeleteItem(item)} aria-label={`Delete ${item.part_name}`}><Trash2 size={16} /></button></div>])} /> : null}</article>; })}</div></section></div>;
+function CustomersPanel({ customers, ledgerByCustomer, expanded, onToggle, onAdd, onEdit, onDelete, onStatus }: { customers: Customer[]; ledgerByCustomer: Map<UUID, CustomerLedgerEntry[]>; expanded: Set<UUID>; onToggle: (id: UUID) => void; onAdd: () => void; onEdit: (customer: Customer) => void; onDelete: (customer: Customer) => void; onStatus: (customer: Customer) => void }) {
+  return <section className="panel"><div className="section-head"><div><h2>Customers and balance breakdown</h2><p className="muted">Balances are calculated from sales, cheque settlements, reversals, and adjustments.</p></div><button className="btn primary" onClick={onAdd}><Plus size={18} /> Customer</button></div><div className="record-stack">{customers.map((customer) => { const entries = ledgerByCustomer.get(customer.id) ?? []; const balance = Number(customer.balance); return <article className="record-card" key={customer.id}><button className="record-main" onClick={() => onToggle(customer.id)}>{expanded.has(customer.id) ? <ChevronDown size={18} /> : <ChevronRight size={18} />}<div><strong>{customer.name}</strong><span>{customer.phone} · {customer.customer_type}</span></div><b className={balance > 0 ? 'money-bad' : 'money-good'}>{money(customer.balance)}</b><span className={customer.is_active ? 'badge good' : 'badge bad'}>{customer.is_active ? 'Active' : 'Inactive'}</span></button><div className="record-actions"><button className="icon-btn" onClick={() => onEdit(customer)} aria-label={`Edit ${customer.name}`}><Pencil size={16} /></button><button className="icon-btn danger" onClick={() => onDelete(customer)} aria-label={`Delete ${customer.name}`} disabled={!customer.can_delete} title={customer.can_delete ? `Delete ${customer.name}` : 'Customers with transactions cannot be deleted.'}><Trash2 size={16} /></button><button className="btn small" onClick={() => onStatus(customer)}>{customer.is_active ? 'Mark inactive' : 'Mark active'}</button></div>{expanded.has(customer.id) ? <DataTable headers={['Date', 'Type', 'Description', 'Debit', 'Credit', 'Ref']} rows={entries.map((entry) => [entry.entry_date, entry.entry_type, entry.description, <span className="money-bad" key="debit">{money(entry.debit)}</span>, <span className="money-good" key="credit">{money(entry.credit)}</span>, entry.sale_number || entry.cheque_number || '-'])} /> : null}</article>; })}</div></section>;
+}
+
+function ContainersPanel({ containers, itemsByContainer, parts, expanded, onToggle, onAdd, onEdit, onAddItem, onEditItem, onDeleteItem, onAddPart, onEditPart, onDeletePart }: { containers: Container[]; itemsByContainer: Map<UUID, ContainerItem[]>; parts: PartInventory[]; expanded: Set<UUID>; onToggle: (id: UUID) => void; onAdd: () => void; onEdit: (container: Container) => void; onAddItem: (containerId: UUID) => void; onEditItem: (item: ContainerItem) => void; onDeleteItem: (item: ContainerItem) => void; onAddPart: () => void; onEditPart: (part: PartInventory) => void; onDeletePart: (part: PartInventory) => void }) {
+  return <div className="stacked-panels"><section className="panel"><div className="section-head"><div><h2>Parts inventory</h2><p className="muted">Sellable stock. Container edits add or subtract here, and manual edits handle opened or split parts.</p></div><button className="btn primary" onClick={onAddPart}><Plus size={18} /> Part</button></div><DataTable headers={['Part', 'Part number', 'Category', 'Condition', 'Lifetime stock', 'Available', 'Actions']} rows={parts.map((part) => [<div key={part.id}><strong>{part.part_name}</strong><span className="cell-note">{part.description || 'No description'}</span></div>, part.part_number || '-', part.category || '-', part.condition || '-', `${part.quantity} ${part.unit}`, <strong key="available">{part.available_quantity} {part.unit}</strong>, <div className="table-actions" key="actions"><button className="icon-btn" onClick={() => onEditPart(part)} aria-label={`Edit ${part.part_name}`}><Pencil size={16} /></button><button className="icon-btn danger" onClick={() => onDeletePart(part)} aria-label={`Delete ${part.part_name}`} disabled={part.sold_quantity > 0} title={part.sold_quantity > 0 ? 'Parts with sale history cannot be deleted.' : `Delete ${part.part_name}`}><Trash2 size={16} /></button></div>])} /></section><section className="panel"><div className="section-head"><div><h2>Container inventory</h2><p className="muted">Original received manifest. Changes here intentionally apply a delta to parts inventory.</p></div><button className="btn primary" onClick={onAdd}><Plus size={18} /> Container</button></div><div className="container-grid">{containers.map((container) => { const containerItems = itemsByContainer.get(container.id) ?? []; return <article className="container-card" key={container.id}><div className="container-top"><button className="record-main compact-main" onClick={() => onToggle(container.id)}>{expanded.has(container.id) ? <ChevronDown size={18} /> : <ChevronRight size={18} />}<div><strong>{container.reference}</strong><span>{container.origin_country || 'Origin not set'} · {container.supplier_name || 'Supplier not set'}</span></div></button><span className={statusClass(container.status)}>{container.status}</span></div><div className="container-meta"><span>{container.arrival_date || 'No arrival date'}</span><span>{containerItems.length} manifest items</span></div><div className="record-actions"><button className="btn small" onClick={() => onAddItem(container.id)}><Plus size={16} /> Add manifest item</button><button className="icon-btn" onClick={() => onEdit(container)} aria-label={`Edit ${container.reference}`}><Pencil size={16} /></button></div>{expanded.has(container.id) ? <DataTable headers={['Part', 'Part number', 'Category', 'Condition', 'Qty', 'Actions']} rows={containerItems.map((item) => [item.part_name, item.part_number || '-', item.category || '-', item.condition || '-', `${item.quantity} ${item.unit}`, <div className="table-actions" key="actions"><button className="icon-btn" onClick={() => onEditItem(item)} aria-label={`Edit ${item.part_name}`}><Pencil size={16} /></button><button className="icon-btn danger" onClick={() => onDeleteItem(item)} aria-label={`Delete ${item.part_name}`}><Trash2 size={16} /></button></div>])} /> : null}</article>; })}</div></section></div>;
 }
 
 function SalesPanel({ sales, onAdd, onEdit, onPrint }: { sales: AuctionSale[]; onAdd: () => void; onEdit: (sale: AuctionSale) => void; onPrint: (sale: AuctionSale) => void }) {
@@ -467,7 +535,7 @@ function SettingsPanel({ options, chequeStatuses, onAdd, onAddChequeStatus }: { 
 
 function CustomerForm({ customer, onSave, isSaving }: { customer?: Customer; onSave: SaveHandler; isSaving: boolean }) {
   const [phone, setPhone] = useState(customer?.phone || '+92');
-  return <FormFrame title={customer ? 'Edit customer' : 'Add customer'} isSaving={isSaving} onSubmit={(form) => onSave(customer ? `/operations/customers/${customer.id}/` : '/operations/customers/', { ...form, phone, is_active: form.is_active === 'true' }, customer ? 'patch' : 'post')}><Field name="name" label="Customer name" defaultValue={customer?.name} required /><PhoneField value={phone} onChange={(value) => setPhone(value || '')} /><Select name="customer_type" label="Customer type" defaultValue={customer?.customer_type} options={[['individual', 'Individual'], ['business', 'Business']]} required /><Field name="email" label="Email" type="email" defaultValue={customer?.email} /><Field name="cnic_or_tax_id" label="CNIC / tax ID" defaultValue={customer?.cnic_or_tax_id} /><Select name="is_active" label="Status" defaultValue={String(customer?.is_active ?? true)} options={[['true', 'Active'], ['false', 'Inactive']]} required /><Field name="address" label="Address" defaultValue={customer?.address} textarea /></FormFrame>;
+  return <FormFrame title={customer ? 'Edit customer' : 'Add customer'} isSaving={isSaving} onSubmit={(form) => onSave(customer ? `/operations/customers/${customer.id}/` : '/operations/customers/', { ...form, phone, customer_type: form.customer_type || 'individual', is_active: form.is_active === 'true' }, customer ? 'patch' : 'post')}><Field name="name" label="Customer name" defaultValue={customer?.name} required /><PhoneField value={phone} onChange={(value) => setPhone(value || '')} /><Select name="customer_type" label="Customer type" defaultValue={customer?.customer_type || 'individual'} options={[['individual', 'Individual'], ['business', 'Business']]} /><Field name="email" label="Email" type="email" defaultValue={customer?.email} /><Field name="cnic_or_tax_id" label="CNIC / tax ID" defaultValue={customer?.cnic_or_tax_id} /><Select name="is_active" label="Status" defaultValue={String(customer?.is_active ?? true)} options={[['true', 'Active'], ['false', 'Inactive']]} required /><Field name="address" label="Address" defaultValue={customer?.address} textarea /></FormFrame>;
 }
 
 function ContainerForm({ container, onSave, isSaving }: { container?: Container; onSave: SaveHandler; isSaving: boolean }) {
@@ -475,7 +543,7 @@ function ContainerForm({ container, onSave, isSaving }: { container?: Container;
 }
 
 function ItemForm({ item, containerId, containers, options, onSave, isSaving }: { item?: ContainerItem; containerId?: UUID; containers: Container[]; options: DropdownOption[]; onSave: SaveHandler; isSaving: boolean }) {
-  return <FormFrame title={item ? 'Edit container manifest item' : 'Add container manifest item'} isSaving={isSaving} onSubmit={(form) => onSave(item ? `/operations/items/${item.id}/` : '/operations/items/', { ...form, quantity: Number(form.quantity || 1), reserve_price: form.reserve_price || null }, item ? 'patch' : 'post')}><Select name="container" label="Container" defaultValue={item?.container || containerId} options={containers.map((container) => [container.id, container.reference])} required /><Field name="lot_number" label="Lot number" defaultValue={item?.lot_number} /><OptionText name="part_name" label="Part name" defaultValue={item?.part_name} options={optionLabels(options, 'part_name')} required /><Field name="part_number" label="Part number" defaultValue={item?.part_number} /><OptionText name="category" label="Category" defaultValue={item?.category} options={optionLabels(options, 'item_category')} /><OptionText name="condition" label="Condition" defaultValue={item?.condition} options={optionLabels(options, 'item_condition')} /><Field name="quantity" label="Quantity" type="number" defaultValue={String(item?.quantity ?? 1)} required /><OptionText name="unit" label="Unit" defaultValue={item?.unit || 'piece'} options={optionLabels(options, 'item_unit')} required /><Field name="reserve_price" label="Reserve price" type="number" defaultValue={item?.reserve_price || ''} /><Field name="description" label="Description" defaultValue={item?.description} textarea /></FormFrame>;
+  return <FormFrame title={item ? 'Edit container manifest item' : 'Add container manifest item'} isSaving={isSaving} onSubmit={(form) => onSave(item ? `/operations/items/${item.id}/` : '/operations/items/', { ...form, lot_number: '', quantity: Number(form.quantity || 1), reserve_price: form.reserve_price || null }, item ? 'patch' : 'post')}><Select name="container" label="Container" defaultValue={item?.container || containerId} options={containers.map((container) => [container.id, container.reference])} required /><OptionText name="part_name" label="Part name" defaultValue={item?.part_name} options={optionLabels(options, 'part_name')} required /><Field name="part_number" label="Part number" defaultValue={item?.part_number} /><OptionText name="category" label="Category" defaultValue={item?.category} options={optionLabels(options, 'item_category')} /><OptionText name="condition" label="Condition" defaultValue={item?.condition} options={optionLabels(options, 'item_condition')} /><Field name="quantity" label="Quantity" type="number" defaultValue={String(item?.quantity ?? 1)} required /><OptionText name="unit" label="Unit" defaultValue={item?.unit || 'piece'} options={optionLabels(options, 'item_unit')} required /><Field name="reserve_price" label="Reserve price" type="number" defaultValue={item?.reserve_price || ''} /><Field name="description" label="Description" defaultValue={item?.description} textarea /></FormFrame>;
 }
 
 function PartForm({ part, options, onSave, isSaving }: { part?: PartInventory; options: DropdownOption[]; onSave: SaveHandler; isSaving: boolean }) {
@@ -538,6 +606,12 @@ function DropdownOptionForm({ group, onSave, isSaving }: { group?: DropdownOptio
   return <FormFrame title="Add dropdown value" isSaving={isSaving} onSubmit={(form) => onSave('/catalog/dropdown-options/', { ...form, sort_order: Number(form.sort_order || 100) })}><Select name="group" label="Dropdown" defaultValue={group} options={[['bank', 'Bank'], ['part_name', 'Part name'], ['item_category', 'Item category'], ['item_condition', 'Item condition'], ['item_unit', 'Item unit']]} required /><Field name="label" label="Value" required /><Field name="sort_order" label="Sort order" type="number" defaultValue="100" /></FormFrame>;
 }
 
+function UserForm({ user, onSave, isSaving }: { user?: ManagedUser; onSave: SaveHandler; isSaving: boolean }) {
+  const defaultRoles = user?.roles ?? ['Operations'];
+  const defaultTabs = user?.access_tabs ?? ['dashboard', 'customers', 'containers', 'sales'];
+  return <FormFrame title={user ? 'Edit user account' : 'Create user account'} isSaving={isSaving} onSubmit={(form, raw) => { const payload: Record<string, unknown> = { username: form.username, first_name: form.first_name || '', last_name: form.last_name || '', email: form.email || '', is_active: form.is_active === 'true', is_staff: form.is_staff === 'true', roles: raw.getAll('roles'), access_tabs: raw.getAll('access_tabs') }; if (form.password) payload.password = form.password; onSave(user ? `/auth/users/${user.id}/` : '/auth/users/', payload, user ? 'patch' : 'post'); }}><Field name="username" label="Username" defaultValue={user?.username} required /><Field name="first_name" label="First name" defaultValue={user?.first_name} required /><Field name="last_name" label="Last name" defaultValue={user?.last_name} /><Field name="email" label="Email" type="email" defaultValue={user?.email} /><Field name="password" label={user ? 'New password' : 'Password'} type="password" required={!user} /><Select name="is_active" label="Status" defaultValue={String(user?.is_active ?? true)} options={[['true', 'Active'], ['false', 'Inactive']]} required /><Select name="is_staff" label="Django admin access" defaultValue={String(user?.is_staff ?? false)} options={[['false', 'No'], ['true', 'Yes']]} required /><CheckboxGroup name="roles" label="Roles" options={roleOptions.map((role) => [role, role])} defaults={defaultRoles} /><CheckboxGroup name="access_tabs" label="Allowed tabs" options={tabOptions.map((tab) => [tab.id, tab.label])} defaults={defaultTabs} /></FormFrame>;
+}
+
 function ChequeFields({ banks }: { banks: string[] }) {
   return <div className="subform"><h3>Cheque details</h3><Field name="cheque_number" label="Cheque number" required /><Field name="name_on_cheque" label="Name on cheque" required /><OptionText name="bank_name" label="Bank" options={banks} required /><Field name="branch_name" label="Branch" /><Field name="account_title" label="Account title" /><Field name="cheque_date" label="Cheque date" type="date" required /><Field name="expiry_date" label="Expiry date" type="date" required /><Field name="received_date" label="Received date" type="date" /><Field name="cheque_notes" label="Cheque notes" textarea /></div>;
 }
@@ -572,6 +646,11 @@ function Select({ name, label, options, required = false, multiple = false, defa
     ? { defaultValue: defaultValue ?? (multiple ? [] : '') }
     : { value, onChange: onChange ? (event: ChangeEvent<HTMLSelectElement>) => onChange(event.currentTarget.value) : undefined };
   return <div className="field"><label htmlFor={name}>{label}</label><select id={name} name={name} required={required} multiple={multiple} {...selectProps}>{multiple ? null : <option value="">Select...</option>}{options.map(([optionValue, text]) => <option key={optionValue} value={optionValue}>{text}</option>)}</select></div>;
+}
+
+function CheckboxGroup({ name, label, options, defaults }: { name: string; label: string; options: [string, string][]; defaults: string[] }) {
+  const selected = new Set(defaults);
+  return <fieldset className="check-group"><legend>{label}</legend>{options.map(([value, text]) => <label key={value}><input type="checkbox" name={name} value={value} defaultChecked={selected.has(value)} /> <span>{text}</span></label>)}</fieldset>;
 }
 
 function OptionText({ name, label, options, required = false, defaultValue = '' }: { name: string; label: string; options: string[]; required?: boolean; defaultValue?: string | null }) {

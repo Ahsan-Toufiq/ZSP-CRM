@@ -10,6 +10,13 @@ export interface User {
   is_superuser: boolean;
   full_name: string;
   roles: string[];
+  access_tabs: string[];
+}
+
+export interface ManagedUser extends User {
+  is_active: boolean;
+  date_joined: string;
+  last_login: string | null;
 }
 
 export interface Customer {

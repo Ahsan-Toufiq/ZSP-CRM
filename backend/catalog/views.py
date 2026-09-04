@@ -1,7 +1,7 @@
 from rest_framework import viewsets
 from rest_framework.permissions import BasePermission
 
-from accounts.permissions import has_role, Roles
+from accounts.permissions import has_role, has_tab_access, Roles
 from catalog.models import DropdownOption
 from catalog.serializers import DropdownOptionSerializer
 
@@ -10,7 +10,7 @@ class DropdownOptionPermission(BasePermission):
     def has_permission(self, request, view):
         if request.method in {'GET', 'HEAD', 'OPTIONS'}:
             return request.user and request.user.is_authenticated
-        return has_role(request.user, Roles.ADMIN, Roles.OPERATIONS, Roles.FINANCE)
+        return has_tab_access(request.user, 'settings') and has_role(request.user, Roles.ADMIN, Roles.OPERATIONS, Roles.FINANCE)
 
 
 class DropdownOptionViewSet(viewsets.ModelViewSet):

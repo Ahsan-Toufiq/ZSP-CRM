@@ -12,20 +12,21 @@ New-build replacement for the legacy ZSP spare-parts CRM. This app is designed a
 
 ## Business Scope
 
-ZSP receives overseas containers containing spare parts. Each container has a manifest/list of individual parts. Those parts are auctioned off individually, and sold items must not leave the premises until a gate pass is issued and verified.
+ZSP receives overseas containers containing spare parts. Each container has a manifest/list of received parts. Sellable stock is managed in Parts Inventory, auction sales consume from that stock, and every sale generates a printable gate pass for release control.
 
 The system currently supports:
 
 - Customer directory with real customer balance calculation.
 - Container registry.
-- Container item inventory with unique lot numbers per container.
+- Container manifest inventory that preserves what each container originally arrived with.
+- Parts Inventory with lifetime stock and current available stock.
 - Auction sale recording.
 - Quantity-based sale lines against container inventory.
-- Parts inventory aggregation across all containers.
+- Manual Parts Inventory adjustments for split/opened parts without rewriting the original container manifest.
 - Cash sales without mandatory customer.
 - Credit, cheque, and mixed sales requiring a customer.
 - One auction sale can contain multiple items and quantities.
-- Gate pass creation from the auction-sale workflow.
+- Gate-pass creation from the auction-sale workflow.
 - Gate-pass editing when the sale is edited.
 - Gate-pass print tracking with a two-copy print layout.
 - Cheque register.
@@ -34,9 +35,10 @@ The system currently supports:
 - Configurable cheque status balance effects.
 - Cheque entry from the auction sale dialog when payment type is cheque.
 - Separately entered cleared cheques allocate to the oldest open balances first.
-- Persisted dropdown values for banks, item categories, item conditions, and units.
+- Persisted dropdown values for banks, part names, item categories, item conditions, and units.
 - Ledger-based customer receivables.
 - API-level role permissions.
+- Admin user-management with per-user tab access.
 
 ## Local Setup
 
@@ -128,6 +130,9 @@ Backend service tests cover:
 - Cheque settlement ledger credit.
 - Split cheque settlement allocation to oldest open sales.
 - Bounced cheque reversal.
+- Customer deletion guard.
+- Admin user creation with tab access.
+- Tab-level API denial when a user is not allowed to access a module.
 
 Frontend checks cover:
 

@@ -92,6 +92,8 @@ h3 {
 .sidebar {
   position: sticky;
   top: 0;
+  display: flex;
+  flex-direction: column;
   height: 100vh;
   padding: 22px 16px;
   background: #071211;
@@ -145,6 +147,19 @@ h3 {
 .nav button.active {
   border-color: rgba(76, 191, 178, 0.25);
   background: #102422;
+  color: #ffffff;
+}
+
+.sidebar-signout {
+  width: 100%;
+  margin-top: auto;
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.07);
+  color: #eaf5f2;
+}
+
+.sidebar-signout:hover {
+  background: rgba(255, 255, 255, 0.12);
   color: #ffffff;
 }
 
@@ -699,10 +714,47 @@ td select {
   resize: vertical;
 }
 
+.check-group {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbfa;
+}
+
+.check-group legend {
+  padding: 0 6px;
+  color: #384541;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.check-group label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.check-group input {
+  width: 16px;
+  height: 16px;
+}
+
 .field:has(textarea),
 .subform,
 .line-edit,
-.locked-row {
+.locked-row,
+.check-group {
   grid-column: 1 / -1;
 }
 
@@ -883,7 +935,8 @@ td select {
   .form-grid,
   .subform,
   .line-edit,
-  .sale-line-grid {
+  .sale-line-grid,
+  .check-group {
     grid-template-columns: 1fr;
   }
 

@@ -19,7 +19,7 @@ from operations.services import (
 class CustomerSerializer(serializers.ModelSerializer):
     balance = serializers.SerializerMethodField()
     can_delete = serializers.SerializerMethodField()
-    customer_type = serializers.ChoiceField(choices=Customer.CustomerType.choices, required=True)
+    customer_type = serializers.ChoiceField(choices=Customer.CustomerType.choices, required=False, default=Customer.CustomerType.INDIVIDUAL)
 
     class Meta:
         model = Customer

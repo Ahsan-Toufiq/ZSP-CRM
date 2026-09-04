@@ -24,7 +24,7 @@ from operations.serializers import (
     GatePassUpdateSerializer,
     PartInventorySerializer,
 )
-from operations.services import apply_container_inventory_delta, mark_gate_pass_printed, sold_quantity_for_item, verify_gate_pass
+from operations.services import apply_container_inventory_delta, mark_gate_pass_printed, sold_quantity_for_item
 
 
 def sale_line_queryset():
@@ -229,12 +229,6 @@ class GatePassViewSet(viewsets.ModelViewSet):
         if self.action in {'update', 'partial_update'}:
             return GatePassUpdateSerializer
         return GatePassSerializer
-
-    @action(detail=True, methods=['post'])
-    def verify(self, request, pk=None):
-        gate_pass = self.get_object()
-        gate_pass = verify_gate_pass(user=request.user, gate_pass=gate_pass)
-        return Response(GatePassSerializer(gate_pass, context={'request': request}).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='mark-printed')
     def mark_printed(self, request, pk=None):
