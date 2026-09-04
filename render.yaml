@@ -33,6 +33,10 @@ services:
         value: true
       - key: CSRF_COOKIE_SECURE
         value: true
+      - key: SESSION_COOKIE_SAMESITE
+        value: None
+      - key: CSRF_COOKIE_SAMESITE
+        value: None
       - key: TIME_ZONE
         value: Asia/Karachi
       - key: LOGIN_THROTTLE_RATE
