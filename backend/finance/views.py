@@ -1,10 +1,13 @@
-from django.db.models import Count, Sum
+from decimal import Decimal
+
+from django.db.models import Count, DecimalField, Prefetch, Sum, Value
+from django.db.models.functions import Coalesce
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 
 from accounts.permissions import DashboardPermission, FinancePermission
-from finance.models import Cheque, ChequeStatus, CustomerLedgerEntry
+from finance.models import Cheque, ChequeSettlementAllocation, ChequeStatus, CustomerLedgerEntry
 from finance.serializers import (
     ChequeSerializer,
     ChequeStatusChangeSerializer,
@@ -13,7 +16,7 @@ from finance.serializers import (
     CustomerBalanceSerializer,
     CustomerLedgerEntrySerializer,
 )
-from operations.models import AuctionSale, Container, ContainerItem, Customer, GatePass
+from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass
 
 
 class UserStampedMixin:
@@ -34,7 +37,9 @@ class ChequeStatusViewSet(UserStampedMixin, viewsets.ModelViewSet):
 
 
 class ChequeViewSet(viewsets.ModelViewSet):
-    queryset = Cheque.objects.select_related('customer', 'status', 'sale')
+    queryset = Cheque.objects.select_related('customer', 'status', 'sale').prefetch_related(
+        'settlement_allocations__sale',
+    )
     serializer_class = ChequeSerializer
     permission_classes = [FinancePermission]
     filterset_fields = ['customer', 'status', 'bank_name', 'sale']
@@ -67,11 +72,41 @@ class LedgerEntryViewSet(UserStampedMixin, viewsets.ReadOnlyModelViewSet):
 
 
 class CustomerBalanceViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = Customer.objects.filter(is_active=True)
     serializer_class = CustomerBalanceSerializer
     permission_classes = [FinancePermission]
     search_fields = ['name', 'phone']
     ordering_fields = ['name', 'created_at']
+
+    def get_queryset(self):
+        sale_lines = AuctionSaleLine.objects.select_related('item', 'item__container')
+        allocations = ChequeSettlementAllocation.objects.select_related('cheque', 'sale')
+        sales = (
+            AuctionSale.objects
+            .filter(is_cancelled=False)
+            .prefetch_related(
+                Prefetch('lines', queryset=sale_lines),
+                Prefetch('cheque_allocations', queryset=allocations),
+            )
+            .order_by('sale_date', 'created_at')
+        )
+        return (
+            Customer.objects
+            .filter(is_active=True)
+            .annotate(
+                ledger_debit=Coalesce(
+                    Sum('ledger_entries__debit'),
+                    Value(Decimal('0.00')),
+                    output_field=DecimalField(max_digits=14, decimal_places=2),
+                ),
+                ledger_credit=Coalesce(
+                    Sum('ledger_entries__credit'),
+                    Value(Decimal('0.00')),
+                    output_field=DecimalField(max_digits=14, decimal_places=2),
+                ),
+            )
+            .prefetch_related(Prefetch('auction_sales', queryset=sales))
+            .order_by('name')
+        )
 
 
 @api_view(['GET'])

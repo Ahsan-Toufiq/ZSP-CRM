@@ -27,6 +27,8 @@ class CustomerSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'balance', 'created_at', 'updated_at']
 
     def get_balance(self, obj):
+        if hasattr(obj, 'ledger_debit') and hasattr(obj, 'ledger_credit'):
+            return obj.ledger_debit - obj.ledger_credit
         totals = obj.ledger_entries.aggregate(debit=Sum('debit'), credit=Sum('credit'))
         return (totals['debit'] or 0) - (totals['credit'] or 0)
 
@@ -67,9 +69,13 @@ class ContainerItemSerializer(serializers.ModelSerializer):
         ]
 
     def get_sold_quantity(self, obj):
+        if hasattr(obj, 'sold_quantity_total'):
+            return obj.sold_quantity_total
         return sold_quantity_for_item(obj)
 
     def get_available_quantity(self, obj):
+        if hasattr(obj, 'sold_quantity_total'):
+            return max(int(obj.quantity) - int(obj.sold_quantity_total or 0), 0)
         return available_quantity_for_item(obj)
 
     def _persist_options(self, validated_data):

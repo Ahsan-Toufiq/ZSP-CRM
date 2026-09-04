@@ -108,6 +108,8 @@ class CustomerBalanceSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'phone', 'balance', 'total_debit', 'total_credit', 'sale_breakdown']
 
     def _totals(self, obj):
+        if hasattr(obj, 'ledger_debit') and hasattr(obj, 'ledger_credit'):
+            return {'debit': obj.ledger_debit, 'credit': obj.ledger_credit}
         if not hasattr(obj, '_ledger_totals'):
             obj._ledger_totals = obj.ledger_entries.aggregate(debit=Sum('debit'), credit=Sum('credit'))
         return obj._ledger_totals

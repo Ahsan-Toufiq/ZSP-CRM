@@ -1,8 +1,12 @@
-from django.db.models import Count, Sum
+from decimal import Decimal
+
+from django.db.models import Count, DecimalField, IntegerField, Q, Sum, Value
+from django.db.models.functions import Coalesce
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
+from rest_framework.status import HTTP_409_CONFLICT
 
 from accounts.permissions import OperationsPermission
 from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass
@@ -30,12 +34,42 @@ class UserStampedMixin:
 
 
 class CustomerViewSet(UserStampedMixin, viewsets.ModelViewSet):
-    queryset = Customer.objects.all()
     serializer_class = CustomerSerializer
     permission_classes = [OperationsPermission]
     filterset_fields = ['is_active', 'customer_type']
     search_fields = ['name', 'phone', 'email', 'cnic_or_tax_id']
     ordering_fields = ['name', 'created_at']
+
+    def get_queryset(self):
+        return Customer.objects.annotate(
+            ledger_debit=Coalesce(
+                Sum('ledger_entries__debit'),
+                Value(Decimal('0.00')),
+                output_field=DecimalField(max_digits=14, decimal_places=2),
+            ),
+            ledger_credit=Coalesce(
+                Sum('ledger_entries__credit'),
+                Value(Decimal('0.00')),
+                output_field=DecimalField(max_digits=14, decimal_places=2),
+            ),
+        ).order_by('name')
+
+    def destroy(self, request, *args, **kwargs):
+        customer = self.get_object()
+        blocking_counts = {
+            'auction_sales': customer.auction_sales.count(),
+            'cheques': customer.cheques.count(),
+            'ledger_entries': customer.ledger_entries.count(),
+        }
+        if any(blocking_counts.values()):
+            return Response(
+                {
+                    'detail': 'This customer has transactions and cannot be deleted. Mark the customer inactive instead.',
+                    'blocking_records': blocking_counts,
+                },
+                status=HTTP_409_CONFLICT,
+            )
+        return super().destroy(request, *args, **kwargs)
 
 
 class ContainerViewSet(UserStampedMixin, viewsets.ModelViewSet):
@@ -50,12 +84,28 @@ class ContainerViewSet(UserStampedMixin, viewsets.ModelViewSet):
 
 
 class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
-    queryset = ContainerItem.objects.select_related('container')
     serializer_class = ContainerItemSerializer
     permission_classes = [OperationsPermission]
     filterset_fields = ['container', 'status', 'category', 'condition']
     search_fields = ['lot_number', 'part_name', 'part_number', 'description', 'category']
     ordering_fields = ['lot_number', 'part_name', 'created_at']
+
+    def get_queryset(self):
+        return (
+            ContainerItem.objects
+            .select_related('container')
+            .annotate(
+                sold_quantity_total=Coalesce(
+                    Sum(
+                        'sale_lines__quantity',
+                        filter=Q(sale_lines__sale__is_cancelled=False),
+                    ),
+                    Value(0),
+                    output_field=IntegerField(),
+                ),
+            )
+            .order_by('container__reference', 'lot_number')
+        )
 
     def perform_destroy(self, instance):
         if instance.status != ContainerItem.Status.AVAILABLE:

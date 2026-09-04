@@ -65,6 +65,20 @@ def test_non_cash_sale_requires_customer(user, item):
 
 
 @pytest.mark.django_db
+def test_cash_sale_does_not_enter_customer_balance(user, item):
+    sale = create_auction_sale(
+        user=user,
+        sale_date=timezone.localdate(),
+        payment_type=AuctionSale.PaymentType.CASH,
+        customer=None,
+        lines=[{'item': item, 'sold_price': Decimal('15000.00')}],
+    )
+
+    assert sale.customer is None
+    assert CustomerLedgerEntry.objects.filter(sale=sale).count() == 0
+
+
+@pytest.mark.django_db
 def test_sold_item_cannot_be_sold_again(user, customer, item):
     create_auction_sale(
         user=user,

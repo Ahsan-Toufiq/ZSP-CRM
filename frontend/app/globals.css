@@ -41,6 +41,10 @@ button {
   cursor: pointer;
 }
 
+button:disabled {
+  cursor: not-allowed;
+}
+
 h1,
 h2,
 h3,
@@ -229,6 +233,10 @@ h3 {
   box-shadow: 0 11px 24px rgba(19, 127, 116, 0.22);
 }
 
+.btn:disabled {
+  opacity: 0.72;
+}
+
 .btn.small {
   min-height: 34px;
   padding: 7px 10px;
@@ -251,6 +259,85 @@ h3 {
 
 .icon-btn.success {
   color: var(--success);
+}
+
+.processing-loader-shell {
+  --base-color: #137f74;
+  display: inline-grid;
+  width: 34px;
+  height: 24px;
+  flex: none;
+  place-items: center;
+  border-radius: 8px;
+  background-color: var(--base-color);
+}
+
+.btn.primary .processing-loader-shell {
+  --base-color: #0d4f4b;
+}
+
+.processing-loader {
+  position: relative;
+  display: inline-block;
+  width: 30px;
+  height: 20px;
+  background-color: var(--base-color);
+}
+
+.processing-loader::before {
+  position: absolute;
+  top: 1px;
+  left: 0;
+  width: 18px;
+  height: 18px;
+  content: '';
+  border-radius: 50%;
+  background-color: #ffffff;
+  background-image:
+    radial-gradient(circle 4px at 9px 9px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 2px at 9px 0, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 2px at 0 9px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 2px at 18px 9px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 2px at 9px 18px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 2px at 15px 3px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 2px at 15px 15px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 2px at 3px 15px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 2px at 3px 3px, var(--base-color) 100%, transparent 0);
+  background-repeat: no-repeat;
+  animation: rotationBack 3s linear infinite;
+}
+
+.processing-loader::after {
+  position: absolute;
+  top: 7px;
+  left: 17px;
+  width: 12px;
+  height: 12px;
+  content: '';
+  border-radius: 50%;
+  background-color: #ffffff;
+  background-image:
+    radial-gradient(circle 2.5px at 6px 6px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 1.25px at 6px 0, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 1.25px at 0 6px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 1.25px at 12px 6px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 1.25px at 6px 12px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 1.25px at 10px 2px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 1.25px at 10px 10px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 1.25px at 2px 10px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 1.25px at 2px 2px, var(--base-color) 100%, transparent 0);
+  background-repeat: no-repeat;
+  animation: rotationBack 4s linear infinite reverse;
+}
+
+@keyframes rotationBack {
+  0% {
+    transform: rotate(0deg);
+  }
+
+  100% {
+    transform: rotate(-360deg);
+  }
 }
 
 .dashboard-grid {
