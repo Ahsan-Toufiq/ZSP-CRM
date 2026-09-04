@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from django.db.models import Count, DecimalField, IntegerField, Prefetch, Q, Sum, Value
+from django.db.models import Count, DecimalField, IntegerField, OuterRef, Prefetch, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework.status import HTTP_409_CONFLICT
 
 from accounts.permissions import OperationsPermission
+from finance.models import Cheque, CustomerLedgerEntry
 from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass
 from operations.serializers import (
     AuctionSaleCreateSerializer,
@@ -58,25 +59,27 @@ class CustomerViewSet(UserStampedMixin, viewsets.ModelViewSet):
     ordering_fields = ['name', 'created_at']
 
     def get_queryset(self):
+        ledger_totals = CustomerLedgerEntry.objects.filter(customer=OuterRef('pk')).values('customer').annotate(
+            debit_total=Sum('debit'),
+            credit_total=Sum('credit'),
+            entry_count=Count('id'),
+        )
+        sale_counts = AuctionSale.objects.filter(customer=OuterRef('pk')).values('customer').annotate(count=Count('id'))
+        cheque_counts = Cheque.objects.filter(customer=OuterRef('pk')).values('customer').annotate(count=Count('id'))
         return Customer.objects.annotate(
-            ledger_debit=Coalesce(
-                Sum('ledger_entries__debit'),
-                Value(Decimal('0.00')),
-                output_field=DecimalField(max_digits=14, decimal_places=2),
-            ),
-            ledger_credit=Coalesce(
-                Sum('ledger_entries__credit'),
-                Value(Decimal('0.00')),
-                output_field=DecimalField(max_digits=14, decimal_places=2),
-            ),
+            ledger_debit=Coalesce(Subquery(ledger_totals.values('debit_total')[:1]), Value(Decimal('0.00')), output_field=DecimalField(max_digits=14, decimal_places=2)),
+            ledger_credit=Coalesce(Subquery(ledger_totals.values('credit_total')[:1]), Value(Decimal('0.00')), output_field=DecimalField(max_digits=14, decimal_places=2)),
+            ledger_entry_count=Coalesce(Subquery(ledger_totals.values('entry_count')[:1]), Value(0), output_field=IntegerField()),
+            auction_sale_count=Coalesce(Subquery(sale_counts.values('count')[:1]), Value(0), output_field=IntegerField()),
+            cheque_count=Coalesce(Subquery(cheque_counts.values('count')[:1]), Value(0), output_field=IntegerField()),
         ).order_by('name')
 
     def destroy(self, request, *args, **kwargs):
         customer = self.get_object()
         blocking_counts = {
-            'auction_sales': customer.auction_sales.count(),
-            'cheques': customer.cheques.count(),
-            'ledger_entries': customer.ledger_entries.count(),
+            'auction_sales': getattr(customer, 'auction_sale_count', customer.auction_sales.count()),
+            'cheques': getattr(customer, 'cheque_count', customer.cheques.count()),
+            'ledger_entries': getattr(customer, 'ledger_entry_count', customer.ledger_entries.count()),
         }
         if any(blocking_counts.values()):
             return Response(

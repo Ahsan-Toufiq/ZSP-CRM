@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 import Image from 'next/image';
 import PhoneInput from 'react-phone-number-input';
-import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
+import { ChangeEvent, FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { destroy, get, list, patch, post } from '@/lib/api';
 import type {
   AuctionSale,
@@ -91,19 +91,33 @@ function optionLabels(options: DropdownOption[], group: DropdownOption['group'])
   return options.filter((option) => option.group === group && option.is_active).map((option) => option.label);
 }
 
+function pakistanLocalDate() {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Karachi',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const value = Object.fromEntries(parts.filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]));
+  return `${value.year}-${value.month}-${value.day}`;
+}
+
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [isAuthenticated, setAuthenticated] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authError, setAuthError] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [refreshKey, setRefreshKey] = useState(0);
+  const [booting, setBooting] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [modal, setModal] = useState<ModalState>(null);
+  const [saleCustomerOverlayOpen, setSaleCustomerOverlayOpen] = useState(false);
+  const [newSaleCustomer, setNewSaleCustomer] = useState<Customer | null>(null);
   const [expandedContainers, setExpandedContainers] = useState<Set<UUID>>(new Set());
   const [expandedCustomers, setExpandedCustomers] = useState<Set<UUID>>(new Set());
   const [message, setMessage] = useState('');
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [saving, setSaving] = useState(false);
+  const loadToken = useRef(0);
 
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -118,41 +132,86 @@ export default function Home() {
   const availableItems = useMemo(() => items.filter((item) => item.status === 'available' && item.available_quantity > 0), [items]);
   const currentTitle = tabs.find((tab) => tab.id === activeTab)?.label ?? 'Dashboard';
 
-  async function refreshData() {
+  async function loadTabData(tab: Tab) {
+    const token = loadToken.current + 1;
+    loadToken.current = token;
     setLoading(true);
     setMessage('');
-    const [
-      summaryData,
-      customerData,
-      containerData,
-      itemData,
-      salesData,
-      chequeData,
-      statusData,
-      ledgerData,
-      optionData,
-    ] = await Promise.allSettled([
-      get<DashboardSummary>('/finance/dashboard-summary/'),
-      list<Customer>('/operations/customers/'),
-      list<Container>('/operations/containers/'),
-      list<ContainerItem>('/operations/items/'),
-      list<AuctionSale>('/operations/auction-sales/'),
-      list<Cheque>('/finance/cheques/'),
-      list<ChequeStatus>('/finance/cheque-statuses/'),
-      list<CustomerLedgerEntry>('/finance/ledger/?page_size=200'),
-      list<DropdownOption>('/catalog/dropdown-options/?page_size=200'),
-    ]);
+    try {
+      if (tab === 'dashboard') {
+        const summaryData = await get<DashboardSummary>('/finance/dashboard-summary/');
+        if (loadToken.current === token) setSummary(summaryData);
+      }
 
-    setSummary(valueOf(summaryData, null));
-    setCustomers(valueOf(customerData, emptyPage<Customer>()).results);
-    setContainers(valueOf(containerData, emptyPage<Container>()).results);
-    setItems(valueOf(itemData, emptyPage<ContainerItem>()).results);
-    setSales(valueOf(salesData, emptyPage<AuctionSale>()).results);
-    setCheques(valueOf(chequeData, emptyPage<Cheque>()).results);
-    setChequeStatuses(valueOf(statusData, emptyPage<ChequeStatus>()).results);
-    setLedgerEntries(valueOf(ledgerData, emptyPage<CustomerLedgerEntry>()).results);
-    setDropdownOptions(valueOf(optionData, emptyPage<DropdownOption>()).results);
-    setLoading(false);
+      if (tab === 'customers') {
+        const [customerData, ledgerData] = await Promise.allSettled([
+          list<Customer>('/operations/customers/?page_size=200'),
+          list<CustomerLedgerEntry>('/finance/ledger/?page_size=200'),
+        ]);
+        if (loadToken.current === token) {
+          setCustomers(valueOf(customerData, emptyPage<Customer>()).results);
+          setLedgerEntries(valueOf(ledgerData, emptyPage<CustomerLedgerEntry>()).results);
+        }
+      }
+
+      if (tab === 'containers') {
+        const [containerData, itemData] = await Promise.allSettled([
+          list<Container>('/operations/containers/?page_size=200'),
+          list<ContainerItem>('/operations/items/?page_size=200'),
+        ]);
+        if (loadToken.current === token) {
+          setContainers(valueOf(containerData, emptyPage<Container>()).results);
+          setItems(valueOf(itemData, emptyPage<ContainerItem>()).results);
+        }
+      }
+
+      if (tab === 'sales') {
+        const [salesData, customerData, itemData, optionData] = await Promise.allSettled([
+          list<AuctionSale>('/operations/auction-sales/?page_size=100'),
+          list<Customer>('/operations/customers/?page_size=200'),
+          list<ContainerItem>('/operations/items/?page_size=200'),
+          list<DropdownOption>('/catalog/dropdown-options/?page_size=200'),
+        ]);
+        if (loadToken.current === token) {
+          setSales(valueOf(salesData, emptyPage<AuctionSale>()).results);
+          setCustomers(valueOf(customerData, emptyPage<Customer>()).results);
+          setItems(valueOf(itemData, emptyPage<ContainerItem>()).results);
+          setDropdownOptions(valueOf(optionData, emptyPage<DropdownOption>()).results);
+        }
+      }
+
+      if (tab === 'cheques') {
+        const [chequeData, customerData, statusData, optionData] = await Promise.allSettled([
+          list<Cheque>('/finance/cheques/?page_size=100'),
+          list<Customer>('/operations/customers/?page_size=200'),
+          list<ChequeStatus>('/finance/cheque-statuses/?page_size=100'),
+          list<DropdownOption>('/catalog/dropdown-options/?page_size=200'),
+        ]);
+        if (loadToken.current === token) {
+          setCheques(valueOf(chequeData, emptyPage<Cheque>()).results);
+          setCustomers(valueOf(customerData, emptyPage<Customer>()).results);
+          setChequeStatuses(valueOf(statusData, emptyPage<ChequeStatus>()).results);
+          setDropdownOptions(valueOf(optionData, emptyPage<DropdownOption>()).results);
+        }
+      }
+
+      if (tab === 'settings') {
+        const [statusData, optionData] = await Promise.allSettled([
+          list<ChequeStatus>('/finance/cheque-statuses/?page_size=100'),
+          list<DropdownOption>('/catalog/dropdown-options/?page_size=200'),
+        ]);
+        if (loadToken.current === token) {
+          setChequeStatuses(valueOf(statusData, emptyPage<ChequeStatus>()).results);
+          setDropdownOptions(valueOf(optionData, emptyPage<DropdownOption>()).results);
+        }
+      }
+    } catch (error) {
+      if (loadToken.current === token) {
+        setMessage(error instanceof Error ? error.message : 'Unable to load data.');
+      }
+    } finally {
+      if (loadToken.current === token) setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -162,19 +221,28 @@ export default function Home() {
         const user = await get<User & { authenticated?: boolean }>('/auth/me/');
         if (user.authenticated === false) {
           setAuthenticated(false);
-          setLoading(false);
+          setBooting(false);
           return;
         }
         setCurrentUser(user);
+        setLoading(true);
         setAuthenticated(true);
-        await refreshData();
       } catch {
         setAuthenticated(false);
-        setLoading(false);
+      } finally {
+        setBooting(false);
       }
     }
     boot();
-  }, [refreshKey]);
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const handle = window.setTimeout(() => {
+      void loadTabData(activeTab);
+    }, 0);
+    return () => window.clearTimeout(handle);
+  }, [activeTab, isAuthenticated]);
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -187,8 +255,8 @@ export default function Home() {
       await post('/auth/login/', { username: form.get('username'), password: form.get('password') });
       const user = await get<User>('/auth/me/');
       setCurrentUser(user);
+      setLoading(true);
       setAuthenticated(true);
-      setRefreshKey((key) => key + 1);
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : 'Login failed.');
     } finally {
@@ -203,9 +271,31 @@ export default function Home() {
     try {
       method === 'patch' ? await patch(path, payload) : await post(path, payload);
       setModal(null);
-      setRefreshKey((key) => key + 1);
+      await loadTabData(activeTab);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to save record.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveSaleCustomer(path: string, payload: unknown, method: 'post' | 'patch' = 'post') {
+    if (saving) return;
+    setMessage('');
+    setSaving(true);
+    try {
+      const customer = method === 'patch'
+        ? await patch<Customer>(path, payload)
+        : await post<Customer>(path, payload);
+      setCustomers((previous) => {
+        const next = previous.filter((existing) => existing.id !== customer.id);
+        next.push(customer);
+        return next.sort((a, b) => a.name.localeCompare(b.name));
+      });
+      setNewSaleCustomer(customer);
+      setSaleCustomerOverlayOpen(false);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to save customer.');
     } finally {
       setSaving(false);
     }
@@ -216,7 +306,7 @@ export default function Home() {
     setMessage('');
     try {
       await destroy(path);
-      setRefreshKey((key) => key + 1);
+      await loadTabData(activeTab);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to delete record.');
     }
@@ -226,7 +316,7 @@ export default function Home() {
     setMessage('');
     try {
       await patch(path, payload);
-      setRefreshKey((key) => key + 1);
+      await loadTabData(activeTab);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to update record.');
     }
@@ -242,7 +332,7 @@ export default function Home() {
 
   async function markChequeStatus(cheque: Cheque, statusId: UUID) {
     await post(`/finance/cheques/${cheque.id}/change-status/`, { status: statusId, notes: '' });
-    setRefreshKey((key) => key + 1);
+    await loadTabData(activeTab);
   }
 
   async function printGatePass(gatePass: GatePass) {
@@ -256,7 +346,7 @@ export default function Home() {
     printWindow.focus();
     printWindow.print();
     await post(`/operations/gate-passes/${gatePass.id}/mark-printed/`, {});
-    setRefreshKey((key) => key + 1);
+    await loadTabData(activeTab);
   }
 
   async function printSaleGatePass(sale: AuctionSale) {
@@ -266,6 +356,14 @@ export default function Home() {
     }
     const gatePass = await get<GatePass>(`/operations/gate-passes/${sale.gate_pass.id}/`);
     await printGatePass(gatePass);
+  }
+
+  if (booting) {
+    return (
+      <main className="login-screen">
+        <LoadingState label="Loading Digi7..." />
+      </main>
+    );
   }
 
   if (!isAuthenticated) {
@@ -305,14 +403,14 @@ export default function Home() {
       <section className="main">
         <header className="topbar">
           <div><p className="eyebrow">Digi7 for ZSP spare-parts auctions</p><h1>{currentTitle}</h1><p className="muted">Fast operational entry with guarded inventory release and auditable receivables.</p></div>
-          <button className="btn" onClick={() => setRefreshKey((key) => key + 1)}><RefreshCw size={18} /> Refresh</button>
+          <button className="btn" onClick={() => loadTabData(activeTab)} disabled={loading}>{loading ? <ProcessingLoader /> : <RefreshCw size={18} />} Refresh</button>
         </header>
         {message ? <div className="alert">{message}</div> : null}
-        {loading ? <div className="empty-state">Loading operational data...</div> : null}
+        {loading ? <LoadingState label={`Loading ${currentTitle.toLowerCase()}...`} /> : null}
         {!loading && activeTab === 'dashboard' ? <Dashboard summary={summary} /> : null}
-        {!loading && activeTab === 'customers' ? <CustomersPanel customers={customers} sales={sales} cheques={cheques} ledgerEntries={ledgerEntries} expanded={expandedCustomers} onToggle={(id) => toggleSet(setExpandedCustomers, id)} onAdd={() => setModal({ type: 'customer' })} onEdit={(customer) => setModal({ type: 'customer', customer })} onDelete={(customer) => remove(`/operations/customers/${customer.id}/`)} onStatus={(customer) => quickPatch(`/operations/customers/${customer.id}/`, { is_active: !customer.is_active })} /> : null}
+        {!loading && activeTab === 'customers' ? <CustomersPanel customers={customers} ledgerEntries={ledgerEntries} expanded={expandedCustomers} onToggle={(id) => toggleSet(setExpandedCustomers, id)} onAdd={() => setModal({ type: 'customer' })} onEdit={(customer) => setModal({ type: 'customer', customer })} onDelete={(customer) => remove(`/operations/customers/${customer.id}/`)} onStatus={(customer) => quickPatch(`/operations/customers/${customer.id}/`, { is_active: !customer.is_active })} /> : null}
         {!loading && activeTab === 'containers' ? <ContainersPanel containers={containers} items={items} expanded={expandedContainers} onToggle={(id) => toggleSet(setExpandedContainers, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} /> : null}
-        {!loading && activeTab === 'sales' ? <SalesPanel sales={sales} onAdd={() => setModal({ type: 'sale' })} onEdit={(sale) => setModal({ type: 'sale', sale })} onPrint={printSaleGatePass} /> : null}
+        {!loading && activeTab === 'sales' ? <SalesPanel sales={sales} onAdd={() => { setNewSaleCustomer(null); setModal({ type: 'sale' }); }} onEdit={(sale) => { setNewSaleCustomer(null); setModal({ type: 'sale', sale }); }} onPrint={printSaleGatePass} /> : null}
         {!loading && activeTab === 'cheques' ? <ChequesPanel cheques={cheques} statuses={chequeStatuses} onAdd={() => setModal({ type: 'cheque' })} onEdit={(cheque) => setModal({ type: 'cheque', cheque })} onStatus={markChequeStatus} onAddStatus={() => setModal({ type: 'cheque-status' })} /> : null}
         {!loading && activeTab === 'settings' ? <SettingsPanel options={dropdownOptions} chequeStatuses={chequeStatuses} onAdd={(group) => setModal({ type: 'dropdown-option', group })} onAddChequeStatus={() => setModal({ type: 'cheque-status' })} /> : null}
       </section>
@@ -320,25 +418,26 @@ export default function Home() {
         {modal?.type === 'customer' ? <CustomerForm customer={modal.customer} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'container' ? <ContainerForm container={modal.container} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'item' ? <ItemForm item={modal.item} containerId={modal.containerId} containers={containers} options={dropdownOptions} onSave={save} isSaving={saving} /> : null}
-        {modal?.type === 'sale' ? <SaleForm sale={modal.sale} customers={customers} availableItems={availableItems} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} onAddCustomer={() => setModal({ type: 'customer' })} /> : null}
+        {modal?.type === 'sale' ? <SaleForm sale={modal.sale} customers={customers} availableItems={availableItems} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} selectedCustomer={newSaleCustomer} onAddCustomer={() => setSaleCustomerOverlayOpen(true)} /> : null}
         {modal?.type === 'cheque' ? <ChequeForm cheque={modal.cheque} customers={customers} statuses={chequeStatuses} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'cheque-status' ? <ChequeStatusForm onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'dropdown-option' ? <DropdownOptionForm group={modal.group} onSave={save} isSaving={saving} /> : null}
       </ModalShell>
+      {saleCustomerOverlayOpen ? <ModalShell modal={{ type: 'customer' }} onClose={() => setSaleCustomerOverlayOpen(false)}><CustomerForm onSave={saveSaleCustomer} isSaving={saving} /></ModalShell> : null}
     </main>
   );
 }
 
 function Dashboard({ summary }: { summary: DashboardSummary | null }) {
-  return <div className="dashboard-grid"><Metric icon={<ContainerIcon size={22} />} label="Containers" value={summary?.containers ?? 0} /><Metric icon={<Boxes size={22} />} label="Inventory items" value={summary?.items.total ?? 0} /><Metric icon={<Gavel size={22} />} label="Auction sales" value={summary?.auction_sales ?? 0} /><Metric icon={<Banknote size={22} />} label="Receivable" value={money(summary?.customer_receivable ?? 0)} tone="cash" /><section className="panel span-2"><div className="section-head"><div><h2>Gate pass print queue</h2><p className="muted">Gate passes are created from sales and controlled by print status.</p></div></div><div className="metric-row"><Metric compact label="Not printed" value={summary?.gate_passes.not_printed ?? 0} tone="warning" /><Metric compact label="Printed" value={summary?.gate_passes.printed ?? 0} tone="success" /><Metric compact label="Verified" value={summary?.gate_passes.verified ?? 0} /></div></section><section className="panel span-2"><h2>Inventory state</h2><div className="status-strip">{Object.entries(summary?.items.by_status ?? {}).map(([status, count]) => <div key={status}><span className={statusClass(status)}>{status}</span><strong>{count}</strong></div>)}</div></section></div>;
+  return <div className="dashboard-grid"><Metric icon={<ContainerIcon size={22} />} label="Containers" value={summary?.containers ?? 0} /><Metric icon={<Boxes size={22} />} label="Inventory items" value={summary?.items.total ?? 0} /><Metric icon={<Gavel size={22} />} label="Auction sales" value={summary?.auction_sales ?? 0} /><Metric icon={<Banknote size={22} />} label="Receivable" value={money(summary?.customer_receivable ?? 0)} tone="cash" /><section className="panel span-2"><div className="section-head"><div><h2>Gate pass print queue</h2><p className="muted">Gate passes are controlled by print status only.</p></div></div><div className="metric-row two"><Metric compact label="Not printed" value={summary?.gate_passes.not_printed ?? 0} tone="warning" /><Metric compact label="Printed" value={summary?.gate_passes.printed ?? 0} tone="success" /></div></section><section className="panel span-2"><h2>Inventory state</h2><div className="status-strip">{Object.entries(summary?.items.by_status ?? {}).map(([status, count]) => <div key={status}><span className={statusClass(status)}>{status}</span><strong>{count}</strong></div>)}</div></section></div>;
 }
 
 function Metric({ label, value, icon, tone = '', compact = false }: { label: string; value: string | number; icon?: ReactNode; tone?: string; compact?: boolean }) {
   return <div className={`metric-card ${tone} ${compact ? 'compact' : ''}`}>{icon ? <span className="metric-icon">{icon}</span> : null}<div><span>{label}</span><strong>{value}</strong></div></div>;
 }
 
-function CustomersPanel({ customers, sales, cheques, ledgerEntries, expanded, onToggle, onAdd, onEdit, onDelete, onStatus }: { customers: Customer[]; sales: AuctionSale[]; cheques: Cheque[]; ledgerEntries: CustomerLedgerEntry[]; expanded: Set<UUID>; onToggle: (id: UUID) => void; onAdd: () => void; onEdit: (customer: Customer) => void; onDelete: (customer: Customer) => void; onStatus: (customer: Customer) => void }) {
-  return <section className="panel"><div className="section-head"><div><h2>Customers and balance breakdown</h2><p className="muted">Balances are calculated from sales, cheque settlements, reversals, and adjustments.</p></div><button className="btn primary" onClick={onAdd}><Plus size={18} /> Customer</button></div><div className="record-stack">{customers.map((customer) => { const entries = ledgerEntries.filter((entry) => entry.customer === customer.id); const hasTransactions = entries.length > 0 || sales.some((sale) => sale.customer === customer.id) || cheques.some((cheque) => cheque.customer === customer.id); const balance = Number(customer.balance); return <article className="record-card" key={customer.id}><button className="record-main" onClick={() => onToggle(customer.id)}>{expanded.has(customer.id) ? <ChevronDown size={18} /> : <ChevronRight size={18} />}<div><strong>{customer.name}</strong><span>{customer.phone} · {customer.customer_type}</span></div><b className={balance >= 0 ? 'money-good' : 'money-bad'}>{money(customer.balance)}</b><span className={customer.is_active ? 'badge good' : 'badge bad'}>{customer.is_active ? 'Active' : 'Inactive'}</span></button><div className="record-actions"><button className="icon-btn" onClick={() => onEdit(customer)} aria-label={`Edit ${customer.name}`}><Pencil size={16} /></button><button className="icon-btn danger" onClick={() => onDelete(customer)} aria-label={`Delete ${customer.name}`} disabled={hasTransactions} title={hasTransactions ? 'Customers with transactions cannot be deleted.' : `Delete ${customer.name}`}><Trash2 size={16} /></button><button className="btn small" onClick={() => onStatus(customer)}>{customer.is_active ? 'Mark inactive' : 'Mark active'}</button></div>{expanded.has(customer.id) ? <DataTable headers={['Date', 'Type', 'Description', 'Debit', 'Credit', 'Ref']} rows={entries.map((entry) => [entry.entry_date, entry.entry_type, entry.description, <span className="money-good" key="debit">{money(entry.debit)}</span>, <span className="money-bad" key="credit">{money(entry.credit)}</span>, entry.sale_number || entry.cheque_number || '-'])} /> : null}</article>; })}</div></section>;
+function CustomersPanel({ customers, ledgerEntries, expanded, onToggle, onAdd, onEdit, onDelete, onStatus }: { customers: Customer[]; ledgerEntries: CustomerLedgerEntry[]; expanded: Set<UUID>; onToggle: (id: UUID) => void; onAdd: () => void; onEdit: (customer: Customer) => void; onDelete: (customer: Customer) => void; onStatus: (customer: Customer) => void }) {
+  return <section className="panel"><div className="section-head"><div><h2>Customers and balance breakdown</h2><p className="muted">Balances are calculated from sales, cheque settlements, reversals, and adjustments.</p></div><button className="btn primary" onClick={onAdd}><Plus size={18} /> Customer</button></div><div className="record-stack">{customers.map((customer) => { const entries = ledgerEntries.filter((entry) => entry.customer === customer.id); const balance = Number(customer.balance); return <article className="record-card" key={customer.id}><button className="record-main" onClick={() => onToggle(customer.id)}>{expanded.has(customer.id) ? <ChevronDown size={18} /> : <ChevronRight size={18} />}<div><strong>{customer.name}</strong><span>{customer.phone} · {customer.customer_type}</span></div><b className={balance >= 0 ? 'money-good' : 'money-bad'}>{money(customer.balance)}</b><span className={customer.is_active ? 'badge good' : 'badge bad'}>{customer.is_active ? 'Active' : 'Inactive'}</span></button><div className="record-actions"><button className="icon-btn" onClick={() => onEdit(customer)} aria-label={`Edit ${customer.name}`}><Pencil size={16} /></button><button className="icon-btn danger" onClick={() => onDelete(customer)} aria-label={`Delete ${customer.name}`} disabled={!customer.can_delete} title={customer.can_delete ? `Delete ${customer.name}` : 'Customers with transactions cannot be deleted.'}><Trash2 size={16} /></button><button className="btn small" onClick={() => onStatus(customer)}>{customer.is_active ? 'Mark inactive' : 'Mark active'}</button></div>{expanded.has(customer.id) ? <DataTable headers={['Date', 'Type', 'Description', 'Debit', 'Credit', 'Ref']} rows={entries.map((entry) => [entry.entry_date, entry.entry_type, entry.description, <span className="money-good" key="debit">{money(entry.debit)}</span>, <span className="money-bad" key="credit">{money(entry.credit)}</span>, entry.sale_number || entry.cheque_number || '-'])} /> : null}</article>; })}</div></section>;
 }
 
 function ContainersPanel({ containers, items, expanded, onToggle, onAdd, onEdit, onAddItem, onEditItem, onDeleteItem }: { containers: Container[]; items: ContainerItem[]; expanded: Set<UUID>; onToggle: (id: UUID) => void; onAdd: () => void; onEdit: (container: Container) => void; onAddItem: (containerId: UUID) => void; onEditItem: (item: ContainerItem) => void; onDeleteItem: (item: ContainerItem) => void }) {
@@ -372,16 +471,48 @@ function ItemForm({ item, containerId, containers, options, onSave, isSaving }: 
   return <FormFrame title={item ? 'Edit inventory item' : 'Add inventory item'} isSaving={isSaving} onSubmit={(form) => onSave(item ? `/operations/items/${item.id}/` : '/operations/items/', { ...form, quantity: Number(form.quantity || 1), reserve_price: form.reserve_price || null }, item ? 'patch' : 'post')}><Select name="container" label="Container" defaultValue={item?.container || containerId} options={containers.map((container) => [container.id, container.reference])} required /><Field name="lot_number" label="Lot number" defaultValue={item?.lot_number} required /><Field name="part_name" label="Part name" defaultValue={item?.part_name} required /><Field name="part_number" label="Part number" defaultValue={item?.part_number} /><OptionText name="category" label="Category" defaultValue={item?.category} options={optionLabels(options, 'item_category')} /><OptionText name="condition" label="Condition" defaultValue={item?.condition} options={optionLabels(options, 'item_condition')} /><Field name="quantity" label="Quantity" type="number" defaultValue={String(item?.quantity ?? 1)} required /><OptionText name="unit" label="Unit" defaultValue={item?.unit || 'piece'} options={optionLabels(options, 'item_unit')} /><Field name="reserve_price" label="Reserve price" type="number" defaultValue={item?.reserve_price || ''} /><Field name="description" label="Description" defaultValue={item?.description} textarea /></FormFrame>;
 }
 
-function SaleForm({ sale, customers, availableItems, banks, onSave, isSaving, onAddCustomer }: { sale?: AuctionSale; customers: Customer[]; availableItems: ContainerItem[]; banks: string[]; onSave: SaveHandler; isSaving: boolean; onAddCustomer: () => void }) {
+function SaleForm({
+  sale,
+  customers,
+  availableItems,
+  banks,
+  onSave,
+  isSaving,
+  selectedCustomer,
+  onAddCustomer,
+}: {
+  sale?: AuctionSale;
+  customers: Customer[];
+  availableItems: ContainerItem[];
+  banks: string[];
+  onSave: SaveHandler;
+  isSaving: boolean;
+  selectedCustomer?: Customer | null;
+  onAddCustomer: () => void;
+}) {
   const [paymentType, setPaymentType] = useState(sale?.payment_type || 'cash');
+  const [customerId, setCustomerId] = useState(sale?.customer || '');
+  const [issuedToOverride, setIssuedToOverride] = useState<string | null>(sale?.gate_pass?.issued_to_name ?? null);
   const saleItems = sale?.lines.map((line) => line.item) ?? [];
   const selectableItems = [...saleItems, ...availableItems].filter((item, index, all) => all.findIndex((candidate) => candidate.id === item.id) === index);
   const [lineRows, setLineRows] = useState<SaleLineDraft[]>(() => sale?.lines.map((line) => ({ key: line.id, id: line.id, item: line.item.id, quantity: line.quantity, sold_price: line.sold_price, notes: line.notes })) ?? [{ key: crypto.randomUUID(), item: '', quantity: 1, sold_price: '', notes: '' }]);
+  const selectedCustomerName = customers.find((customer) => customer.id === customerId)?.name || '';
+  const issuedToName = issuedToOverride ?? selectedCustomerName;
   const saleTotal = lineRows.reduce((total, line) => total + (Number(line.quantity || 0) * Number(line.sold_price || 0)), 0);
   const updateLine = (key: string, updates: Partial<(typeof lineRows)[number]>) => setLineRows((rows) => rows.map((row) => row.key === key ? { ...row, ...updates } : row));
   const addLine = () => setLineRows((rows) => [...rows, { key: crypto.randomUUID(), item: '', quantity: 1, sold_price: '', notes: '' }]);
   const removeLine = (key: string) => setLineRows((rows) => rows.length === 1 ? rows : rows.filter((row) => row.key !== key));
-  return <FormFrame title={sale ? 'Edit sale' : 'Record auction sale'} isSaving={isSaving} onSubmit={(form) => { const lines = lineRows.map((line) => ({ ...(line.id ? { id: line.id } : {}), item: line.item, quantity: Number(line.quantity), sold_price: line.sold_price, notes: line.notes || '' })); const payload: Record<string, unknown> = { sale_date: form.sale_date, customer: form.customer || null, notes: form.notes || '', lines, gate_pass: { issued_to_name: form.issued_to_name || '', issued_to_phone: form.issued_to_phone || '', vehicle_number: form.vehicle_number || '', driver_name: form.driver_name || '', notes: form.gate_pass_notes || '' } }; if (!sale) payload.payment_type = paymentType; if (paymentType === 'cheque' && !sale) { payload.cheque = { cheque_number: form.cheque_number, name_on_cheque: form.name_on_cheque, bank_name: form.bank_name, branch_name: form.branch_name || '', account_title: form.account_title || '', cheque_date: form.cheque_date, expiry_date: form.expiry_date, received_date: form.received_date || null, notes: form.cheque_notes || '' }; } onSave(sale ? `/operations/auction-sales/${sale.id}/` : '/operations/auction-sales/', payload, sale ? 'patch' : 'post'); }}><div className="inline-between"><span className="form-note">Customer is mandatory unless payment type is cash. Cash sales do not enter customer balances.</span><button type="button" className="btn small" onClick={onAddCustomer}><Plus size={16} /> New customer</button></div><Field name="sale_date" label="Sale date" type="date" defaultValue={sale?.sale_date} required />{!sale ? <Select name="payment_type" label="Payment type" value={paymentType} onChange={setPaymentType} options={[['cash', 'Cash'], ['credit', 'Credit'], ['cheque', 'Cheque'], ['mixed', 'Mixed']]} required /> : <div className="locked-row">Payment type: {sale.payment_type}</div>}<Select name="customer" label="Customer" defaultValue={sale?.customer || ''} options={customers.map((customer) => [customer.id, customer.name])} required={paymentType !== 'cash' || Boolean(sale?.customer)} /><div className="subform full-span"><div className="inline-between"><h3>Sale items</h3><button type="button" className="btn small" onClick={addLine}><Plus size={16} /> Item</button></div>{lineRows.map((line, index) => { const selected = selectableItems.find((item) => item.id === line.item); return <div className="sale-line-grid" key={line.key}><div className="field"><label htmlFor={`item-${line.key}`}>Item {index + 1}</label><select id={`item-${line.key}`} required value={line.item} onChange={(event) => updateLine(line.key, { item: event.currentTarget.value })}><option value="">Select...</option>{selectableItems.map((item) => <option key={item.id} value={item.id}>{item.container_reference} / {item.lot_number} - {item.part_name} ({item.available_quantity} available)</option>)}</select></div><div className="field"><label htmlFor={`qty-${line.key}`}>Qty</label><input id={`qty-${line.key}`} type="number" min="1" max={selected ? Math.max(selected.available_quantity, line.quantity) : undefined} required value={line.quantity} onChange={(event) => updateLine(line.key, { quantity: Number(event.currentTarget.value) })} /></div><div className="field"><label htmlFor={`price-${line.key}`}>Unit price</label><input id={`price-${line.key}`} type="number" min="1" required value={line.sold_price} onChange={(event) => updateLine(line.key, { sold_price: event.currentTarget.value })} /></div><div className="field"><label htmlFor={`notes-${line.key}`}>Notes</label><input id={`notes-${line.key}`} value={line.notes} onChange={(event) => updateLine(line.key, { notes: event.currentTarget.value })} /></div><button type="button" className="icon-btn danger" onClick={() => removeLine(line.key)} aria-label="Remove sale line"><Trash2 size={16} /></button></div>; })}<div className="total-bar"><span>Sale total</span><strong>{money(saleTotal)}</strong></div></div>{paymentType === 'cheque' && !sale ? <ChequeFields banks={banks} /> : null}<div className="subform full-span"><h3>Gate pass details</h3><Field name="issued_to_name" label="Issued to" defaultValue={sale?.gate_pass?.issued_to_name || sale?.customer_name || ''} /><Field name="issued_to_phone" label="Phone" /><Field name="vehicle_number" label="Vehicle number" defaultValue={sale?.gate_pass?.vehicle_number || ''} /><Field name="driver_name" label="Driver name" defaultValue={sale?.gate_pass?.driver_name || ''} /><Field name="gate_pass_notes" label="Gate pass notes" textarea /></div><Field name="notes" label="Sale notes" defaultValue={sale?.notes} textarea /></FormFrame>;
+
+  useEffect(() => {
+    if (!selectedCustomer) return;
+    const handle = window.setTimeout(() => {
+      setCustomerId(selectedCustomer.id);
+      setIssuedToOverride(null);
+    }, 0);
+    return () => window.clearTimeout(handle);
+  }, [selectedCustomer]);
+
+  return <FormFrame title={sale ? 'Edit sale' : 'Record auction sale'} isSaving={isSaving} onSubmit={(form) => { const lines = lineRows.map((line) => ({ ...(line.id ? { id: line.id } : {}), item: line.item, quantity: Number(line.quantity), sold_price: line.sold_price, notes: line.notes || '' })); const payload: Record<string, unknown> = { sale_date: form.sale_date, customer: customerId || null, notes: form.notes || '', lines, gate_pass: { issued_to_name: issuedToName || '', issued_to_phone: form.issued_to_phone || '', vehicle_number: form.vehicle_number || '', driver_name: form.driver_name || '', notes: form.gate_pass_notes || '' } }; if (!sale) payload.payment_type = paymentType; if (paymentType === 'cheque' && !sale) { payload.cheque = { cheque_number: form.cheque_number, name_on_cheque: form.name_on_cheque, bank_name: form.bank_name, branch_name: form.branch_name || '', account_title: form.account_title || '', cheque_date: form.cheque_date, expiry_date: form.expiry_date, received_date: form.received_date || null, notes: form.cheque_notes || '' }; } onSave(sale ? `/operations/auction-sales/${sale.id}/` : '/operations/auction-sales/', payload, sale ? 'patch' : 'post'); }}><div className="inline-between"><span className="form-note">Customer is mandatory unless payment type is cash. Cash sales do not enter customer balances.</span><button type="button" className="btn small" onClick={onAddCustomer}><Plus size={16} /> New customer</button></div><Field name="sale_date" label="Sale date" type="date" defaultValue={sale?.sale_date || pakistanLocalDate()} required />{!sale ? <Select name="payment_type" label="Payment type" value={paymentType} onChange={setPaymentType} options={[['cash', 'Cash'], ['credit', 'Credit'], ['cheque', 'Cheque'], ['mixed', 'Mixed']]} required /> : <div className="locked-row">Payment type: {sale.payment_type}</div>}<Select name="customer" label="Customer" value={customerId} onChange={setCustomerId} options={customers.map((customer) => [customer.id, customer.name])} required={paymentType !== 'cash' || Boolean(sale?.customer)} /><div className="subform full-span"><div className="inline-between"><h3>Sale items</h3><button type="button" className="btn small" onClick={addLine}><Plus size={16} /> Item</button></div>{lineRows.map((line, index) => { const selected = selectableItems.find((item) => item.id === line.item); return <div className="sale-line-grid" key={line.key}><div className="field"><label htmlFor={`item-${line.key}`}>Item {index + 1}</label><select id={`item-${line.key}`} required value={line.item} onChange={(event) => updateLine(line.key, { item: event.currentTarget.value })}><option value="">Select...</option>{selectableItems.map((item) => <option key={item.id} value={item.id}>{item.container_reference} / {item.lot_number} - {item.part_name} ({item.available_quantity} available)</option>)}</select></div><div className="field"><label htmlFor={`qty-${line.key}`}>Qty</label><input id={`qty-${line.key}`} type="number" min="1" max={selected ? Math.max(selected.available_quantity, line.quantity) : undefined} required value={line.quantity} onChange={(event) => updateLine(line.key, { quantity: Number(event.currentTarget.value) })} /></div><div className="field"><label htmlFor={`price-${line.key}`}>Unit price</label><input id={`price-${line.key}`} type="number" min="1" required value={line.sold_price} onChange={(event) => updateLine(line.key, { sold_price: event.currentTarget.value })} /></div><div className="field"><label htmlFor={`notes-${line.key}`}>Notes</label><input id={`notes-${line.key}`} value={line.notes} onChange={(event) => updateLine(line.key, { notes: event.currentTarget.value })} /></div><button type="button" className="icon-btn danger" onClick={() => removeLine(line.key)} aria-label="Remove sale line"><Trash2 size={16} /></button></div>; })}<div className="total-bar"><span>Sale total</span><strong>{money(saleTotal)}</strong></div></div>{paymentType === 'cheque' && !sale ? <ChequeFields banks={banks} /> : null}<div className="subform full-span"><h3>Gate pass details</h3><div className="field"><label htmlFor="issued_to_name">Issued to</label><input id="issued_to_name" name="issued_to_name" value={issuedToName} onChange={(event) => { setIssuedToOverride(event.currentTarget.value); }} /></div><Field name="issued_to_phone" label="Phone" /><Field name="vehicle_number" label="Vehicle number" defaultValue={sale?.gate_pass?.vehicle_number || ''} /><Field name="driver_name" label="Driver name" defaultValue={sale?.gate_pass?.driver_name || ''} /><Field name="gate_pass_notes" label="Gate pass notes" textarea /></div><Field name="notes" label="Sale notes" defaultValue={sale?.notes} textarea /></FormFrame>;
 }
 
 function ChequeForm({ cheque, customers, statuses, banks, onSave, isSaving }: { cheque?: Cheque; customers: Customer[]; statuses: ChequeStatus[]; banks: string[]; onSave: SaveHandler; isSaving: boolean }) {
@@ -408,6 +539,10 @@ function ProcessingLoader() {
   return <span className="processing-loader-shell" aria-hidden="true"><span className="processing-loader" /></span>;
 }
 
+function LoadingState({ label }: { label: string }) {
+  return <div className="empty-state loading-state"><ProcessingLoader /><span>{label}</span></div>;
+}
+
 function ModalShell({ modal, onClose, children }: { modal: ModalState; onClose: () => void; children: ReactNode }) {
   if (!modal) return null;
   return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}><section className="modal-panel" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" onClick={onClose} aria-label="Close dialog"><X size={18} /></button>{children}</section></div>;
@@ -422,7 +557,10 @@ function PhoneField({ value, onChange }: { value: string; onChange: (value?: str
 }
 
 function Select({ name, label, options, required = false, multiple = false, defaultValue, value, onChange }: { name: string; label: string; options: [string, string][]; required?: boolean; multiple?: boolean; defaultValue?: string | string[] | null; value?: string; onChange?: (value: string) => void }) {
-  return <div className="field"><label htmlFor={name}>{label}</label><select id={name} name={name} required={required} multiple={multiple} defaultValue={defaultValue ?? (multiple ? [] : '')} value={value} onChange={onChange ? (event) => onChange(event.currentTarget.value) : undefined}>{multiple ? null : <option value="">Select...</option>}{options.map(([optionValue, text]) => <option key={optionValue} value={optionValue}>{text}</option>)}</select></div>;
+  const selectProps = value === undefined
+    ? { defaultValue: defaultValue ?? (multiple ? [] : '') }
+    : { value, onChange: onChange ? (event: ChangeEvent<HTMLSelectElement>) => onChange(event.currentTarget.value) : undefined };
+  return <div className="field"><label htmlFor={name}>{label}</label><select id={name} name={name} required={required} multiple={multiple} {...selectProps}>{multiple ? null : <option value="">Select...</option>}{options.map(([optionValue, text]) => <option key={optionValue} value={optionValue}>{text}</option>)}</select></div>;
 }
 
 function OptionText({ name, label, options, required = false, defaultValue = '' }: { name: string; label: string; options: string[]; required?: boolean; defaultValue?: string | null }) {

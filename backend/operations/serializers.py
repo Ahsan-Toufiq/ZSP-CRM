@@ -16,21 +16,27 @@ from operations.services import (
 
 class CustomerSerializer(serializers.ModelSerializer):
     balance = serializers.SerializerMethodField()
+    can_delete = serializers.SerializerMethodField()
     customer_type = serializers.ChoiceField(choices=Customer.CustomerType.choices, required=True)
 
     class Meta:
         model = Customer
         fields = [
             'id', 'name', 'customer_type', 'phone', 'email', 'cnic_or_tax_id',
-            'address', 'notes', 'is_active', 'balance', 'created_at', 'updated_at',
+            'address', 'notes', 'is_active', 'balance', 'can_delete', 'created_at', 'updated_at',
         ]
-        read_only_fields = ['id', 'balance', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'balance', 'can_delete', 'created_at', 'updated_at']
 
     def get_balance(self, obj):
         if hasattr(obj, 'ledger_debit') and hasattr(obj, 'ledger_credit'):
             return obj.ledger_debit - obj.ledger_credit
         totals = obj.ledger_entries.aggregate(debit=Sum('debit'), credit=Sum('credit'))
         return (totals['debit'] or 0) - (totals['credit'] or 0)
+
+    def get_can_delete(self, obj):
+        if all(hasattr(obj, attr) for attr in ['auction_sale_count', 'cheque_count', 'ledger_entry_count']):
+            return obj.auction_sale_count == 0 and obj.cheque_count == 0 and obj.ledger_entry_count == 0
+        return not obj.auction_sales.exists() and not obj.cheques.exists() and not obj.ledger_entries.exists()
 
     def validate_phone(self, value):
         if not value.startswith('+') or len(value) < 8:

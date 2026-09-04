@@ -404,6 +404,10 @@ h3 {
   gap: 12px;
 }
 
+.metric-row.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .status-strip,
 .chips {
   display: flex;
@@ -745,6 +749,54 @@ td select {
   background: #f8fbfa;
   color: var(--muted);
   text-align: center;
+}
+
+.loading-state {
+  min-height: 180px;
+  align-content: center;
+  font-weight: 800;
+}
+
+.loading-state .processing-loader-shell {
+  width: 60px;
+  height: 42px;
+}
+
+.loading-state .processing-loader {
+  width: 48px;
+  height: 32px;
+}
+
+.loading-state .processing-loader::before {
+  width: 30px;
+  height: 30px;
+  background-image:
+    radial-gradient(circle 7px at 15px 15px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 3px at 15px 0, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 3px at 0 15px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 3px at 30px 15px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 3px at 15px 30px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 3px at 25px 4px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 3px at 25px 25px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 3px at 4px 25px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 3px at 4px 4px, var(--base-color) 100%, transparent 0);
+}
+
+.loading-state .processing-loader::after {
+  top: 12px;
+  left: 29px;
+  width: 20px;
+  height: 20px;
+  background-image:
+    radial-gradient(circle 4px at 10px 10px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 2px at 10px 0, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 2px at 0 10px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 2px at 20px 10px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 2px at 10px 20px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 2px at 17px 3px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 2px at 17px 17px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 2px at 3px 17px, var(--base-color) 100%, transparent 0),
+    radial-gradient(circle 2px at 3px 3px, var(--base-color) 100%, transparent 0);
 }
 
 .login-screen {

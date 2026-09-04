@@ -126,7 +126,6 @@ def dashboard_summary(request):
         'auction_sales': AuctionSale.objects.filter(is_cancelled=False).count(),
         'gate_passes': {
             'issued': GatePass.objects.filter(status=GatePass.Status.ISSUED).count(),
-            'verified': GatePass.objects.filter(status=GatePass.Status.VERIFIED).count(),
             'not_printed': GatePass.objects.filter(print_status=GatePass.PrintStatus.NOT_PRINTED).count(),
             'printed': GatePass.objects.filter(print_status=GatePass.PrintStatus.PRINTED).count(),
         },

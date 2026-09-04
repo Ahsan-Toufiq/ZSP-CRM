@@ -23,6 +23,7 @@ export interface Customer {
   notes: string;
   is_active: boolean;
   balance: string | number;
+  can_delete: boolean;
 }
 
 export interface Container {
@@ -175,9 +176,9 @@ export interface DashboardSummary {
   auction_sales: number;
   gate_passes: {
     issued: number;
-    verified: number;
     not_printed: number;
     printed: number;
+    verified?: number;
   };
   cheques_by_status: Record<string, number>;
   customer_receivable: string | number;
