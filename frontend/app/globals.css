@@ -498,6 +498,15 @@ h3 {
   font-size: 13px;
 }
 
+.cost-meta {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.cost-meta strong {
+  color: var(--ink);
+}
+
 .table-wrap {
   width: 100%;
   overflow: auto;
@@ -566,6 +575,28 @@ td select {
 
 .money-bad {
   color: var(--danger);
+}
+
+.permission-summary {
+  display: flex;
+  max-width: 560px;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.chip.access-full {
+  background: #dcf8e8;
+  color: #0f6c34;
+}
+
+.chip.access-view {
+  background: #e8edff;
+  color: #1d4ed8;
+}
+
+.chip.access-none {
+  background: #eef1ef;
+  color: #5f6b67;
 }
 
 .icon-btn:disabled {
@@ -714,7 +745,8 @@ td select {
   resize: vertical;
 }
 
-.check-group {
+.check-group,
+.permission-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
@@ -725,14 +757,17 @@ td select {
   background: #f8fbfa;
 }
 
-.check-group legend {
+.check-group legend,
+.permission-grid legend {
   padding: 0 6px;
   color: #384541;
   font-size: 13px;
   font-weight: 850;
 }
 
-.check-group label {
+.check-group label,
+.permission-row,
+.permission-options label {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -750,11 +785,49 @@ td select {
   height: 16px;
 }
 
+.permission-grid {
+  grid-template-columns: 1fr;
+}
+
+.permission-row {
+  justify-content: space-between;
+  background: #ffffff;
+}
+
+.permission-row > span {
+  font-weight: 800;
+}
+
+.permission-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.permission-options label {
+  min-height: 32px;
+  padding: 6px 9px;
+  background: #f8fbfa;
+  font-size: 13px;
+}
+
+.permission-options label:has(input:checked) {
+  border-color: rgba(19, 127, 116, 0.42);
+  background: #e4f5f2;
+  color: var(--brand-dark);
+}
+
+.permission-options input {
+  width: 15px;
+  height: 15px;
+}
+
 .field:has(textarea),
 .subform,
 .line-edit,
 .locked-row,
-.check-group {
+.check-group,
+.permission-grid {
   grid-column: 1 / -1;
 }
 

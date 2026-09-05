@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.db import transaction
 from django.db.models import Sum
 from rest_framework import serializers
@@ -48,30 +50,69 @@ class CustomerSerializer(serializers.ModelSerializer):
 
 class ContainerSerializer(serializers.ModelSerializer):
     item_count = serializers.IntegerField(read_only=True, default=0)
+    raw_parts_cost = serializers.SerializerMethodField()
+    total_container_cost = serializers.SerializerMethodField()
 
     class Meta:
         model = Container
         fields = [
             'id', 'reference', 'origin_country', 'supplier_name', 'arrival_date',
-            'manifest_notes', 'status', 'item_count', 'created_at', 'updated_at',
+            'manifest_notes', 'status', 'added_cost', 'item_count',
+            'raw_parts_cost', 'total_container_cost', 'created_at', 'updated_at',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'item_count', 'raw_parts_cost', 'total_container_cost', 'created_at', 'updated_at']
+
+    def get_raw_parts_cost(self, obj):
+        if hasattr(obj, 'raw_parts_cost_total'):
+            return obj.raw_parts_cost_total or Decimal('0.00')
+        return sum((item.raw_unit_cost * item.quantity for item in obj.items.all()), Decimal('0.00'))
+
+    def get_total_container_cost(self, obj):
+        return self.get_raw_parts_cost(obj) + (obj.added_cost or Decimal('0.00'))
 
 
 class ContainerItemSerializer(serializers.ModelSerializer):
     container_reference = serializers.CharField(source='container.reference', read_only=True)
+    raw_total_cost = serializers.SerializerMethodField()
+    added_cost_share = serializers.SerializerMethodField()
+    net_unit_cost = serializers.SerializerMethodField()
+    net_total_cost = serializers.SerializerMethodField()
 
     class Meta:
         model = ContainerItem
         fields = [
             'id', 'container', 'container_reference', 'lot_number', 'part_name',
             'part_number', 'description', 'category', 'condition', 'quantity',
-            'unit', 'reserve_price', 'status', 'created_at', 'updated_at',
+            'unit', 'reserve_price', 'raw_unit_cost', 'raw_total_cost',
+            'added_cost_share', 'net_unit_cost', 'net_total_cost', 'status',
+            'created_at', 'updated_at',
         ]
         read_only_fields = [
             'id', 'container_reference', 'status',
             'created_at', 'updated_at',
         ]
+
+    def get_raw_total_cost(self, obj):
+        return obj.raw_unit_cost * obj.quantity
+
+    def get_added_cost_share(self, obj):
+        raw_total = self.get_raw_total_cost(obj)
+        container_raw_cost = getattr(obj, 'container_raw_parts_cost_total', None)
+        if container_raw_cost is None:
+            container_raw_cost = getattr(obj.container, 'raw_parts_cost_total', None)
+        if container_raw_cost is None:
+            container_raw_cost = sum((item.raw_unit_cost * item.quantity for item in obj.container.items.all()), Decimal('0.00'))
+        if not container_raw_cost:
+            return Decimal('0.00')
+        return (obj.container.added_cost or Decimal('0.00')) * (raw_total / container_raw_cost)
+
+    def get_net_total_cost(self, obj):
+        return self.get_raw_total_cost(obj) + self.get_added_cost_share(obj)
+
+    def get_net_unit_cost(self, obj):
+        if not obj.quantity:
+            return Decimal('0.00')
+        return self.get_net_total_cost(obj) / obj.quantity
 
     def _persist_options(self, validated_data):
         user = self.context['request'].user
@@ -89,6 +130,7 @@ class ContainerItemSerializer(serializers.ModelSerializer):
             'unit': instance.unit or 'piece',
             'quantity': instance.quantity,
             'reserve_price': instance.reserve_price,
+            'raw_unit_cost': instance.raw_unit_cost,
             'description': instance.description or '',
         }
 

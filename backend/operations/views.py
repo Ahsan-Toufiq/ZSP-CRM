@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from django.db.models import Count, DecimalField, IntegerField, OuterRef, Prefetch, Q, Subquery, Sum, Value
+from django.db.models import Count, DecimalField, ExpressionWrapper, F, IntegerField, OuterRef, Prefetch, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -25,6 +25,17 @@ from operations.serializers import (
     PartInventorySerializer,
 )
 from operations.services import apply_container_inventory_delta, mark_gate_pass_printed, sold_quantity_for_item
+
+
+raw_item_cost_expression = ExpressionWrapper(
+    F('items__raw_unit_cost') * F('items__quantity'),
+    output_field=DecimalField(max_digits=14, decimal_places=2),
+)
+
+raw_container_item_cost_expression = ExpressionWrapper(
+    F('raw_unit_cost') * F('quantity'),
+    output_field=DecimalField(max_digits=14, decimal_places=2),
+)
 
 
 def sale_line_queryset():
@@ -101,7 +112,14 @@ class ContainerViewSet(UserStampedMixin, viewsets.ModelViewSet):
     ordering_fields = ['arrival_date', 'created_at', 'reference']
 
     def get_queryset(self):
-        return Container.objects.annotate(item_count=Count('items')).order_by('-arrival_date', '-created_at')
+        return Container.objects.annotate(
+            item_count=Count('items'),
+            raw_parts_cost_total=Coalesce(
+                Sum(raw_item_cost_expression),
+                Value(Decimal('0.00')),
+                output_field=DecimalField(max_digits=14, decimal_places=2),
+            ),
+        ).order_by('-arrival_date', '-created_at')
 
 
 class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
@@ -112,9 +130,29 @@ class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
     ordering_fields = ['lot_number', 'part_name', 'created_at']
 
     def get_queryset(self):
+        container_raw_totals = (
+            ContainerItem.objects
+            .filter(container=OuterRef('container_id'))
+            .values('container')
+            .annotate(
+                raw_total=Coalesce(
+                    Sum(raw_container_item_cost_expression),
+                    Value(Decimal('0.00')),
+                    output_field=DecimalField(max_digits=14, decimal_places=2),
+                ),
+            )
+            .values('raw_total')[:1]
+        )
         return (
             ContainerItem.objects
             .select_related('container')
+            .annotate(
+                container_raw_parts_cost_total=Coalesce(
+                    Subquery(container_raw_totals),
+                    Value(Decimal('0.00')),
+                    output_field=DecimalField(max_digits=14, decimal_places=2),
+                ),
+            )
             .order_by('container__reference', 'part_name', 'lot_number')
         )
 

@@ -14,6 +14,7 @@ class UserProfile(models.Model):
 
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='profile')
     allowed_tabs = models.JSONField(default=list, blank=True)
+    tab_permissions = models.JSONField(default=dict, blank=True)
 
     class Meta:
         ordering = ['user__username']

@@ -51,6 +51,7 @@ class Container(UserStampedModel):
     arrival_date = models.DateField(null=True, blank=True)
     manifest_notes = models.TextField(blank=True)
     status = models.CharField(max_length=30, choices=Status.choices, default=Status.DRAFT)
+    added_cost = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
 
     class Meta:
         ordering = ['-arrival_date', '-created_at']
@@ -88,6 +89,7 @@ class ContainerItem(UserStampedModel):
     quantity = models.PositiveIntegerField(default=1)
     unit = models.CharField(max_length=30, default='piece')
     reserve_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    raw_unit_cost = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     status = models.CharField(max_length=30, choices=Status.choices, default=Status.AVAILABLE)
 
     class Meta:

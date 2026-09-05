@@ -1,11 +1,14 @@
 from decimal import Decimal
 from datetime import timedelta
 
-from django.contrib.auth.models import Group, User
+from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand
+from django.db import transaction
 from django.utils import timezone
 
-from accounts.permissions import Roles
+from accounts.models import UserProfile
+from accounts.permissions import AccessLevel, full_tab_permissions
 from catalog.models import DropdownOption
 from finance.models import Cheque, ChequeStatus
 from finance.services import change_cheque_status, create_cheque
@@ -17,17 +20,10 @@ class Command(BaseCommand):
     help = 'Seed local demo data for Digi7 ZSP testing.'
 
     def handle(self, *args, **options):
-        role_groups = {role: Group.objects.get_or_create(name=role)[0] for role in [
-            Roles.ADMIN,
-            Roles.OPERATIONS,
-            Roles.FINANCE,
-            Roles.GATEKEEPER,
-        ]}
-
         admin, created = User.objects.get_or_create(
             username='admin',
             defaults={
-                'email': 'admin@digi7.local',
+                'email': '',
                 'first_name': 'Digi7',
                 'last_name': 'Admin',
                 'is_staff': True,
@@ -37,22 +33,30 @@ class Command(BaseCommand):
         if created:
             admin.set_password('Admin@12345')
             admin.save()
-        admin.groups.add(role_groups[Roles.ADMIN])
+        UserProfile.objects.update_or_create(
+            user=admin,
+            defaults={'tab_permissions': full_tab_permissions(), 'allowed_tabs': []},
+        )
 
         demo_users = [
-            ('operator', 'Operations', 'User', 'Operator@12345', Roles.OPERATIONS),
-            ('finance', 'Finance', 'User', 'Finance@12345', Roles.FINANCE),
-            ('gatekeeper', 'Gatekeeper', 'User', 'Gatekeeper@12345', Roles.GATEKEEPER),
+            ('operator', 'Operations', 'User', 'Operator@12345', {'dashboard': AccessLevel.VIEW, 'customers': AccessLevel.FULL, 'containers': AccessLevel.FULL, 'sales': AccessLevel.FULL}),
+            ('finance', 'Finance', 'User', 'Finance@12345', {'dashboard': AccessLevel.VIEW, 'customers': AccessLevel.VIEW, 'cheques': AccessLevel.FULL}),
+            ('viewer', 'Read Only', 'User', 'Viewer@12345', {'dashboard': AccessLevel.VIEW, 'customers': AccessLevel.VIEW, 'containers': AccessLevel.VIEW, 'sales': AccessLevel.VIEW, 'cheques': AccessLevel.VIEW}),
         ]
-        for username, first_name, last_name, password, role in demo_users:
+        for username, first_name, last_name, password, permissions in demo_users:
             user, user_created = User.objects.get_or_create(
                 username=username,
-                defaults={'first_name': first_name, 'last_name': last_name, 'email': f'{username}@digi7.local'},
+                defaults={'first_name': first_name, 'last_name': last_name, 'email': ''},
             )
             if user_created:
                 user.set_password(password)
                 user.save()
-            user.groups.add(role_groups[role])
+            normalized = {tab: AccessLevel.NONE for tab in full_tab_permissions()}
+            normalized.update(permissions)
+            UserProfile.objects.update_or_create(
+                user=user,
+                defaults={'tab_permissions': normalized, 'allowed_tabs': []},
+            )
 
         self._seed_dropdown_options(admin)
 
@@ -100,14 +104,14 @@ class Command(BaseCommand):
             customers[name] = customer
 
         container_specs = [
-            ('ZSP-CNT-001', 'Japan', 'Osaka Auto Exports', 18, 'Engine, lights, and mixed body parts.'),
-            ('ZSP-CNT-002', 'UAE', 'Sharjah Parts Yard', 12, 'Body panels and mirrors.'),
-            ('ZSP-CNT-003', 'Thailand', 'Bangkok Auction Supply', 7, 'Suspension and electrical lots.'),
-            ('ZSP-CNT-004', 'Malaysia', 'Penang Dismantlers', 2, 'Fresh receiving container.'),
+            ('ZSP-CNT-001', 'Japan', 'Osaka Auto Exports', 18, 'Engine, lights, and mixed body parts.', '385000.00'),
+            ('ZSP-CNT-002', 'UAE', 'Sharjah Parts Yard', 12, 'Body panels and mirrors.', '270000.00'),
+            ('ZSP-CNT-003', 'Thailand', 'Bangkok Auction Supply', 7, 'Suspension and electrical lots.', '225000.00'),
+            ('ZSP-CNT-004', 'Malaysia', 'Penang Dismantlers', 2, 'Fresh receiving container.', '165000.00'),
         ]
         containers = {}
-        for reference, origin, supplier, days_ago, notes in container_specs:
-            containers[reference] = Container.objects.get_or_create(
+        for reference, origin, supplier, days_ago, notes, added_cost in container_specs:
+            container, _ = Container.objects.update_or_create(
                 reference=reference,
                 defaults={
                     'origin_country': origin,
@@ -115,10 +119,12 @@ class Command(BaseCommand):
                     'arrival_date': today - timedelta(days=days_ago),
                     'status': Container.Status.READY_FOR_AUCTION if reference != 'ZSP-CNT-004' else Container.Status.RECEIVING,
                     'manifest_notes': notes,
+                    'added_cost': Decimal(added_cost),
                     'created_by': admin,
                     'updated_by': admin,
                 },
-            )[0]
+            )
+            containers[reference] = container
 
         item_specs = [
             ('ZSP-CNT-001', 'LOT-001', 'Toyota headlight pair', 'TY-HL-01', 'Lights', 4, 'pair', 'Used', '18000.00'),
@@ -136,8 +142,45 @@ class Command(BaseCommand):
             ('ZSP-CNT-004', 'LOT-301', 'Unsorted dashboard electronics', 'MIX-DASH', 'Electrical', 12, 'box', 'Unknown', '15000.00'),
             ('ZSP-CNT-004', 'LOT-302', 'Damaged bumper bundle', 'MIX-BMP-DMG', 'Body parts', 7, 'piece', 'Damaged', '6000.00'),
         ]
+        demo_part_pool = [
+            ('Door handle set', 'DH-HND', 'Body parts', 12, 'set', 'Used', '8500.00'),
+            ('Fuel pump', 'FP-ASSY', 'Engine', 5, 'piece', 'Used', '26000.00'),
+            ('Bonnet hinge pair', 'BN-HNG', 'Body parts', 6, 'pair', 'Used', '7000.00'),
+            ('Rear bumper garnish', 'RB-GRN', 'Body parts', 9, 'piece', 'Used', '11500.00'),
+            ('Power window switch', 'PW-SW', 'Electrical', 14, 'piece', 'Used', '6500.00'),
+            ('AC compressor', 'AC-CMP', 'Engine', 4, 'piece', 'Used', '42000.00'),
+            ('Steering rack', 'ST-RCK', 'Suspension', 3, 'piece', 'Used', '52000.00'),
+            ('Tailgate lock', 'TG-LCK', 'Body parts', 10, 'piece', 'Used', '7600.00'),
+            ('Side fender', 'SD-FND', 'Body parts', 7, 'piece', 'Used', '15500.00'),
+            ('Throttle body', 'TH-BDY', 'Engine', 5, 'piece', 'Used', '33000.00'),
+            ('Ignition coil pack', 'IG-COIL', 'Electrical', 18, 'piece', 'Used', '5200.00'),
+            ('Brake caliper pair', 'BR-CAL', 'Suspension', 5, 'pair', 'Used', '21000.00'),
+            ('Wiper motor', 'WP-MTR', 'Electrical', 8, 'piece', 'Used', '10500.00'),
+            ('Radiator fan', 'RD-FAN', 'Engine', 6, 'piece', 'Used', '18500.00'),
+            ('Dashboard vent set', 'DS-VENT', 'Interior', 11, 'set', 'Used', '4800.00'),
+        ]
+        existing_counts = {}
+        for container_ref, *_ in item_specs:
+            existing_counts[container_ref] = existing_counts.get(container_ref, 0) + 1
+        for container_ref in containers:
+            needed = max(15 - existing_counts.get(container_ref, 0), 0)
+            for offset in range(needed):
+                name, number, category, quantity, unit, condition, reserve = demo_part_pool[offset % len(demo_part_pool)]
+                lot_prefix = container_ref.rsplit('-', 1)[-1]
+                item_specs.append((
+                    container_ref,
+                    f'LOT-{lot_prefix}-{offset + 900}',
+                    f'{name} {lot_prefix}-{offset + 1}',
+                    f'{number}-{lot_prefix}-{offset + 1}',
+                    category,
+                    quantity,
+                    unit,
+                    condition,
+                    reserve,
+                ))
         items = {}
         for container_ref, lot, name, part_number, category, quantity, unit, condition, reserve in item_specs:
+            raw_unit_cost = (Decimal(reserve) * Decimal('0.62')).quantize(Decimal('0.01'))
             item, item_created = ContainerItem.objects.get_or_create(
                 container=containers[container_ref],
                 lot_number=lot,
@@ -149,27 +192,48 @@ class Command(BaseCommand):
                     'quantity': quantity,
                     'unit': unit,
                     'reserve_price': Decimal(reserve),
+                    'raw_unit_cost': raw_unit_cost,
                     'created_by': admin,
                     'updated_by': admin,
                 },
             )
-            if not item_created and item.quantity < quantity:
-                before = {
-                    'part_name': item.part_name,
-                    'part_number': item.part_number or '',
-                    'category': item.category or '',
-                    'condition': item.condition or '',
-                    'unit': item.unit or 'piece',
-                    'quantity': item.quantity,
-                    'reserve_price': item.reserve_price,
-                    'description': item.description or '',
-                }
-                item.quantity = quantity
-                item.updated_by = admin
-                item.save(update_fields=['quantity', 'updated_by', 'updated_at'])
-                apply_container_inventory_delta(user=admin, before=before, after=item)
+            if not item_created:
+                try:
+                    with transaction.atomic():
+                        before = {
+                            'part_name': item.part_name,
+                            'part_number': item.part_number or '',
+                            'category': item.category or '',
+                            'condition': item.condition or '',
+                            'unit': item.unit or 'piece',
+                            'quantity': item.quantity,
+                            'reserve_price': item.reserve_price,
+                            'raw_unit_cost': item.raw_unit_cost,
+                            'description': item.description or '',
+                        }
+                        item.part_name = name
+                        item.part_number = part_number
+                        item.category = category
+                        item.condition = condition
+                        item.quantity = quantity
+                        item.unit = unit
+                        item.reserve_price = Decimal(reserve)
+                        item.raw_unit_cost = raw_unit_cost
+                        item.updated_by = admin
+                        item.save(update_fields=[
+                            'part_name', 'part_number', 'category', 'condition', 'quantity',
+                            'unit', 'reserve_price', 'raw_unit_cost', 'updated_by', 'updated_at',
+                        ])
+                        apply_container_inventory_delta(user=admin, before=before, after=item)
+                except ValidationError:
+                    item.refresh_from_db()
+                    item.reserve_price = Decimal(reserve)
+                    item.raw_unit_cost = raw_unit_cost
+                    item.updated_by = admin
+                    item.save(update_fields=['reserve_price', 'raw_unit_cost', 'updated_by', 'updated_at'])
             if item_created:
-                apply_container_inventory_delta(user=admin, after=item)
+                with transaction.atomic():
+                    apply_container_inventory_delta(user=admin, after=item)
             items[lot] = item
         parts = {
             lot: PartInventory.objects.filter(
@@ -337,8 +401,14 @@ class Command(BaseCommand):
                 'Transmission',
                 'ABS pump',
                 'Shock set',
+                'Door handle set',
+                'Fuel pump',
+                'AC compressor',
+                'Steering rack',
+                'Brake caliper pair',
+                'Radiator fan',
             ],
-            DropdownOption.Group.ITEM_CATEGORY: ['Body parts', 'Electrical', 'Engine', 'Lights', 'Suspension', 'Transmission'],
+            DropdownOption.Group.ITEM_CATEGORY: ['Body parts', 'Electrical', 'Engine', 'Interior', 'Lights', 'Suspension', 'Transmission'],
             DropdownOption.Group.ITEM_CONDITION: ['Unknown', 'Used', 'New', 'Damaged'],
             DropdownOption.Group.ITEM_UNIT: ['piece', 'set', 'pair', 'kg', 'box'],
         }

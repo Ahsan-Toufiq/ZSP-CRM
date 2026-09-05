@@ -8,8 +8,8 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from accounts.permissions import AdminPermission
-from accounts.serializers import LoginSerializer, ManagedUserSerializer, UserSerializer
+from accounts.permissions import AdminPermission, PERMANENT_ADMIN_USERNAME
+from accounts.serializers import LoginSerializer, ManagedUserSerializer, UserSerializer, enforce_permanent_admin
 
 
 @api_view(['GET'])
@@ -50,15 +50,33 @@ class MeView(APIView):
 class ManagedUserViewSet(viewsets.ModelViewSet):
     serializer_class = ManagedUserSerializer
     permission_classes = [AdminPermission]
-    filterset_fields = ['is_active', 'is_staff']
-    search_fields = ['username', 'first_name', 'last_name', 'email']
+    filterset_fields = ['is_active']
+    search_fields = ['username', 'first_name', 'last_name']
     ordering_fields = ['username', 'date_joined', 'last_login']
 
     def get_queryset(self):
         return User.objects.prefetch_related('groups').select_related('profile').order_by('username')
 
+    def list(self, request, *args, **kwargs):
+        for user in User.objects.filter(username=PERMANENT_ADMIN_USERNAME):
+            enforce_permanent_admin(user)
+        return super().list(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        user = self.get_object()
+        if user.username == PERMANENT_ADMIN_USERNAME:
+            enforce_permanent_admin(user)
+            return Response({'detail': 'Digi7 Admin is permanent and cannot be edited.'}, status=status.HTTP_400_BAD_REQUEST)
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        return self.update(request, *args, **kwargs)
+
     def destroy(self, request, *args, **kwargs):
         user = self.get_object()
+        if user.username == PERMANENT_ADMIN_USERNAME:
+            enforce_permanent_admin(user)
+            return Response({'detail': 'Digi7 Admin is permanent and cannot be deleted.'}, status=status.HTTP_400_BAD_REQUEST)
         if user.id == request.user.id:
             return Response({'detail': 'You cannot delete your own account.'}, status=status.HTTP_400_BAD_REQUEST)
         return super().destroy(request, *args, **kwargs)

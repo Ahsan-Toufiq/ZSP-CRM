@@ -1,20 +1,20 @@
 from decimal import Decimal
 
 import pytest
-from django.contrib.auth.models import Group, User
+from django.contrib.auth.models import User
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from accounts.permissions import Roles
+from accounts.models import UserProfile
+from accounts.permissions import full_tab_permissions
 from operations.models import AuctionSale, Customer, PartInventory
 from operations.services import create_auction_sale
 
 
 @pytest.fixture
 def admin_user(db):
-    group = Group.objects.create(name=Roles.ADMIN)
     user = User.objects.create_user(username='api-admin', password='StrongPass123!')
-    user.groups.add(group)
+    UserProfile.objects.create(user=user, tab_permissions=full_tab_permissions())
     return user
 
 

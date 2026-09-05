@@ -5,16 +5,16 @@ export interface User {
   username: string;
   first_name: string;
   last_name: string;
-  email: string;
-  is_staff: boolean;
   is_superuser: boolean;
   full_name: string;
-  roles: string[];
   access_tabs: string[];
+  tab_permissions?: Record<string, 'none' | 'view' | 'full'>;
+  is_permanent_admin: boolean;
 }
 
 export interface ManagedUser extends User {
   is_active: boolean;
+  effective_tab_permissions: Record<string, 'none' | 'view' | 'full'>;
   date_joined: string;
   last_login: string | null;
 }
@@ -41,6 +41,9 @@ export interface Container {
   arrival_date: string | null;
   manifest_notes: string;
   status: string;
+  added_cost: string;
+  raw_parts_cost: string;
+  total_container_cost: string;
   item_count: number;
 }
 
@@ -57,6 +60,11 @@ export interface ContainerItem {
   quantity: number;
   unit: string;
   reserve_price: string | null;
+  raw_unit_cost: string;
+  raw_total_cost: string;
+  added_cost_share: string;
+  net_unit_cost: string;
+  net_total_cost: string;
   status: string;
 }
 
