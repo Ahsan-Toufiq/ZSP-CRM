@@ -360,6 +360,54 @@ class Command(BaseCommand):
             )
             change_cheque_status(user=admin, cheque=bounced_cheque, status=statuses['Bounced'])
 
+        expired_cheques = [
+            (
+                'ZSP-CHQ-EXP-001',
+                customers['Lahore Spare Traders'],
+                'United Bank Limited',
+                'Lahore Spare Traders',
+                Decimal('87500.00'),
+                today - timedelta(days=75),
+                today - timedelta(days=14),
+            ),
+            (
+                'ZSP-CHQ-EXP-002',
+                customers['Rawalpindi Autos'],
+                'MCB Bank Limited',
+                'Rawalpindi Autos',
+                Decimal('42000.00'),
+                today - timedelta(days=63),
+                today - timedelta(days=7),
+            ),
+            (
+                'ZSP-CHQ-EXP-003',
+                customers['Karachi Motor House'],
+                'Bank AL Habib Limited',
+                'Karachi Motor House',
+                Decimal('118000.00'),
+                today - timedelta(days=90),
+                today - timedelta(days=22),
+            ),
+        ]
+        for cheque_number, customer, bank_name, name_on_cheque, amount, cheque_date, expiry_date in expired_cheques:
+            if Cheque.objects.filter(cheque_number=cheque_number, bank_name=bank_name).exists():
+                continue
+            create_cheque(
+                user=admin,
+                cheque_number=cheque_number,
+                customer=customer,
+                name_on_cheque=name_on_cheque,
+                bank_name=bank_name,
+                branch_name='Demo branch',
+                account_title=name_on_cheque,
+                amount=amount,
+                cheque_date=cheque_date,
+                expiry_date=expiry_date,
+                received_date=cheque_date,
+                status=statuses['Pending'],
+                notes='Seeded expired pending cheque for red highlight testing.',
+            )
+
     def _seed_dropdown_options(self, admin):
         banks = [
             'Al Baraka Bank (Pakistan) Limited',
