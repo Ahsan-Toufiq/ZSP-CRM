@@ -447,6 +447,70 @@ h3 {
   gap: 14px;
 }
 
+.inventory-workspace {
+  display: grid;
+  gap: 18px;
+}
+
+.inventory-workspace-head {
+  align-items: center;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 0;
+}
+
+.segmented-control {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(170px, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.segmented-control button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.segmented-control button:hover {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.segmented-control button.active,
+.segmented-control button[aria-selected="true"] {
+  background: var(--ink);
+  color: #ffffff;
+  box-shadow: 0 10px 24px rgba(12, 20, 17, 0.14);
+}
+
+.inventory-pane {
+  display: grid;
+  gap: 14px;
+}
+
+.pane-head {
+  margin-bottom: 0;
+}
+
+.pane-head h3 {
+  margin: 0 0 4px;
+  font-size: 20px;
+}
+
 .settings-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -1038,6 +1102,11 @@ td select {
   .container-top,
   .container-meta {
     display: grid;
+  }
+
+  .segmented-control {
+    width: 100%;
+    grid-template-columns: 1fr;
   }
 
   .form-grid,

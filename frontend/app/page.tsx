@@ -573,114 +573,147 @@ function ContainersPanel({
   onEditPart: (part: PartInventory) => void;
   onDeletePart: (part: PartInventory) => void;
 }) {
+  const [inventoryPane, setInventoryPane] = useState<'parts' | 'containers'>('parts');
+
   return (
-    <div className="stacked-panels">
-      <section className="panel">
-        <div className="section-head">
-          <div>
-            <h2>Parts inventory</h2>
-            <p className="muted">Aggregate sellable stock. Expand a part to see the container and manual cost layers behind it.</p>
+    <section className="panel inventory-workspace">
+      <div className="section-head inventory-workspace-head">
+        <div>
+          <h2>Containers & Inventory</h2>
+          <p className="muted">Switch between sellable stock and original container manifests without leaving this module.</p>
+        </div>
+        <div className="segmented-control" role="tablist" aria-label="Inventory views">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={inventoryPane === 'parts'}
+            className={inventoryPane === 'parts' ? 'active' : ''}
+            onClick={() => setInventoryPane('parts')}
+          >
+            <Boxes size={16} /> Parts Inventory
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={inventoryPane === 'containers'}
+            className={inventoryPane === 'containers' ? 'active' : ''}
+            onClick={() => setInventoryPane('containers')}
+          >
+            <ContainerIcon size={16} /> Container Inventory
+          </button>
+        </div>
+      </div>
+
+      {inventoryPane === 'parts' ? (
+        <div className="inventory-pane" role="tabpanel">
+          <div className="section-head pane-head">
+            <div>
+              <h3>Parts inventory</h3>
+              <p className="muted">Aggregate sellable stock. Expand a part to see the container and manual cost layers behind it.</p>
+            </div>
+            {canWrite ? <button className="btn primary" onClick={onAddPart}><Plus size={18} /> Part</button> : null}
           </div>
-          {canWrite ? <button className="btn primary" onClick={onAddPart}><Plus size={18} /> Part</button> : null}
-        </div>
-        <div className="record-stack">
-          {parts.length === 0 ? <div className="empty-state"><Search size={22} /> No records yet.</div> : null}
-          {parts.map((part) => {
-            const expanded = expandedParts.has(part.id);
-            return (
-              <article className="record-card" key={part.id}>
-                <button className="record-main inventory-main" onClick={() => onTogglePart(part.id)}>
-                  {expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
-                  <div>
-                    <strong>{part.part_name}</strong>
-                    <span>{part.part_number || 'No part number'} · {part.category || 'No category'} · {part.condition || 'No condition'}</span>
-                  </div>
-                  <span className="stock-pill">Lifetime {part.quantity} {part.unit}</span>
-                  <strong>{part.available_quantity} {part.unit} available</strong>
-                </button>
-                {canWrite ? (
-                  <div className="record-actions">
-                    <button className="icon-btn" onClick={() => onEditPart(part)} aria-label={`Edit ${part.part_name}`}><Pencil size={16} /></button>
-                    <button className="icon-btn danger" onClick={() => onDeletePart(part)} aria-label={`Delete ${part.part_name}`} disabled={part.sold_quantity > 0} title={part.sold_quantity > 0 ? 'Parts with sale history cannot be deleted.' : `Delete ${part.part_name}`}><Trash2 size={16} /></button>
-                  </div>
-                ) : null}
-                {expanded ? (
-                  <DataTable
-                    headers={['Source', 'Raw unit cost', 'Net unit cost', 'Batch quantity', 'Available']}
-                    rows={(part.batches ?? []).map((batch) => [
-                      <div key={batch.id}><strong>{batch.container_reference || batch.source_label || 'Manual adjustment'}</strong><span className="cell-note">{batch.notes || 'No notes'}</span></div>,
-                      money(batch.raw_unit_cost),
-                      money(batch.net_unit_cost),
-                      `${batch.quantity} ${batch.unit}`,
-                      <strong key="available">{batch.available_quantity} {batch.unit}</strong>,
-                    ])}
-                  />
-                ) : null}
-              </article>
-            );
-          })}
-        </div>
-      </section>
-      <section className="panel">
-        <div className="section-head">
-          <div>
-            <h2>Container inventory</h2>
-            <p className="muted">Original received manifest. Changes here intentionally apply a delta to parts inventory.</p>
-          </div>
-          {canWrite ? <button className="btn primary" onClick={onAdd}><Plus size={18} /> Container</button> : null}
-        </div>
-        <div className="container-grid">
-          {containers.map((container) => {
-            const containerItems = itemsByContainer.get(container.id) ?? [];
-            const expanded = expandedContainers.has(container.id);
-            return (
-              <article className="container-card" key={container.id}>
-                <div className="container-top">
-                  <button className="record-main compact-main" onClick={() => onToggleContainer(container.id)}>
+          <div className="record-stack">
+            {parts.length === 0 ? <div className="empty-state"><Search size={22} /> No records yet.</div> : null}
+            {parts.map((part) => {
+              const expanded = expandedParts.has(part.id);
+              return (
+                <article className="record-card" key={part.id}>
+                  <button className="record-main inventory-main" onClick={() => onTogglePart(part.id)}>
                     {expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
-                    <div><strong>{container.reference}</strong><span>{container.origin_country || 'Origin not set'} · {container.supplier_name || 'Supplier not set'}</span></div>
+                    <div>
+                      <strong>{part.part_name}</strong>
+                      <span>{part.part_number || 'No part number'} · {part.category || 'No category'} · {part.condition || 'No condition'}</span>
+                    </div>
+                    <span className="stock-pill">Lifetime {part.quantity} {part.unit}</span>
+                    <strong>{part.available_quantity} {part.unit} available</strong>
                   </button>
-                  <span className={statusClass(container.status)}>{container.status}</span>
-                </div>
-                <div className="container-meta cost-meta">
-                  <span>{container.arrival_date || 'No arrival date'}</span>
-                  <span>{containerItems.length} manifest items</span>
-                  <span>Raw parts: <strong>{money(container.raw_parts_cost)}</strong></span>
-                  <span>Added cost: <strong>{money(container.added_cost)}</strong></span>
-                  <span>Total cost: <strong>{money(container.total_container_cost)}</strong></span>
-                </div>
-                {canWrite ? (
-                  <div className="record-actions">
-                    <button className="btn small" onClick={() => onAddItem(container.id)}><Plus size={16} /> Add manifest item</button>
-                    <button className="icon-btn" onClick={() => onEdit(container)} aria-label={`Edit ${container.reference}`}><Pencil size={16} /></button>
-                  </div>
-                ) : null}
-                {expanded ? (
-                  <DataTable
-                    headers={['Part', 'Part number', 'Category', 'Qty', 'Raw unit', 'Raw total', 'Added share', 'Net unit', 'Net total', 'Actions']}
-                    rows={containerItems.map((item) => [
-                      item.part_name,
-                      item.part_number || '-',
-                      item.category || '-',
-                      `${item.quantity} ${item.unit}`,
-                      money(item.raw_unit_cost),
-                      money(item.raw_total_cost),
-                      money(item.added_cost_share),
-                      money(item.net_unit_cost),
-                      money(item.net_total_cost),
-                      <div className="table-actions" key="actions">
-                        {canWrite ? <button className="icon-btn" onClick={() => onEditItem(item)} aria-label={`Edit ${item.part_name}`}><Pencil size={16} /></button> : null}
-                        {canWrite ? <button className="icon-btn danger" onClick={() => onDeleteItem(item)} aria-label={`Delete ${item.part_name}`}><Trash2 size={16} /></button> : <span className="muted">View only</span>}
-                      </div>,
-                    ])}
-                  />
-                ) : null}
-              </article>
-            );
-          })}
+                  {canWrite ? (
+                    <div className="record-actions">
+                      <button className="icon-btn" onClick={() => onEditPart(part)} aria-label={`Edit ${part.part_name}`}><Pencil size={16} /></button>
+                      <button className="icon-btn danger" onClick={() => onDeletePart(part)} aria-label={`Delete ${part.part_name}`} disabled={part.sold_quantity > 0} title={part.sold_quantity > 0 ? 'Parts with sale history cannot be deleted.' : `Delete ${part.part_name}`}><Trash2 size={16} /></button>
+                    </div>
+                  ) : null}
+                  {expanded ? (
+                    <DataTable
+                      headers={['Source', 'Raw unit cost', 'Net unit cost', 'Batch quantity', 'Available']}
+                      rows={(part.batches ?? []).map((batch) => [
+                        <div key={batch.id}><strong>{batch.container_reference || batch.source_label || 'Manual adjustment'}</strong><span className="cell-note">{batch.notes || 'No notes'}</span></div>,
+                        money(batch.raw_unit_cost),
+                        money(batch.net_unit_cost),
+                        `${batch.quantity} ${batch.unit}`,
+                        <strong key="available">{batch.available_quantity} {batch.unit}</strong>,
+                      ])}
+                    />
+                  ) : null}
+                </article>
+              );
+            })}
+          </div>
         </div>
-      </section>
-    </div>
+      ) : (
+        <div className="inventory-pane" role="tabpanel">
+          <div className="section-head pane-head">
+            <div>
+              <h3>Container inventory</h3>
+              <p className="muted">Original received manifest. Changes here intentionally apply a delta to parts inventory.</p>
+            </div>
+            {canWrite ? <button className="btn primary" onClick={onAdd}><Plus size={18} /> Container</button> : null}
+          </div>
+          <div className="container-grid">
+            {containers.length === 0 ? <div className="empty-state"><Search size={22} /> No records yet.</div> : null}
+            {containers.map((container) => {
+              const containerItems = itemsByContainer.get(container.id) ?? [];
+              const expanded = expandedContainers.has(container.id);
+              return (
+                <article className="container-card" key={container.id}>
+                  <div className="container-top">
+                    <button className="record-main compact-main" onClick={() => onToggleContainer(container.id)}>
+                      {expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                      <div><strong>{container.reference}</strong><span>{container.origin_country || 'Origin not set'} · {container.supplier_name || 'Supplier not set'}</span></div>
+                    </button>
+                    <span className={statusClass(container.status)}>{container.status}</span>
+                  </div>
+                  <div className="container-meta cost-meta">
+                    <span>{container.arrival_date || 'No arrival date'}</span>
+                    <span>{containerItems.length} manifest items</span>
+                    <span>Raw parts: <strong>{money(container.raw_parts_cost)}</strong></span>
+                    <span>Added cost: <strong>{money(container.added_cost)}</strong></span>
+                    <span>Total cost: <strong>{money(container.total_container_cost)}</strong></span>
+                  </div>
+                  {canWrite ? (
+                    <div className="record-actions">
+                      <button className="btn small" onClick={() => onAddItem(container.id)}><Plus size={16} /> Add manifest item</button>
+                      <button className="icon-btn" onClick={() => onEdit(container)} aria-label={`Edit ${container.reference}`}><Pencil size={16} /></button>
+                    </div>
+                  ) : null}
+                  {expanded ? (
+                    <DataTable
+                      headers={['Part', 'Part number', 'Category', 'Qty', 'Raw unit', 'Raw total', 'Added share', 'Net unit', 'Net total', 'Actions']}
+                      rows={containerItems.map((item) => [
+                        item.part_name,
+                        item.part_number || '-',
+                        item.category || '-',
+                        `${item.quantity} ${item.unit}`,
+                        money(item.raw_unit_cost),
+                        money(item.raw_total_cost),
+                        money(item.added_cost_share),
+                        money(item.net_unit_cost),
+                        money(item.net_total_cost),
+                        <div className="table-actions" key="actions">
+                          {canWrite ? <button className="icon-btn" onClick={() => onEditItem(item)} aria-label={`Edit ${item.part_name}`}><Pencil size={16} /></button> : null}
+                          {canWrite ? <button className="icon-btn danger" onClick={() => onDeleteItem(item)} aria-label={`Delete ${item.part_name}`}><Trash2 size={16} /></button> : <span className="muted">View only</span>}
+                        </div>,
+                      ])}
+                    />
+                  ) : null}
+                </article>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
