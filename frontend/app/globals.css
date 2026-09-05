@@ -558,6 +558,41 @@ td select {
   font-size: 12px;
 }
 
+.stock-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f6faf8;
+  color: var(--brand-dark);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.inventory-main {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+.line-stack {
+  display: grid;
+  min-width: 260px;
+  gap: 6px;
+}
+
+.line-stack span {
+  display: grid;
+  gap: 2px;
+  font-weight: 750;
+}
+
+.line-stack small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .badge,
 .chip {
   gap: 6px;

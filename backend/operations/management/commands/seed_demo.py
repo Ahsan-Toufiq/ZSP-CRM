@@ -136,6 +136,7 @@ class Command(BaseCommand):
             ('ZSP-CNT-002', 'LOT-102', 'Honda Vezel transmission', 'HN-TR-VZ', 'Transmission', 2, 'piece', 'Used', '190000.00'),
             ('ZSP-CNT-002', 'LOT-103', 'Daihatsu Mira door set', 'DH-DR-MR', 'Body parts', 4, 'set', 'Used', '65000.00'),
             ('ZSP-CNT-002', 'LOT-104', 'Assorted clips and brackets', 'MIX-CLIP', 'Body parts', 30, 'box', 'Used', '12000.00'),
+            ('ZSP-CNT-002', 'LOT-105', 'Toyota headlight pair', 'TY-HL-01', 'Lights', 2, 'pair', 'Used', '22000.00'),
             ('ZSP-CNT-003', 'LOT-201', 'Toyota Aqua ABS pump', 'TY-ABS-AQ', 'Electrical', 3, 'piece', 'Used', '42000.00'),
             ('ZSP-CNT-003', 'LOT-202', 'Suzuki Swift shock set', 'SZ-SHK-SW', 'Suspension', 5, 'set', 'Used', '28000.00'),
             ('ZSP-CNT-003', 'LOT-203', 'Nissan Note radiator', 'NS-RAD-NT', 'Engine', 4, 'piece', 'Used', '22000.00'),
@@ -201,6 +202,7 @@ class Command(BaseCommand):
                 try:
                     with transaction.atomic():
                         before = {
+                            'container_item_id': item.id,
                             'part_name': item.part_name,
                             'part_number': item.part_number or '',
                             'category': item.category or '',
@@ -307,7 +309,7 @@ class Command(BaseCommand):
                 notes=marker,
                 lines=[
                     {
-                        'item': parts[lot],
+                        'inventory_batch': items[lot].inventory_batch,
                         'quantity': quantity,
                         'sold_price': Decimal(price),
                         'notes': 'Seeded sale line.',

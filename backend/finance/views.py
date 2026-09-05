@@ -78,7 +78,7 @@ class CustomerBalanceViewSet(viewsets.ReadOnlyModelViewSet):
     ordering_fields = ['name', 'created_at']
 
     def get_queryset(self):
-        sale_lines = AuctionSaleLine.objects.select_related('item')
+        sale_lines = AuctionSaleLine.objects.select_related('item', 'inventory_batch', 'inventory_batch__container')
         allocations = ChequeSettlementAllocation.objects.select_related('cheque', 'sale')
         sales = (
             AuctionSale.objects

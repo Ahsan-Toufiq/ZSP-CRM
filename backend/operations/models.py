@@ -134,6 +134,31 @@ class PartInventory(UserStampedModel):
         return self.part_name
 
 
+class InventoryBatch(UserStampedModel):
+    item = models.ForeignKey(PartInventory, on_delete=models.PROTECT, related_name='batches')
+    container = models.ForeignKey(Container, on_delete=models.PROTECT, related_name='inventory_batches', null=True, blank=True)
+    container_item = models.OneToOneField(ContainerItem, on_delete=models.PROTECT, related_name='inventory_batch', null=True, blank=True)
+    source_label = models.CharField(max_length=180, blank=True)
+    quantity = models.PositiveIntegerField(default=0)
+    raw_unit_cost = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['item__part_name', 'container__reference', 'created_at']
+        constraints = [
+            models.CheckConstraint(condition=Q(quantity__gte=0), name='inventory_batch_quantity_non_negative'),
+        ]
+        indexes = [
+            models.Index(fields=['item']),
+            models.Index(fields=['container']),
+            models.Index(fields=['source_label']),
+        ]
+
+    def __str__(self) -> str:
+        source = self.container.reference if self.container_id else self.source_label or 'Manual'
+        return f'{self.item.part_name} / {source}'
+
+
 class AuctionSale(UserStampedModel):
     class PaymentType(models.TextChoices):
         CASH = 'cash', 'Cash'
@@ -183,8 +208,17 @@ class AuctionSale(UserStampedModel):
 class AuctionSaleLine(UserStampedModel):
     sale = models.ForeignKey(AuctionSale, on_delete=models.PROTECT, related_name='lines')
     item = models.ForeignKey(PartInventory, on_delete=models.PROTECT, related_name='sale_lines')
+    inventory_batch = models.ForeignKey(
+        InventoryBatch,
+        on_delete=models.PROTECT,
+        related_name='sale_lines',
+        null=True,
+        blank=True,
+    )
     quantity = models.PositiveIntegerField(default=1)
     sold_price = models.DecimalField(max_digits=14, decimal_places=2)
+    raw_unit_cost_snapshot = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
+    net_unit_cost_snapshot = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     notes = models.TextField(blank=True)
 
     class Meta:
@@ -195,6 +229,7 @@ class AuctionSaleLine(UserStampedModel):
         indexes = [
             models.Index(fields=['sold_price']),
             models.Index(fields=['item']),
+            models.Index(fields=['inventory_batch']),
         ]
 
     def clean(self):

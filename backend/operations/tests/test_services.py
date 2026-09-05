@@ -8,7 +8,7 @@ from django.utils import timezone
 from catalog.models import DropdownOption
 from finance.models import Cheque, ChequeStatus, CustomerLedgerEntry
 from finance.services import change_cheque_status
-from operations.models import AuctionSale, Container, ContainerItem, GatePassLine, PartInventory
+from operations.models import AuctionSale, Container, ContainerItem, GatePassLine, InventoryBatch, PartInventory
 from operations.services import available_quantity_for_item, create_auction_sale, issue_gate_pass, mark_gate_pass_printed, update_auction_sale, verify_gate_pass
 
 
@@ -34,14 +34,24 @@ def second_item(db):
     return PartInventory.objects.create(part_name='Bumper', quantity=1, unit='piece')
 
 
+def make_batch(item, quantity=None, raw_unit_cost=Decimal('5000.00'), source_label='Test batch'):
+    return InventoryBatch.objects.create(
+        item=item,
+        quantity=quantity if quantity is not None else item.quantity,
+        raw_unit_cost=raw_unit_cost,
+        source_label=source_label,
+    )
+
+
 @pytest.mark.django_db
 def test_credit_sale_marks_item_sold_and_posts_customer_balance(user, customer, item):
+    batch = make_batch(item)
     sale = create_auction_sale(
         user=user,
         sale_date=timezone.localdate(),
         payment_type=AuctionSale.PaymentType.CREDIT,
         customer=customer,
-        lines=[{'item': item, 'sold_price': Decimal('15000.00')}],
+        lines=[{'inventory_batch': batch, 'sold_price': Decimal('15000.00')}],
     )
 
     item.refresh_from_db()
@@ -52,24 +62,26 @@ def test_credit_sale_marks_item_sold_and_posts_customer_balance(user, customer, 
 
 @pytest.mark.django_db
 def test_non_cash_sale_requires_customer(user, item):
+    batch = make_batch(item)
     with pytest.raises(ValidationError):
         create_auction_sale(
             user=user,
             sale_date=timezone.localdate(),
             payment_type=AuctionSale.PaymentType.CREDIT,
             customer=None,
-            lines=[{'item': item, 'sold_price': Decimal('15000.00')}],
+            lines=[{'inventory_batch': batch, 'sold_price': Decimal('15000.00')}],
         )
 
 
 @pytest.mark.django_db
 def test_cash_sale_does_not_enter_customer_balance(user, item):
+    batch = make_batch(item)
     sale = create_auction_sale(
         user=user,
         sale_date=timezone.localdate(),
         payment_type=AuctionSale.PaymentType.CASH,
         customer=None,
-        lines=[{'item': item, 'sold_price': Decimal('15000.00')}],
+        lines=[{'inventory_batch': batch, 'sold_price': Decimal('15000.00')}],
     )
 
     assert sale.customer is None
@@ -78,12 +90,13 @@ def test_cash_sale_does_not_enter_customer_balance(user, item):
 
 @pytest.mark.django_db
 def test_sold_item_cannot_be_sold_again(user, customer, item):
+    batch = make_batch(item)
     create_auction_sale(
         user=user,
         sale_date=timezone.localdate(),
         payment_type=AuctionSale.PaymentType.CREDIT,
         customer=customer,
-        lines=[{'item': item, 'sold_price': Decimal('15000.00')}],
+        lines=[{'inventory_batch': batch, 'sold_price': Decimal('15000.00')}],
     )
 
     with pytest.raises(ValidationError):
@@ -92,7 +105,7 @@ def test_sold_item_cannot_be_sold_again(user, customer, item):
             sale_date=timezone.localdate(),
             payment_type=AuctionSale.PaymentType.CREDIT,
             customer=customer,
-            lines=[{'item': item, 'sold_price': Decimal('16000.00')}],
+            lines=[{'inventory_batch': batch, 'sold_price': Decimal('16000.00')}],
         )
 
 
@@ -100,13 +113,14 @@ def test_sold_item_cannot_be_sold_again(user, customer, item):
 def test_sale_can_sell_partial_container_quantity(user, customer, item):
     item.quantity = 3
     item.save(update_fields=['quantity'])
+    batch = make_batch(item, quantity=3)
 
     first_sale = create_auction_sale(
         user=user,
         sale_date=timezone.localdate(),
         payment_type=AuctionSale.PaymentType.CREDIT,
         customer=customer,
-        lines=[{'item': item, 'quantity': 2, 'sold_price': Decimal('5000.00')}],
+        lines=[{'inventory_batch': batch, 'quantity': 2, 'sold_price': Decimal('5000.00')}],
     )
 
     item.refresh_from_db()
@@ -118,7 +132,7 @@ def test_sale_can_sell_partial_container_quantity(user, customer, item):
         sale_date=timezone.localdate(),
         payment_type=AuctionSale.PaymentType.CREDIT,
         customer=customer,
-        lines=[{'item': item, 'quantity': 1, 'sold_price': Decimal('6000.00')}],
+        lines=[{'inventory_batch': batch, 'quantity': 1, 'sold_price': Decimal('6000.00')}],
     )
 
     item.refresh_from_db()
@@ -127,13 +141,37 @@ def test_sale_can_sell_partial_container_quantity(user, customer, item):
 
 
 @pytest.mark.django_db
-def test_sale_auto_creates_gate_pass_and_verification_does_not_release_stock(user, customer, item):
+def test_sale_selects_specific_cost_batch_for_same_part(user, customer, item):
+    item.quantity = 4
+    item.save(update_fields=['quantity'])
+    first_batch = make_batch(item, quantity=2, raw_unit_cost=Decimal('5000.00'), source_label='ZSP-CNT-001')
+    second_batch = make_batch(item, quantity=2, raw_unit_cost=Decimal('7000.00'), source_label='ZSP-CNT-002')
+
     sale = create_auction_sale(
         user=user,
         sale_date=timezone.localdate(),
         payment_type=AuctionSale.PaymentType.CREDIT,
         customer=customer,
-        lines=[{'item': item, 'sold_price': Decimal('15000.00')}],
+        lines=[{'inventory_batch': second_batch, 'quantity': 1, 'sold_price': Decimal('12000.00')}],
+    )
+    line = sale.lines.get()
+
+    assert line.item == item
+    assert line.inventory_batch == second_batch
+    assert line.raw_unit_cost_snapshot == Decimal('7000.00')
+    assert available_quantity_for_item(item) == 3
+    assert first_batch.sale_lines.count() == 0
+
+
+@pytest.mark.django_db
+def test_sale_auto_creates_gate_pass_and_verification_does_not_release_stock(user, customer, item):
+    batch = make_batch(item)
+    sale = create_auction_sale(
+        user=user,
+        sale_date=timezone.localdate(),
+        payment_type=AuctionSale.PaymentType.CREDIT,
+        customer=customer,
+        lines=[{'inventory_batch': batch, 'sold_price': Decimal('15000.00')}],
     )
     sale_line = sale.lines.get()
     gate_pass = sale.gate_pass
@@ -157,12 +195,13 @@ def test_sale_auto_creates_gate_pass_and_verification_does_not_release_stock(use
 
 @pytest.mark.django_db
 def test_cheque_sale_creates_cheque_and_balance_settles_only_when_cleared(user, customer, item):
+    batch = make_batch(item)
     sale = create_auction_sale(
         user=user,
         sale_date=timezone.localdate(),
         payment_type=AuctionSale.PaymentType.CHEQUE,
         customer=customer,
-        lines=[{'item': item, 'sold_price': Decimal('15000.00')}],
+        lines=[{'inventory_batch': batch, 'sold_price': Decimal('15000.00')}],
         cheque={
             'cheque_number': 'CHQ-SALE-001',
             'name_on_cheque': 'Zulfiqar Autos',
@@ -187,12 +226,14 @@ def test_cheque_sale_creates_cheque_and_balance_settles_only_when_cleared(user, 
 
 @pytest.mark.django_db
 def test_sale_update_changes_gate_pass_lines_and_resets_print_status(user, customer, item, second_item):
+    batch = make_batch(item)
+    second_batch = make_batch(second_item)
     sale = create_auction_sale(
         user=user,
         sale_date=timezone.localdate(),
         payment_type=AuctionSale.PaymentType.CREDIT,
         customer=customer,
-        lines=[{'item': item, 'sold_price': Decimal('15000.00')}],
+        lines=[{'inventory_batch': batch, 'sold_price': Decimal('15000.00')}],
     )
     gate_pass = sale.gate_pass
     mark_gate_pass_printed(user=user, gate_pass=gate_pass)
@@ -202,8 +243,8 @@ def test_sale_update_changes_gate_pass_lines_and_resets_print_status(user, custo
         sale=sale,
         customer=customer,
         lines=[
-            {'id': sale.lines.get().id, 'item': item, 'quantity': 1, 'sold_price': Decimal('16000.00')},
-            {'item': second_item, 'quantity': 1, 'sold_price': Decimal('12000.00')},
+            {'id': sale.lines.get().id, 'inventory_batch': batch, 'quantity': 1, 'sold_price': Decimal('16000.00')},
+            {'inventory_batch': second_batch, 'quantity': 1, 'sold_price': Decimal('12000.00')},
         ],
     )
 

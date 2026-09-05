@@ -38,6 +38,7 @@ import type {
   DashboardSummary,
   DropdownOption,
   GatePass,
+  InventoryBatch,
   ManagedUser,
   Paginated,
   PartInventory,
@@ -62,11 +63,13 @@ type ModalState =
 type SaleLineDraft = {
   key: string;
   id?: UUID;
-  item: string;
+  inventory_batch: string;
   quantity: number;
   sold_price: string;
   notes: string;
 };
+
+type BatchWithPart = InventoryBatch & { item_detail: PartInventory };
 
 type SaveHandler = (path: string, payload: unknown, method?: 'post' | 'patch') => Promise<void>;
 
@@ -142,6 +145,7 @@ export default function Home() {
   const [newSaleCustomer, setNewSaleCustomer] = useState<Customer | null>(null);
   const [expandedContainers, setExpandedContainers] = useState<Set<UUID>>(new Set());
   const [expandedCustomers, setExpandedCustomers] = useState<Set<UUID>>(new Set());
+  const [expandedParts, setExpandedParts] = useState<Set<UUID>>(new Set());
   const [message, setMessage] = useState('');
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
@@ -161,7 +165,7 @@ export default function Home() {
   const [dropdownOptions, setDropdownOptions] = useState<DropdownOption[]>([]);
   const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([]);
 
-  const availableItems = useMemo(() => parts.filter((part) => part.available_quantity > 0), [parts]);
+  const availableBatches = useMemo<BatchWithPart[]>(() => parts.flatMap((part) => (part.batches ?? []).map((batch) => ({ ...batch, item_detail: part }))).filter((batch) => batch.available_quantity > 0), [parts]);
   const visibleTabs = useMemo(() => {
     const allowed = new Set(currentUser?.access_tabs ?? []);
     return tabs.filter((tab) => allowed.has(tab.id));
@@ -496,7 +500,7 @@ export default function Home() {
         {loading ? <LoadingState label={`Loading ${currentTitle.toLowerCase()}...`} /> : null}
         {!loading && activeTab === 'dashboard' ? <Dashboard summary={summary} /> : null}
         {!loading && activeTab === 'customers' ? <CustomersPanel canWrite={canWrite('customers')} customers={customers} ledgerByCustomer={ledgerByCustomer} expanded={expandedCustomers} onToggle={(id) => toggleSet(setExpandedCustomers, id)} onAdd={() => setModal({ type: 'customer' })} onEdit={(customer) => setModal({ type: 'customer', customer })} onDelete={(customer) => remove(`/operations/customers/${customer.id}/`)} onStatus={(customer) => quickPatch(`/operations/customers/${customer.id}/`, { is_active: !customer.is_active })} /> : null}
-        {!loading && activeTab === 'containers' ? <ContainersPanel canWrite={canWrite('containers')} containers={containers} itemsByContainer={itemsByContainer} parts={parts} expanded={expandedContainers} onToggle={(id) => toggleSet(setExpandedContainers, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} /> : null}
+        {!loading && activeTab === 'containers' ? <ContainersPanel canWrite={canWrite('containers')} containers={containers} itemsByContainer={itemsByContainer} parts={parts} expandedContainers={expandedContainers} expandedParts={expandedParts} onToggleContainer={(id) => toggleSet(setExpandedContainers, id)} onTogglePart={(id) => toggleSet(setExpandedParts, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} /> : null}
         {!loading && activeTab === 'sales' ? <SalesPanel canWrite={canWrite('sales')} sales={sales} onAdd={() => { setNewSaleCustomer(null); setModal({ type: 'sale' }); }} onEdit={(sale) => { setNewSaleCustomer(null); setModal({ type: 'sale', sale }); }} onPrint={printSaleGatePass} /> : null}
         {!loading && activeTab === 'cheques' ? <ChequesPanel canWrite={canWrite('cheques')} cheques={cheques} statuses={chequeStatuses} onAdd={() => setModal({ type: 'cheque' })} onEdit={(cheque) => setModal({ type: 'cheque', cheque })} onStatus={markChequeStatus} onAddStatus={() => setModal({ type: 'cheque-status' })} /> : null}
         {!loading && activeTab === 'settings' ? <SettingsPanel canWrite={canWrite('settings')} options={dropdownOptions} chequeStatuses={chequeStatuses} onAdd={(group) => setModal({ type: 'dropdown-option', group })} onAddChequeStatus={() => setModal({ type: 'cheque-status' })} /> : null}
@@ -507,7 +511,7 @@ export default function Home() {
         {modal?.type === 'container' ? <ContainerForm container={modal.container} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'item' ? <ItemForm item={modal.item} containerId={modal.containerId} containers={containers} options={dropdownOptions} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'part' ? <PartForm part={modal.part} options={dropdownOptions} onSave={save} isSaving={saving} /> : null}
-        {modal?.type === 'sale' ? <SaleForm sale={modal.sale} customers={customers} availableItems={availableItems} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} selectedCustomer={newSaleCustomer} onAddCustomer={() => setSaleCustomerOverlayOpen(true)} /> : null}
+        {modal?.type === 'sale' ? <SaleForm sale={modal.sale} customers={customers} availableBatches={availableBatches} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} selectedCustomer={newSaleCustomer} onAddCustomer={() => setSaleCustomerOverlayOpen(true)} /> : null}
         {modal?.type === 'cheque' ? <ChequeForm cheque={modal.cheque} customers={customers} statuses={chequeStatuses} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'cheque-status' ? <ChequeStatusForm onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'dropdown-option' ? <DropdownOptionForm group={modal.group} onSave={save} isSaving={saving} /> : null}
@@ -534,12 +538,187 @@ function CustomersPanel({ customers, ledgerByCustomer, expanded, canWrite, onTog
   return <section className="panel"><div className="section-head"><div><h2>Customers and balance breakdown</h2><p className="muted">Balances are calculated from sales, cheque settlements, reversals, and adjustments.</p></div>{canWrite ? <button className="btn primary" onClick={onAdd}><Plus size={18} /> Customer</button> : null}</div><div className="record-stack">{customers.map((customer) => { const entries = ledgerByCustomer.get(customer.id) ?? []; const balance = Number(customer.balance); return <article className="record-card" key={customer.id}><button className="record-main" onClick={() => onToggle(customer.id)}>{expanded.has(customer.id) ? <ChevronDown size={18} /> : <ChevronRight size={18} />}<div><strong>{customer.name}</strong><span>{customer.phone} · {customer.customer_type}</span></div><b className={balance > 0 ? 'money-bad' : 'money-good'}>{money(customer.balance)}</b><span className={customer.is_active ? 'badge good' : 'badge bad'}>{customer.is_active ? 'Active' : 'Inactive'}</span></button>{canWrite ? <div className="record-actions"><button className="icon-btn" onClick={() => onEdit(customer)} aria-label={`Edit ${customer.name}`}><Pencil size={16} /></button><button className="icon-btn danger" onClick={() => onDelete(customer)} aria-label={`Delete ${customer.name}`} disabled={!customer.can_delete} title={customer.can_delete ? `Delete ${customer.name}` : 'Customers with transactions cannot be deleted.'}><Trash2 size={16} /></button><button className="btn small" onClick={() => onStatus(customer)}>{customer.is_active ? 'Mark inactive' : 'Mark active'}</button></div> : null}{expanded.has(customer.id) ? <DataTable headers={['Date', 'Type', 'Description', 'Debit', 'Credit', 'Ref']} rows={entries.map((entry) => [entry.entry_date, entry.entry_type, entry.description, <span className="money-bad" key="debit">{money(entry.debit)}</span>, <span className="money-good" key="credit">{money(entry.credit)}</span>, entry.sale_number || entry.cheque_number || '-'])} /> : null}</article>; })}</div></section>;
 }
 
-function ContainersPanel({ containers, itemsByContainer, parts, expanded, canWrite, onToggle, onAdd, onEdit, onAddItem, onEditItem, onDeleteItem, onAddPart, onEditPart, onDeletePart }: { containers: Container[]; itemsByContainer: Map<UUID, ContainerItem[]>; parts: PartInventory[]; expanded: Set<UUID>; canWrite: boolean; onToggle: (id: UUID) => void; onAdd: () => void; onEdit: (container: Container) => void; onAddItem: (containerId: UUID) => void; onEditItem: (item: ContainerItem) => void; onDeleteItem: (item: ContainerItem) => void; onAddPart: () => void; onEditPart: (part: PartInventory) => void; onDeletePart: (part: PartInventory) => void }) {
-  return <div className="stacked-panels"><section className="panel"><div className="section-head"><div><h2>Parts inventory</h2><p className="muted">Sellable stock. Container edits add or subtract here, and manual edits handle opened or split parts.</p></div>{canWrite ? <button className="btn primary" onClick={onAddPart}><Plus size={18} /> Part</button> : null}</div><DataTable headers={['Part', 'Part number', 'Category', 'Condition', 'Lifetime stock', 'Available', 'Actions']} rows={parts.map((part) => [<div key={part.id}><strong>{part.part_name}</strong><span className="cell-note">{part.description || 'No description'}</span></div>, part.part_number || '-', part.category || '-', part.condition || '-', `${part.quantity} ${part.unit}`, <strong key="available">{part.available_quantity} {part.unit}</strong>, <div className="table-actions" key="actions">{canWrite ? <button className="icon-btn" onClick={() => onEditPart(part)} aria-label={`Edit ${part.part_name}`}><Pencil size={16} /></button> : null}{canWrite ? <button className="icon-btn danger" onClick={() => onDeletePart(part)} aria-label={`Delete ${part.part_name}`} disabled={part.sold_quantity > 0} title={part.sold_quantity > 0 ? 'Parts with sale history cannot be deleted.' : `Delete ${part.part_name}`}><Trash2 size={16} /></button> : <span className="muted">View only</span>}</div>])} /></section><section className="panel"><div className="section-head"><div><h2>Container inventory</h2><p className="muted">Original received manifest. Changes here intentionally apply a delta to parts inventory.</p></div>{canWrite ? <button className="btn primary" onClick={onAdd}><Plus size={18} /> Container</button> : null}</div><div className="container-grid">{containers.map((container) => { const containerItems = itemsByContainer.get(container.id) ?? []; return <article className="container-card" key={container.id}><div className="container-top"><button className="record-main compact-main" onClick={() => onToggle(container.id)}>{expanded.has(container.id) ? <ChevronDown size={18} /> : <ChevronRight size={18} />}<div><strong>{container.reference}</strong><span>{container.origin_country || 'Origin not set'} · {container.supplier_name || 'Supplier not set'}</span></div></button><span className={statusClass(container.status)}>{container.status}</span></div><div className="container-meta cost-meta"><span>{container.arrival_date || 'No arrival date'}</span><span>{containerItems.length} manifest items</span><span>Raw parts: <strong>{money(container.raw_parts_cost)}</strong></span><span>Added cost: <strong>{money(container.added_cost)}</strong></span><span>Total cost: <strong>{money(container.total_container_cost)}</strong></span></div>{canWrite ? <div className="record-actions"><button className="btn small" onClick={() => onAddItem(container.id)}><Plus size={16} /> Add manifest item</button><button className="icon-btn" onClick={() => onEdit(container)} aria-label={`Edit ${container.reference}`}><Pencil size={16} /></button></div> : null}{expanded.has(container.id) ? <DataTable headers={['Part', 'Part number', 'Category', 'Qty', 'Raw unit', 'Raw total', 'Added share', 'Net unit', 'Net total', 'Actions']} rows={containerItems.map((item) => [item.part_name, item.part_number || '-', item.category || '-', `${item.quantity} ${item.unit}`, money(item.raw_unit_cost), money(item.raw_total_cost), money(item.added_cost_share), money(item.net_unit_cost), money(item.net_total_cost), <div className="table-actions" key="actions">{canWrite ? <button className="icon-btn" onClick={() => onEditItem(item)} aria-label={`Edit ${item.part_name}`}><Pencil size={16} /></button> : null}{canWrite ? <button className="icon-btn danger" onClick={() => onDeleteItem(item)} aria-label={`Delete ${item.part_name}`}><Trash2 size={16} /></button> : <span className="muted">View only</span>}</div>])} /> : null}</article>; })}</div></section></div>;
+function ContainersPanel({
+  containers,
+  itemsByContainer,
+  parts,
+  expandedContainers,
+  expandedParts,
+  canWrite,
+  onToggleContainer,
+  onTogglePart,
+  onAdd,
+  onEdit,
+  onAddItem,
+  onEditItem,
+  onDeleteItem,
+  onAddPart,
+  onEditPart,
+  onDeletePart,
+}: {
+  containers: Container[];
+  itemsByContainer: Map<UUID, ContainerItem[]>;
+  parts: PartInventory[];
+  expandedContainers: Set<UUID>;
+  expandedParts: Set<UUID>;
+  canWrite: boolean;
+  onToggleContainer: (id: UUID) => void;
+  onTogglePart: (id: UUID) => void;
+  onAdd: () => void;
+  onEdit: (container: Container) => void;
+  onAddItem: (containerId: UUID) => void;
+  onEditItem: (item: ContainerItem) => void;
+  onDeleteItem: (item: ContainerItem) => void;
+  onAddPart: () => void;
+  onEditPart: (part: PartInventory) => void;
+  onDeletePart: (part: PartInventory) => void;
+}) {
+  return (
+    <div className="stacked-panels">
+      <section className="panel">
+        <div className="section-head">
+          <div>
+            <h2>Parts inventory</h2>
+            <p className="muted">Aggregate sellable stock. Expand a part to see the container and manual cost layers behind it.</p>
+          </div>
+          {canWrite ? <button className="btn primary" onClick={onAddPart}><Plus size={18} /> Part</button> : null}
+        </div>
+        <div className="record-stack">
+          {parts.length === 0 ? <div className="empty-state"><Search size={22} /> No records yet.</div> : null}
+          {parts.map((part) => {
+            const expanded = expandedParts.has(part.id);
+            return (
+              <article className="record-card" key={part.id}>
+                <button className="record-main inventory-main" onClick={() => onTogglePart(part.id)}>
+                  {expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                  <div>
+                    <strong>{part.part_name}</strong>
+                    <span>{part.part_number || 'No part number'} · {part.category || 'No category'} · {part.condition || 'No condition'}</span>
+                  </div>
+                  <span className="stock-pill">Lifetime {part.quantity} {part.unit}</span>
+                  <strong>{part.available_quantity} {part.unit} available</strong>
+                </button>
+                {canWrite ? (
+                  <div className="record-actions">
+                    <button className="icon-btn" onClick={() => onEditPart(part)} aria-label={`Edit ${part.part_name}`}><Pencil size={16} /></button>
+                    <button className="icon-btn danger" onClick={() => onDeletePart(part)} aria-label={`Delete ${part.part_name}`} disabled={part.sold_quantity > 0} title={part.sold_quantity > 0 ? 'Parts with sale history cannot be deleted.' : `Delete ${part.part_name}`}><Trash2 size={16} /></button>
+                  </div>
+                ) : null}
+                {expanded ? (
+                  <DataTable
+                    headers={['Source', 'Raw unit cost', 'Net unit cost', 'Batch quantity', 'Available']}
+                    rows={(part.batches ?? []).map((batch) => [
+                      <div key={batch.id}><strong>{batch.container_reference || batch.source_label || 'Manual adjustment'}</strong><span className="cell-note">{batch.notes || 'No notes'}</span></div>,
+                      money(batch.raw_unit_cost),
+                      money(batch.net_unit_cost),
+                      `${batch.quantity} ${batch.unit}`,
+                      <strong key="available">{batch.available_quantity} {batch.unit}</strong>,
+                    ])}
+                  />
+                ) : null}
+              </article>
+            );
+          })}
+        </div>
+      </section>
+      <section className="panel">
+        <div className="section-head">
+          <div>
+            <h2>Container inventory</h2>
+            <p className="muted">Original received manifest. Changes here intentionally apply a delta to parts inventory.</p>
+          </div>
+          {canWrite ? <button className="btn primary" onClick={onAdd}><Plus size={18} /> Container</button> : null}
+        </div>
+        <div className="container-grid">
+          {containers.map((container) => {
+            const containerItems = itemsByContainer.get(container.id) ?? [];
+            const expanded = expandedContainers.has(container.id);
+            return (
+              <article className="container-card" key={container.id}>
+                <div className="container-top">
+                  <button className="record-main compact-main" onClick={() => onToggleContainer(container.id)}>
+                    {expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                    <div><strong>{container.reference}</strong><span>{container.origin_country || 'Origin not set'} · {container.supplier_name || 'Supplier not set'}</span></div>
+                  </button>
+                  <span className={statusClass(container.status)}>{container.status}</span>
+                </div>
+                <div className="container-meta cost-meta">
+                  <span>{container.arrival_date || 'No arrival date'}</span>
+                  <span>{containerItems.length} manifest items</span>
+                  <span>Raw parts: <strong>{money(container.raw_parts_cost)}</strong></span>
+                  <span>Added cost: <strong>{money(container.added_cost)}</strong></span>
+                  <span>Total cost: <strong>{money(container.total_container_cost)}</strong></span>
+                </div>
+                {canWrite ? (
+                  <div className="record-actions">
+                    <button className="btn small" onClick={() => onAddItem(container.id)}><Plus size={16} /> Add manifest item</button>
+                    <button className="icon-btn" onClick={() => onEdit(container)} aria-label={`Edit ${container.reference}`}><Pencil size={16} /></button>
+                  </div>
+                ) : null}
+                {expanded ? (
+                  <DataTable
+                    headers={['Part', 'Part number', 'Category', 'Qty', 'Raw unit', 'Raw total', 'Added share', 'Net unit', 'Net total', 'Actions']}
+                    rows={containerItems.map((item) => [
+                      item.part_name,
+                      item.part_number || '-',
+                      item.category || '-',
+                      `${item.quantity} ${item.unit}`,
+                      money(item.raw_unit_cost),
+                      money(item.raw_total_cost),
+                      money(item.added_cost_share),
+                      money(item.net_unit_cost),
+                      money(item.net_total_cost),
+                      <div className="table-actions" key="actions">
+                        {canWrite ? <button className="icon-btn" onClick={() => onEditItem(item)} aria-label={`Edit ${item.part_name}`}><Pencil size={16} /></button> : null}
+                        {canWrite ? <button className="icon-btn danger" onClick={() => onDeleteItem(item)} aria-label={`Delete ${item.part_name}`}><Trash2 size={16} /></button> : <span className="muted">View only</span>}
+                      </div>,
+                    ])}
+                  />
+                ) : null}
+              </article>
+            );
+          })}
+        </div>
+      </section>
+    </div>
+  );
 }
 
 function SalesPanel({ sales, canWrite, onAdd, onEdit, onPrint }: { sales: AuctionSale[]; canWrite: boolean; onAdd: () => void; onEdit: (sale: AuctionSale) => void; onPrint: (sale: AuctionSale) => void }) {
-  return <section className="panel"><div className="section-head"><div><h2>Auction sale ledger</h2><p className="muted">Each sale can contain multiple items, creates the gate pass automatically, and prints from this row.</p></div>{canWrite ? <button className="btn primary" onClick={onAdd}><Gavel size={18} /> Record sale</button> : null}</div><DataTable headers={['Sale', 'Date', 'Customer', 'Payment', 'Total', 'Items', 'Gate pass', 'Actions']} rows={sales.map((sale) => [sale.sale_number, sale.sale_date, sale.customer_name || 'Cash sale', sale.payment_type, money(sale.total_amount), sale.lines.reduce((total, line) => total + line.quantity, 0), sale.gate_pass ? <span key="print" className={statusClass(sale.gate_pass.print_status)}>{sale.gate_pass.print_status.replace('_', ' ')}</span> : <span key="missing" className="badge bad">missing</span>, <div className="table-actions" key="actions">{canWrite ? <button className="icon-btn" onClick={() => onEdit(sale)} aria-label={`Edit ${sale.sale_number}`}><Pencil size={16} /></button> : null}{canWrite ? <button className="icon-btn" onClick={() => onPrint(sale)} aria-label={`Print gate pass for ${sale.sale_number}`} disabled={!sale.gate_pass}><Printer size={16} /></button> : <span className="muted">View only</span>}</div>])} /></section>;
+  return (
+    <section className="panel">
+      <div className="section-head">
+        <div>
+          <h2>Auction sale ledger</h2>
+          <p className="muted">Each sale can contain multiple items, creates the gate pass automatically, and prints from this row.</p>
+        </div>
+        {canWrite ? <button className="btn primary" onClick={onAdd}><Gavel size={18} /> Record sale</button> : null}
+      </div>
+      <DataTable
+        headers={['Sale', 'Date', 'Customer', 'Payment', 'Total', 'Items', 'Gate pass', 'Actions']}
+        rows={sales.map((sale) => [
+          sale.sale_number,
+          sale.sale_date,
+          sale.customer_name || 'Cash sale',
+          sale.payment_type,
+          money(sale.total_amount),
+          <div className="line-stack" key="items">
+            {sale.lines.map((line) => (
+              <span key={line.id}>
+                {line.quantity} x {line.item.part_name}
+                <small>{line.inventory_batch_label || 'Legacy batch'} · raw {money(line.raw_unit_cost_snapshot)} · net {money(line.net_unit_cost_snapshot)} · sold {money(line.sold_price)}</small>
+              </span>
+            ))}
+          </div>,
+          sale.gate_pass ? <span key="print" className={statusClass(sale.gate_pass.print_status)}>{sale.gate_pass.print_status.replace('_', ' ')}</span> : <span key="missing" className="badge bad">missing</span>,
+          <div className="table-actions" key="actions">
+            {canWrite ? <button className="icon-btn" onClick={() => onEdit(sale)} aria-label={`Edit ${sale.sale_number}`}><Pencil size={16} /></button> : null}
+            {canWrite ? <button className="icon-btn" onClick={() => onPrint(sale)} aria-label={`Print gate pass for ${sale.sale_number}`} disabled={!sale.gate_pass}><Printer size={16} /></button> : <span className="muted">View only</span>}
+          </div>,
+        ])}
+      />
+    </section>
+  );
 }
 
 function ChequesPanel({ cheques, statuses, canWrite, onAdd, onEdit, onStatus, onAddStatus }: { cheques: Cheque[]; statuses: ChequeStatus[]; canWrite: boolean; onAdd: () => void; onEdit: (cheque: Cheque) => void; onStatus: (cheque: Cheque, statusId: UUID) => void; onAddStatus: () => void }) {
@@ -571,7 +750,7 @@ function PartForm({ part, options, onSave, isSaving }: { part?: PartInventory; o
 function SaleForm({
   sale,
   customers,
-  availableItems,
+  availableBatches,
   banks,
   onSave,
   isSaving,
@@ -580,7 +759,7 @@ function SaleForm({
 }: {
   sale?: AuctionSale;
   customers: Customer[];
-  availableItems: PartInventory[];
+  availableBatches: BatchWithPart[];
   banks: string[];
   onSave: SaveHandler;
   isSaving: boolean;
@@ -590,14 +769,33 @@ function SaleForm({
   const [paymentType, setPaymentType] = useState(sale?.payment_type || 'cash');
   const [customerId, setCustomerId] = useState(sale?.customer || '');
   const [issuedToOverride, setIssuedToOverride] = useState<string | null>(sale?.gate_pass?.issued_to_name ?? null);
-  const saleItems = sale?.lines.map((line) => line.item) ?? [];
-  const selectableItems = [...saleItems, ...availableItems].filter((item, index, all) => all.findIndex((candidate) => candidate.id === item.id) === index);
-  const [lineRows, setLineRows] = useState<SaleLineDraft[]>(() => sale?.lines.map((line) => ({ key: line.id, id: line.id, item: line.item.id, quantity: line.quantity, sold_price: line.sold_price, notes: line.notes })) ?? [{ key: crypto.randomUUID(), item: '', quantity: 1, sold_price: '', notes: '' }]);
+  const saleBatches: BatchWithPart[] = sale?.lines.map((line) => ({
+    id: line.inventory_batch || `legacy-${line.id}`,
+    item: line.item.id,
+    item_detail: line.item,
+    part_name: line.item.part_name,
+    part_number: line.item.part_number,
+    category: line.item.category,
+    condition: line.item.condition,
+    unit: line.item.unit,
+    container: null,
+    container_reference: null,
+    container_item: null,
+    source_label: line.inventory_batch_label || 'Legacy batch',
+    quantity: line.quantity,
+    sold_quantity: 0,
+    available_quantity: line.quantity,
+    raw_unit_cost: line.raw_unit_cost_snapshot,
+    net_unit_cost: line.net_unit_cost_snapshot,
+    notes: '',
+  })) ?? [];
+  const selectableBatches = [...saleBatches, ...availableBatches].filter((batch, index, all) => all.findIndex((candidate) => candidate.id === batch.id) === index);
+  const [lineRows, setLineRows] = useState<SaleLineDraft[]>(() => sale?.lines.map((line) => ({ key: line.id, id: line.id, inventory_batch: line.inventory_batch || '', quantity: line.quantity, sold_price: line.sold_price, notes: line.notes })) ?? [{ key: crypto.randomUUID(), inventory_batch: '', quantity: 1, sold_price: '', notes: '' }]);
   const selectedCustomerName = customers.find((customer) => customer.id === customerId)?.name || '';
   const issuedToName = issuedToOverride ?? selectedCustomerName;
   const saleTotal = lineRows.reduce((total, line) => total + (Number(line.quantity || 0) * Number(line.sold_price || 0)), 0);
   const updateLine = (key: string, updates: Partial<(typeof lineRows)[number]>) => setLineRows((rows) => rows.map((row) => row.key === key ? { ...row, ...updates } : row));
-  const addLine = () => setLineRows((rows) => [...rows, { key: crypto.randomUUID(), item: '', quantity: 1, sold_price: '', notes: '' }]);
+  const addLine = () => setLineRows((rows) => [...rows, { key: crypto.randomUUID(), inventory_batch: '', quantity: 1, sold_price: '', notes: '' }]);
   const removeLine = (key: string) => setLineRows((rows) => rows.length === 1 ? rows : rows.filter((row) => row.key !== key));
 
   useEffect(() => {
@@ -609,7 +807,106 @@ function SaleForm({
     return () => window.clearTimeout(handle);
   }, [selectedCustomer]);
 
-  return <FormFrame title={sale ? 'Edit sale' : 'Record auction sale'} isSaving={isSaving} onSubmit={(form) => { const lines = lineRows.map((line) => ({ ...(line.id ? { id: line.id } : {}), item: line.item, quantity: Number(line.quantity), sold_price: line.sold_price, notes: line.notes || '' })); const payload: Record<string, unknown> = { sale_date: form.sale_date, customer: customerId || null, notes: form.notes || '', lines, gate_pass: { issued_to_name: issuedToName || '', issued_to_phone: form.issued_to_phone || '', vehicle_number: form.vehicle_number || '', driver_name: form.driver_name || '', notes: form.gate_pass_notes || '' } }; if (!sale) payload.payment_type = paymentType; if (paymentType === 'cheque' && !sale) { payload.cheque = { cheque_number: form.cheque_number, name_on_cheque: form.name_on_cheque, bank_name: form.bank_name, branch_name: form.branch_name || '', account_title: form.account_title || '', cheque_date: form.cheque_date, expiry_date: form.expiry_date, received_date: form.received_date || null, notes: form.cheque_notes || '' }; } onSave(sale ? `/operations/auction-sales/${sale.id}/` : '/operations/auction-sales/', payload, sale ? 'patch' : 'post'); }}><div className="inline-between"><span className="form-note">Customer is mandatory unless payment type is cash. Cash sales do not enter customer balances.</span><button type="button" className="btn small" onClick={onAddCustomer}><Plus size={16} /> New customer</button></div><Field name="sale_date" label="Sale date" type="date" defaultValue={sale?.sale_date || pakistanLocalDate()} required />{!sale ? <Select name="payment_type" label="Payment type" value={paymentType} onChange={setPaymentType} options={[['cash', 'Cash'], ['credit', 'Credit'], ['cheque', 'Cheque'], ['mixed', 'Mixed']]} required /> : <div className="locked-row">Payment type: {sale.payment_type}</div>}<Select name="customer" label="Customer" value={customerId} onChange={setCustomerId} options={customers.map((customer) => [customer.id, customer.name])} required={paymentType !== 'cash' || Boolean(sale?.customer)} /><div className="subform full-span"><div className="inline-between"><h3>Sale items</h3><button type="button" className="btn small" onClick={addLine}><Plus size={16} /> Item</button></div>{lineRows.map((line, index) => { const selected = selectableItems.find((item) => item.id === line.item); return <div className="sale-line-grid" key={line.key}><div className="field"><label htmlFor={`item-${line.key}`}>Item {index + 1}</label><select id={`item-${line.key}`} required value={line.item} onChange={(event) => updateLine(line.key, { item: event.currentTarget.value })}><option value="">Select...</option>{selectableItems.map((item) => <option key={item.id} value={item.id}>{item.part_name}{item.part_number ? ` / ${item.part_number}` : ''} ({item.available_quantity} {item.unit} available)</option>)}</select></div><div className="field"><label htmlFor={`qty-${line.key}`}>Qty</label><input id={`qty-${line.key}`} type="number" min="1" max={selected ? Math.max(selected.available_quantity, line.quantity) : undefined} required value={line.quantity} onChange={(event) => updateLine(line.key, { quantity: Number(event.currentTarget.value) })} /></div><div className="field"><label htmlFor={`price-${line.key}`}>Unit price</label><input id={`price-${line.key}`} type="number" min="1" required value={line.sold_price} onChange={(event) => updateLine(line.key, { sold_price: event.currentTarget.value })} /></div><div className="field"><label htmlFor={`notes-${line.key}`}>Notes</label><input id={`notes-${line.key}`} value={line.notes} onChange={(event) => updateLine(line.key, { notes: event.currentTarget.value })} /></div><button type="button" className="icon-btn danger" onClick={() => removeLine(line.key)} aria-label="Remove sale line"><Trash2 size={16} /></button></div>; })}<div className="total-bar"><span>Sale total</span><strong>{money(saleTotal)}</strong></div></div>{paymentType === 'cheque' && !sale ? <ChequeFields banks={banks} /> : null}<div className="subform full-span"><h3>Gate pass details</h3><div className="field"><label htmlFor="issued_to_name">Issued to</label><input id="issued_to_name" name="issued_to_name" value={issuedToName} onChange={(event) => { setIssuedToOverride(event.currentTarget.value); }} /></div><Field name="issued_to_phone" label="Phone" /><Field name="vehicle_number" label="Vehicle number" defaultValue={sale?.gate_pass?.vehicle_number || ''} /><Field name="driver_name" label="Driver name" defaultValue={sale?.gate_pass?.driver_name || ''} /><Field name="gate_pass_notes" label="Gate pass notes" textarea /></div><Field name="notes" label="Sale notes" defaultValue={sale?.notes} textarea /></FormFrame>;
+  return (
+    <FormFrame
+      title={sale ? 'Edit sale' : 'Record auction sale'}
+      isSaving={isSaving}
+      onSubmit={(form) => {
+        const lines = lineRows.map((line) => ({
+          ...(line.id ? { id: line.id } : {}),
+          inventory_batch: line.inventory_batch,
+          quantity: Number(line.quantity),
+          sold_price: line.sold_price,
+          notes: line.notes || '',
+        }));
+        const payload: Record<string, unknown> = {
+          sale_date: form.sale_date,
+          customer: customerId || null,
+          notes: form.notes || '',
+          lines,
+          gate_pass: {
+            issued_to_name: issuedToName || '',
+            issued_to_phone: form.issued_to_phone || '',
+            vehicle_number: form.vehicle_number || '',
+            driver_name: form.driver_name || '',
+            notes: form.gate_pass_notes || '',
+          },
+        };
+        if (!sale) payload.payment_type = paymentType;
+        if (paymentType === 'cheque' && !sale) {
+          payload.cheque = {
+            cheque_number: form.cheque_number,
+            name_on_cheque: form.name_on_cheque,
+            bank_name: form.bank_name,
+            branch_name: form.branch_name || '',
+            account_title: form.account_title || '',
+            cheque_date: form.cheque_date,
+            expiry_date: form.expiry_date,
+            received_date: form.received_date || null,
+            notes: form.cheque_notes || '',
+          };
+        }
+        onSave(sale ? `/operations/auction-sales/${sale.id}/` : '/operations/auction-sales/', payload, sale ? 'patch' : 'post');
+      }}
+    >
+      <div className="inline-between">
+        <span className="form-note">Customer is mandatory unless payment type is cash. Cash sales do not enter customer balances.</span>
+        <button type="button" className="btn small" onClick={onAddCustomer}><Plus size={16} /> New customer</button>
+      </div>
+      <Field name="sale_date" label="Sale date" type="date" defaultValue={sale?.sale_date || pakistanLocalDate()} required />
+      {!sale ? <Select name="payment_type" label="Payment type" value={paymentType} onChange={setPaymentType} options={[['cash', 'Cash'], ['credit', 'Credit'], ['cheque', 'Cheque'], ['mixed', 'Mixed']]} required /> : <div className="locked-row">Payment type: {sale.payment_type}</div>}
+      <Select name="customer" label="Customer" value={customerId} onChange={setCustomerId} options={customers.map((customer) => [customer.id, customer.name])} required={paymentType !== 'cash' || Boolean(sale?.customer)} />
+      <div className="subform full-span">
+        <div className="inline-between">
+          <h3>Sale items</h3>
+          <button type="button" className="btn small" onClick={addLine}><Plus size={16} /> Item</button>
+        </div>
+        {lineRows.map((line, index) => {
+          const selected = selectableBatches.find((batch) => batch.id === line.inventory_batch);
+          return (
+            <div className="sale-line-grid" key={line.key}>
+              <div className="field">
+                <label htmlFor={`item-${line.key}`}>Item {index + 1}</label>
+                <select id={`item-${line.key}`} required value={line.inventory_batch} onChange={(event) => updateLine(line.key, { inventory_batch: event.currentTarget.value })}>
+                  <option value="">Select...</option>
+                  {selectableBatches.map((batch) => (
+                    <option key={batch.id} value={batch.id}>
+                      {batch.part_name}{batch.part_number ? ` / ${batch.part_number}` : ''} - {batch.container_reference || batch.source_label || 'Manual'} - {batch.available_quantity} {batch.unit} available - net {money(batch.net_unit_cost)}
+                    </option>
+                  ))}
+                </select>
+                {selected ? <span className="help-text">Raw {money(selected.raw_unit_cost)} · Net {money(selected.net_unit_cost)} · Source {selected.container_reference || selected.source_label || 'Manual'}</span> : null}
+              </div>
+              <div className="field">
+                <label htmlFor={`qty-${line.key}`}>Qty</label>
+                <input id={`qty-${line.key}`} type="number" min="1" max={selected ? Math.max(selected.available_quantity, line.quantity) : undefined} required value={line.quantity} onChange={(event) => updateLine(line.key, { quantity: Number(event.currentTarget.value) })} />
+              </div>
+              <div className="field">
+                <label htmlFor={`price-${line.key}`}>Unit price</label>
+                <input id={`price-${line.key}`} type="number" min="1" required value={line.sold_price} onChange={(event) => updateLine(line.key, { sold_price: event.currentTarget.value })} />
+              </div>
+              <div className="field">
+                <label htmlFor={`notes-${line.key}`}>Notes</label>
+                <input id={`notes-${line.key}`} value={line.notes} onChange={(event) => updateLine(line.key, { notes: event.currentTarget.value })} />
+              </div>
+              <button type="button" className="icon-btn danger" onClick={() => removeLine(line.key)} aria-label="Remove sale line"><Trash2 size={16} /></button>
+            </div>
+          );
+        })}
+        <div className="total-bar"><span>Sale total</span><strong>{money(saleTotal)}</strong></div>
+      </div>
+      {paymentType === 'cheque' && !sale ? <ChequeFields banks={banks} /> : null}
+      <div className="subform full-span">
+        <h3>Gate pass details</h3>
+        <div className="field"><label htmlFor="issued_to_name">Issued to</label><input id="issued_to_name" name="issued_to_name" value={issuedToName} onChange={(event) => { setIssuedToOverride(event.currentTarget.value); }} /></div>
+        <Field name="issued_to_phone" label="Phone" />
+        <Field name="vehicle_number" label="Vehicle number" defaultValue={sale?.gate_pass?.vehicle_number || ''} />
+        <Field name="driver_name" label="Driver name" defaultValue={sale?.gate_pass?.driver_name || ''} />
+        <Field name="gate_pass_notes" label="Gate pass notes" textarea />
+      </div>
+      <Field name="notes" label="Sale notes" defaultValue={sale?.notes} textarea />
+    </FormFrame>
+  );
 }
 
 function ChequeForm({ cheque, customers, statuses, banks, onSave, isSaving }: { cheque?: Cheque; customers: Customer[]; statuses: ChequeStatus[]; banks: string[]; onSave: SaveHandler; isSaving: boolean }) {

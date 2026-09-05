@@ -10,7 +10,7 @@ from rest_framework.status import HTTP_409_CONFLICT
 
 from accounts.permissions import OperationsPermission
 from finance.models import Cheque, CustomerLedgerEntry
-from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass, PartInventory
+from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass, InventoryBatch, PartInventory
 from operations.serializers import (
     AuctionSaleCreateSerializer,
     AuctionSaleLineReadSerializer,
@@ -22,6 +22,7 @@ from operations.serializers import (
     GatePassCreateSerializer,
     GatePassSerializer,
     GatePassUpdateSerializer,
+    InventoryBatchSerializer,
     PartInventorySerializer,
 )
 from operations.services import apply_container_inventory_delta, mark_gate_pass_printed, sold_quantity_for_item
@@ -41,7 +42,7 @@ raw_container_item_cost_expression = ExpressionWrapper(
 def sale_line_queryset():
     return (
         AuctionSaleLine.objects
-        .select_related('item', 'sale', 'sale__customer')
+        .select_related('item', 'inventory_batch', 'inventory_batch__container', 'sale', 'sale__customer')
         .annotate(
             item_sold_quantity_total=Coalesce(
                 Sum(
@@ -158,6 +159,7 @@ class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
 
     def perform_destroy(self, instance):
         before = {
+            'container_item_id': instance.id,
             'part_name': instance.part_name,
             'part_number': instance.part_number or '',
             'category': instance.category or '',
@@ -179,6 +181,16 @@ class PartInventoryViewSet(UserStampedMixin, viewsets.ModelViewSet):
     ordering_fields = ['part_name', 'part_number', 'created_at', 'quantity']
 
     def get_queryset(self):
+        batch_queryset = InventoryBatch.objects.select_related('container', 'container_item').annotate(
+            sold_quantity_total=Coalesce(
+                Sum(
+                    'sale_lines__quantity',
+                    filter=Q(sale_lines__sale__is_cancelled=False),
+                ),
+                Value(0),
+                output_field=IntegerField(),
+            ),
+        ).order_by('container__reference', 'source_label', 'created_at')
         return (
             PartInventory.objects
             .annotate(
@@ -191,6 +203,7 @@ class PartInventoryViewSet(UserStampedMixin, viewsets.ModelViewSet):
                     output_field=IntegerField(),
                 ),
             )
+            .prefetch_related(Prefetch('batches', queryset=batch_queryset))
             .order_by('part_name', 'part_number')
         )
 
@@ -199,6 +212,31 @@ class PartInventoryViewSet(UserStampedMixin, viewsets.ModelViewSet):
         if sold:
             raise ValidationError({'part': f'This part has {sold} sold unit(s) and cannot be deleted.'})
         instance.delete()
+
+
+class InventoryBatchViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = InventoryBatchSerializer
+    permission_classes = [OperationsPermission]
+    filterset_fields = ['item', 'container']
+    search_fields = ['item__part_name', 'item__part_number', 'container__reference', 'source_label']
+    ordering_fields = ['created_at', 'quantity', 'raw_unit_cost']
+
+    def get_queryset(self):
+        return (
+            InventoryBatch.objects
+            .select_related('item', 'container', 'container_item')
+            .annotate(
+                sold_quantity_total=Coalesce(
+                    Sum(
+                        'sale_lines__quantity',
+                        filter=Q(sale_lines__sale__is_cancelled=False),
+                    ),
+                    Value(0),
+                    output_field=IntegerField(),
+                ),
+            )
+            .order_by('item__part_name', 'container__reference', 'source_label')
+        )
 
 
 class AuctionSaleViewSet(viewsets.ModelViewSet):
@@ -211,7 +249,7 @@ class AuctionSaleViewSet(viewsets.ModelViewSet):
         return (
             AuctionSale.objects
             .select_related('customer')
-            .prefetch_related(Prefetch('lines', queryset=sale_line_queryset()), 'gate_pass')
+            .prefetch_related(Prefetch('lines', queryset=sale_line_queryset()), Prefetch('gate_pass__lines__sale_line', queryset=sale_line_queryset()))
             .order_by('-sale_date', '-created_at')
         )
 
@@ -226,7 +264,7 @@ class AuctionSaleViewSet(viewsets.ModelViewSet):
     def sold_without_gate_pass(self, request):
         queryset = (
             AuctionSaleLine.objects
-            .select_related('sale', 'sale__customer', 'item')
+            .select_related('sale', 'sale__customer', 'item', 'inventory_batch', 'inventory_batch__container')
             .annotate(
                 item_sold_quantity_total=Coalesce(
                     Sum(

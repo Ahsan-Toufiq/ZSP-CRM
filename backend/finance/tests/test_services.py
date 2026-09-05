@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from finance.models import ChequeSettlementAllocation, ChequeStatus, CustomerLedgerEntry
 from finance.services import change_cheque_status, create_cheque
-from operations.models import AuctionSale, Customer, PartInventory
+from operations.models import AuctionSale, Customer, InventoryBatch, PartInventory
 from operations.services import create_auction_sale
 from catalog.models import DropdownOption
 
@@ -19,6 +19,10 @@ def user(db):
 @pytest.fixture
 def customer(db):
     return Customer.objects.create(name='Zulfiqar Autos', phone='+923000000000')
+
+
+def make_batch(item):
+    return InventoryBatch.objects.create(item=item, quantity=item.quantity, raw_unit_cost=Decimal('5000.00'), source_label='Test batch')
 
 
 @pytest.mark.django_db
@@ -76,19 +80,21 @@ def test_bounced_cheque_reverses_existing_settlement(user, customer):
 def test_individual_cleared_cheque_allocates_to_oldest_sales_first(user, customer):
     first_item = PartInventory.objects.create(part_name='Gearbox', quantity=1, unit='piece')
     second_item = PartInventory.objects.create(part_name='Mirror', quantity=1, unit='piece')
+    first_batch = make_batch(first_item)
+    second_batch = make_batch(second_item)
     first_sale = create_auction_sale(
         user=user,
         sale_date=timezone.localdate(),
         payment_type=AuctionSale.PaymentType.CREDIT,
         customer=customer,
-        lines=[{'item': first_item, 'sold_price': Decimal('10000.00')}],
+        lines=[{'inventory_batch': first_batch, 'sold_price': Decimal('10000.00')}],
     )
     second_sale = create_auction_sale(
         user=user,
         sale_date=timezone.localdate(),
         payment_type=AuctionSale.PaymentType.CREDIT,
         customer=customer,
-        lines=[{'item': second_item, 'sold_price': Decimal('7000.00')}],
+        lines=[{'inventory_batch': second_batch, 'sold_price': Decimal('7000.00')}],
     )
     cheque = create_cheque(
         user=user,
@@ -114,12 +120,13 @@ def test_individual_cleared_cheque_allocates_to_oldest_sales_first(user, custome
 @pytest.mark.django_db
 def test_overpayment_cheque_creates_customer_credit_without_crashing(user, customer):
     item = PartInventory.objects.create(part_name='Bonnet', quantity=1, unit='piece')
+    batch = make_batch(item)
     sale = create_auction_sale(
         user=user,
         sale_date=timezone.localdate(),
         payment_type=AuctionSale.PaymentType.CREDIT,
         customer=customer,
-        lines=[{'item': item, 'sold_price': Decimal('10000.00')}],
+        lines=[{'inventory_batch': batch, 'sold_price': Decimal('10000.00')}],
     )
     cheque = create_cheque(
         user=user,

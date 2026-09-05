@@ -6,6 +6,7 @@ from operations.views import (
     ContainerViewSet,
     CustomerViewSet,
     GatePassViewSet,
+    InventoryBatchViewSet,
     PartInventoryViewSet,
 )
 
@@ -14,6 +15,7 @@ router.register('customers', CustomerViewSet, basename='customer')
 router.register('containers', ContainerViewSet, basename='container')
 router.register('items', ContainerItemViewSet, basename='item')
 router.register('parts', PartInventoryViewSet, basename='part')
+router.register('inventory-batches', InventoryBatchViewSet, basename='inventory-batch')
 router.register('auction-sales', AuctionSaleViewSet, basename='auction-sale')
 router.register('gate-passes', GatePassViewSet, basename='gate-pass')
 

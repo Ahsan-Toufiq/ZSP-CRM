@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import DecimalField, ExpressionWrapper, F, Sum
 from django.utils import timezone
 
 from audit.models import AuditLog
@@ -10,7 +10,9 @@ from catalog.models import DropdownOption
 from catalog.services import ensure_dropdown_option
 from finance.models import ChequeStatus, CustomerLedgerEntry
 from finance.services import create_cheque
-from operations.models import AuctionSale, AuctionSaleLine, ContainerItem, GatePass, GatePassLine, PartInventory
+from operations.models import AuctionSale, AuctionSaleLine, ContainerItem, GatePass, GatePassLine, InventoryBatch, PartInventory
+
+MONEY_QUANTUM = Decimal('0.01')
 
 
 def _number(prefix: str) -> str:
@@ -47,6 +49,45 @@ def available_quantity_for_item(item: PartInventory, *, excluding_sale: AuctionS
     return max(int(item.quantity) - sold_quantity_for_item(item, excluding_sale=excluding_sale), 0)
 
 
+def sold_quantity_for_batch(batch: InventoryBatch, *, excluding_sale: AuctionSale | None = None) -> int:
+    queryset = AuctionSaleLine.objects.filter(inventory_batch=batch, sale__is_cancelled=False)
+    if excluding_sale is not None:
+        queryset = queryset.exclude(sale=excluding_sale)
+    return int(queryset.aggregate(total=Sum('quantity'))['total'] or 0)
+
+
+def available_quantity_for_batch(batch: InventoryBatch, *, excluding_sale: AuctionSale | None = None) -> int:
+    return max(int(batch.quantity) - sold_quantity_for_batch(batch, excluding_sale=excluding_sale), 0)
+
+
+def net_unit_cost_for_container_item(container_item: ContainerItem) -> Decimal:
+    if not container_item.quantity:
+        return Decimal('0.00')
+    raw_total = Decimal(container_item.raw_unit_cost) * Decimal(container_item.quantity)
+    if raw_total <= 0:
+        return Decimal(container_item.raw_unit_cost)
+    raw_total_expression = ExpressionWrapper(
+        F('raw_unit_cost') * F('quantity'),
+        output_field=DecimalField(max_digits=14, decimal_places=2),
+    )
+    container_raw_total = (
+        ContainerItem.objects
+        .filter(container=container_item.container)
+        .aggregate(total=Sum(raw_total_expression))['total']
+        or Decimal('0.00')
+    )
+    if container_raw_total <= 0:
+        return Decimal(container_item.raw_unit_cost)
+    added_share_total = Decimal(container_item.container.added_cost or 0) * (raw_total / container_raw_total)
+    return (Decimal(container_item.raw_unit_cost) + (added_share_total / Decimal(container_item.quantity))).quantize(MONEY_QUANTUM)
+
+
+def net_unit_cost_for_batch(batch: InventoryBatch) -> Decimal:
+    if batch.container_item_id:
+        return net_unit_cost_for_container_item(batch.container_item)
+    return Decimal(batch.raw_unit_cost or 0).quantize(MONEY_QUANTUM)
+
+
 def _part_payload(source) -> dict:
     return {
         'part_name': source.part_name,
@@ -69,6 +110,36 @@ def _part_inventory_for_payload(payload: dict) -> PartInventory | None:
     ).first()
 
 
+def _sync_container_batch(*, user, container_item: ContainerItem, inventory: PartInventory) -> InventoryBatch:
+    batch, _ = InventoryBatch.objects.select_for_update().update_or_create(
+        container_item=container_item,
+        defaults={
+            'item': inventory,
+            'container': container_item.container,
+            'source_label': container_item.container.reference,
+            'quantity': container_item.quantity,
+            'raw_unit_cost': container_item.raw_unit_cost,
+            'notes': container_item.description or '',
+            'updated_by': user,
+            'created_by': user,
+        },
+    )
+    return batch
+
+
+def _delete_or_zero_container_batch(*, user, container_item_id) -> None:
+    batch = InventoryBatch.objects.select_for_update(of=('self',)).filter(container_item_id=container_item_id).order_by().first()
+    if batch is None:
+        return
+    sold = sold_quantity_for_batch(batch)
+    if sold:
+        batch.quantity = sold
+        batch.updated_by = user
+        batch.save(update_fields=['quantity', 'updated_by', 'updated_at'])
+        return
+    batch.delete()
+
+
 def apply_container_inventory_delta(*, user, before: dict | None = None, after: ContainerItem | None = None) -> None:
     if before:
         inventory = _part_inventory_for_payload(before)
@@ -82,6 +153,8 @@ def apply_container_inventory_delta(*, user, before: dict | None = None, after: 
             inventory.quantity = max(next_quantity, 0)
             inventory.updated_by = user
             inventory.save(update_fields=['quantity', 'updated_by', 'updated_at'])
+        if before.get('container_item_id'):
+            _delete_or_zero_container_batch(user=user, container_item_id=before['container_item_id'])
 
     if after:
         payload = _part_payload(after)
@@ -101,11 +174,48 @@ def apply_container_inventory_delta(*, user, before: dict | None = None, after: 
                 inventory.reserve_price = payload['reserve_price']
             inventory.updated_by = user
             inventory.save(update_fields=['quantity', 'description', 'reserve_price', 'updated_by', 'updated_at'])
+        _sync_container_batch(user=user, container_item=after, inventory=inventory)
 
 
-def _item_id(line) -> str:
-    item = line['item']
-    return str(item.id if hasattr(item, 'id') else item)
+def _manual_batch_for_item(*, user, item: PartInventory) -> InventoryBatch:
+    batch = (
+        InventoryBatch.objects
+        .select_for_update(of=('self',))
+        .filter(item=item, container__isnull=True, container_item__isnull=True)
+        .order_by()
+        .first()
+    )
+    if batch is not None:
+        return batch
+    return InventoryBatch.objects.create(
+        item=item,
+        source_label='Manual adjustment',
+        quantity=0,
+        raw_unit_cost=Decimal('0.00'),
+        created_by=user,
+        updated_by=user,
+    )
+
+
+def sync_manual_inventory_batch_delta(*, user, item: PartInventory, before_quantity: int = 0) -> None:
+    delta = int(item.quantity) - int(before_quantity)
+    if delta == 0:
+        return
+    batch = _manual_batch_for_item(user=user, item=item)
+    next_quantity = int(batch.quantity) + delta
+    sold = sold_quantity_for_batch(batch)
+    if next_quantity < sold:
+        raise ValidationError({
+            'quantity': f'Cannot reduce manual stock below {sold} already sold unit(s) for {item.part_name}.',
+        })
+    batch.quantity = max(next_quantity, 0)
+    batch.updated_by = user
+    batch.save(update_fields=['quantity', 'updated_by', 'updated_at'])
+
+
+def _batch_id(line) -> str:
+    batch = line['inventory_batch']
+    return str(batch.id if hasattr(batch, 'id') else batch)
 
 
 def _default_gate_pass_data(sale: AuctionSale) -> dict:
@@ -169,27 +279,27 @@ def _validate_sale_lines(lines, *, excluding_sale: AuctionSale | None = None) ->
     if not lines:
         raise ValidationError({'lines': 'At least one sold item is required.'})
 
-    item_ids = [_item_id(line) for line in lines]
-    if len(set(item_ids)) != len(item_ids):
-        raise ValidationError({'lines': 'Use one sale line per item and set the quantity there.'})
+    batch_ids = [_batch_id(line) for line in lines]
+    if len(set(batch_ids)) != len(batch_ids):
+        raise ValidationError({'lines': 'Use one sale line per inventory cost batch and set the quantity there.'})
 
-    items = {
-        str(item.id): item
-        for item in PartInventory.objects.select_for_update().filter(id__in=item_ids)
+    batches = {
+        str(batch.id): batch
+        for batch in InventoryBatch.objects.select_for_update(of=('self',)).select_related('item', 'container', 'container_item', 'container_item__container').filter(id__in=batch_ids).order_by()
     }
-    if len(items) != len(item_ids):
-        raise ValidationError({'lines': 'One or more selected items do not exist.'})
+    if len(batches) != len(batch_ids):
+        raise ValidationError({'lines': 'One or more selected inventory batches do not exist.'})
 
     for line in lines:
-        item = items[_item_id(line)]
+        batch = batches[_batch_id(line)]
         quantity = _quantity(line)
         _line_total(line)
-        available_quantity = available_quantity_for_item(item, excluding_sale=excluding_sale)
+        available_quantity = available_quantity_for_batch(batch, excluding_sale=excluding_sale)
         if quantity > available_quantity:
             raise ValidationError({
-                'lines': f'Only {available_quantity} unit(s) are available for {item.part_name}.',
+                'lines': f'Only {available_quantity} unit(s) are available for {batch.item.part_name} from this cost batch.',
             })
-    return items
+    return batches
 
 
 @transaction.atomic
@@ -210,7 +320,7 @@ def create_auction_sale(
     if payment_type == AuctionSale.PaymentType.CHEQUE and not cheque:
         raise ValidationError({'cheque': 'Cheque details are required when payment type is cheque.'})
 
-    items = _validate_sale_lines(lines)
+    batches = _validate_sale_lines(lines)
     total = _sale_total(lines)
 
     sale = AuctionSale.objects.create(
@@ -225,12 +335,15 @@ def create_auction_sale(
     )
 
     for line in lines:
-        item = items[_item_id(line)]
+        batch = batches[_batch_id(line)]
         AuctionSaleLine.objects.create(
             sale=sale,
-            item=item,
+            item=batch.item,
+            inventory_batch=batch,
             quantity=_quantity(line),
             sold_price=line['sold_price'],
+            raw_unit_cost_snapshot=batch.raw_unit_cost,
+            net_unit_cost_snapshot=net_unit_cost_for_batch(batch),
             notes=line.get('notes', ''),
             created_by=user,
             updated_by=user,
@@ -314,7 +427,7 @@ def update_auction_sale(
         sale.notes = notes
 
     if lines is not None:
-        existing_lines = {str(line.id): line for line in sale.lines.select_related('item')}
+        existing_lines = {str(line.id): line for line in sale.lines.select_related('item', 'inventory_batch')}
         desired_existing_ids = {str(line['id']) for line in lines if line.get('id')}
         unknown_ids = desired_existing_ids - set(existing_lines)
         if unknown_ids:
@@ -326,12 +439,12 @@ def update_auction_sale(
                 existing = existing_lines[str(line['id'])]
                 normalized.append({
                     **line,
-                    'item': line.get('item') or existing.item,
+                    'inventory_batch': line.get('inventory_batch') or existing.inventory_batch,
                 })
             else:
                 normalized.append(line)
 
-        items = _validate_sale_lines(normalized, excluding_sale=sale)
+        batches = _validate_sale_lines(normalized, excluding_sale=sale)
 
         for removed_id in set(existing_lines) - desired_existing_ids:
             line = existing_lines[removed_id]
@@ -340,15 +453,18 @@ def update_auction_sale(
             line.delete()
 
         for line_data in normalized:
-            item = items[_item_id(line_data)]
+            batch = batches[_batch_id(line_data)]
             line_id = line_data.get('id')
             if line_id:
                 sale_line = existing_lines[str(line_id)]
-                sale_line.item = item
             else:
-                sale_line = AuctionSaleLine(sale=sale, item=item, created_by=user)
+                sale_line = AuctionSaleLine(sale=sale, created_by=user)
+            sale_line.item = batch.item
+            sale_line.inventory_batch = batch
             sale_line.quantity = _quantity(line_data)
             sale_line.sold_price = line_data['sold_price']
+            sale_line.raw_unit_cost_snapshot = batch.raw_unit_cost
+            sale_line.net_unit_cost_snapshot = net_unit_cost_for_batch(batch)
             sale_line.notes = line_data.get('notes', sale_line.notes)
             sale_line.updated_by = user
             sale_line.save()

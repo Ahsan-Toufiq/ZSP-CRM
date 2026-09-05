@@ -80,13 +80,38 @@ export interface PartInventory {
   reserve_price: string | null;
   sold_quantity: number;
   available_quantity: number;
+  batches: InventoryBatch[];
+}
+
+export interface InventoryBatch {
+  id: UUID;
+  item: UUID;
+  part_name: string;
+  part_number: string;
+  category: string;
+  condition: string;
+  unit: string;
+  container: UUID | null;
+  container_reference: string | null;
+  container_item: UUID | null;
+  source_label: string;
+  quantity: number;
+  sold_quantity: number;
+  available_quantity: number;
+  raw_unit_cost: string;
+  net_unit_cost: string;
+  notes: string;
 }
 
 export interface AuctionSaleLine {
   id: UUID;
   item: PartInventory;
+  inventory_batch: UUID | null;
+  inventory_batch_label: string;
   quantity: number;
   sold_price: string;
+  raw_unit_cost_snapshot: string;
+  net_unit_cost_snapshot: string;
   line_total: string;
   notes: string;
 }
@@ -121,11 +146,9 @@ export interface GatePass {
   vehicle_number: string;
   driver_name: string;
   notes: string;
-  status: string;
   print_status: string;
   printed_at: string | null;
   issued_at: string;
-  verified_at: string | null;
   lines: { id: UUID; sale_line: AuctionSaleLine }[];
 }
 

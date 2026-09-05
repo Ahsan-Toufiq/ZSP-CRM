@@ -124,10 +124,7 @@ class CustomerBalanceSerializer(serializers.ModelSerializer):
         return self.get_total_debit(obj) - self.get_total_credit(obj)
 
     def get_sale_breakdown(self, obj):
-        sales = obj.auction_sales.filter(is_cancelled=False).prefetch_related(
-            'cheque_allocations__cheque',
-            'lines__item',
-        ).order_by('sale_date', 'created_at')
+        sales = obj.auction_sales.all()
         breakdown = []
         for sale in sales:
             allocations = [

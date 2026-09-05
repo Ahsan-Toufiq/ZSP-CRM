@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass, GatePassLine, PartInventory
+from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass, GatePassLine, InventoryBatch, PartInventory
 
 
 @admin.register(Customer)
@@ -38,10 +38,17 @@ class PartInventoryAdmin(admin.ModelAdmin):
     list_filter = ('condition', 'category', 'unit')
 
 
+@admin.register(InventoryBatch)
+class InventoryBatchAdmin(admin.ModelAdmin):
+    list_display = ('item', 'container', 'source_label', 'quantity', 'raw_unit_cost')
+    search_fields = ('item__part_name', 'item__part_number', 'container__reference', 'source_label')
+    list_filter = ('container',)
+
+
 class AuctionSaleLineInline(admin.TabularInline):
     model = AuctionSaleLine
     extra = 0
-    readonly_fields = ('item', 'sold_price')
+    readonly_fields = ('item', 'inventory_batch', 'raw_unit_cost_snapshot', 'net_unit_cost_snapshot', 'sold_price')
 
 
 @admin.register(AuctionSale)

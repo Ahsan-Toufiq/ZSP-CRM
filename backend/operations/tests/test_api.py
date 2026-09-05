@@ -7,7 +7,7 @@ from rest_framework.test import APIClient
 
 from accounts.models import UserProfile
 from accounts.permissions import full_tab_permissions
-from operations.models import AuctionSale, Customer, PartInventory
+from operations.models import AuctionSale, Customer, InventoryBatch, PartInventory
 from operations.services import create_auction_sale
 
 
@@ -51,12 +51,13 @@ def test_customer_type_defaults_when_omitted(api_client):
 def test_customer_with_transactions_cannot_be_deleted(api_client, admin_user):
     customer = Customer.objects.create(name='Keep Me', phone='+923001231232')
     item = PartInventory.objects.create(part_name='Door', quantity=1, unit='piece')
+    batch = InventoryBatch.objects.create(item=item, quantity=1, raw_unit_cost=Decimal('5000.00'), source_label='Test batch')
     create_auction_sale(
         user=admin_user,
         sale_date=timezone.localdate(),
         payment_type=AuctionSale.PaymentType.CREDIT,
         customer=customer,
-        lines=[{'item': item, 'quantity': 1, 'sold_price': Decimal('15000.00')}],
+        lines=[{'inventory_batch': batch, 'quantity': 1, 'sold_price': Decimal('15000.00')}],
     )
 
     response = api_client.delete(f'/api/operations/customers/{customer.id}/')
