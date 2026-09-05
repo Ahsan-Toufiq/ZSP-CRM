@@ -66,12 +66,6 @@ class Container(UserStampedModel):
 
 
 class ContainerItem(UserStampedModel):
-    class Condition(models.TextChoices):
-        UNKNOWN = 'unknown', 'Unknown'
-        USED = 'used', 'Used'
-        NEW = 'new', 'New'
-        DAMAGED = 'damaged', 'Damaged'
-
     class Status(models.TextChoices):
         AVAILABLE = 'available', 'Available'
         SOLD = 'sold', 'Sold'
@@ -85,7 +79,6 @@ class ContainerItem(UserStampedModel):
     part_number = models.CharField(max_length=120, blank=True)
     description = models.TextField(blank=True)
     category = models.CharField(max_length=120, blank=True)
-    condition = models.CharField(max_length=80, blank=True)
     quantity = models.PositiveIntegerField(default=1)
     unit = models.CharField(max_length=30, default='piece')
     reserve_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
@@ -110,7 +103,6 @@ class PartInventory(UserStampedModel):
     part_number = models.CharField(max_length=120, blank=True)
     description = models.TextField(blank=True)
     category = models.CharField(max_length=120, blank=True)
-    condition = models.CharField(max_length=80, blank=True)
     quantity = models.PositiveIntegerField(default=1)
     unit = models.CharField(max_length=30, default='piece')
     reserve_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
@@ -119,7 +111,7 @@ class PartInventory(UserStampedModel):
         ordering = ['part_name', 'part_number']
         constraints = [
             models.UniqueConstraint(
-                fields=['part_name', 'part_number', 'category', 'condition', 'unit'],
+                fields=['part_name', 'part_number', 'unit'],
                 name='unique_sellable_part_inventory',
             ),
             models.CheckConstraint(condition=models.Q(quantity__gte=0), name='part_inventory_quantity_non_negative'),

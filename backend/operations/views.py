@@ -126,7 +126,7 @@ class ContainerViewSet(UserStampedMixin, viewsets.ModelViewSet):
 class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
     serializer_class = ContainerItemSerializer
     permission_classes = [OperationsPermission]
-    filterset_fields = ['container', 'status', 'category', 'condition']
+    filterset_fields = ['container', 'status', 'category']
     search_fields = ['lot_number', 'part_name', 'part_number', 'description', 'category']
     ordering_fields = ['lot_number', 'part_name', 'created_at']
 
@@ -163,7 +163,6 @@ class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
             'part_name': instance.part_name,
             'part_number': instance.part_number or '',
             'category': instance.category or '',
-            'condition': instance.condition or '',
             'unit': instance.unit or 'piece',
             'quantity': instance.quantity,
             'reserve_price': instance.reserve_price,
@@ -176,7 +175,7 @@ class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
 class PartInventoryViewSet(UserStampedMixin, viewsets.ModelViewSet):
     serializer_class = PartInventorySerializer
     permission_classes = [OperationsPermission]
-    filterset_fields = ['category', 'condition', 'unit']
+    filterset_fields = ['category', 'unit']
     search_fields = ['part_name', 'part_number', 'description', 'category']
     ordering_fields = ['part_name', 'part_number', 'created_at', 'quantity']
 

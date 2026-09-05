@@ -9,7 +9,6 @@ class DropdownOption(UserStampedModel):
         BANK = 'bank', 'Bank'
         PART_NAME = 'part_name', 'Part name'
         ITEM_CATEGORY = 'item_category', 'Item category'
-        ITEM_CONDITION = 'item_condition', 'Item condition'
         ITEM_UNIT = 'item_unit', 'Item unit'
 
     group = models.CharField(max_length=40, choices=Group.choices)

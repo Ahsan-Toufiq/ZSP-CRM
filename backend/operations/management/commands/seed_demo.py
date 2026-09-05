@@ -127,38 +127,43 @@ class Command(BaseCommand):
             containers[reference] = container
 
         item_specs = [
-            ('ZSP-CNT-001', 'LOT-001', 'Toyota headlight pair', 'TY-HL-01', 'Lights', 4, 'pair', 'Used', '18000.00'),
-            ('ZSP-CNT-001', 'LOT-002', 'Honda front bumper', 'HN-BM-02', 'Body parts', 3, 'piece', 'Used', '24000.00'),
-            ('ZSP-CNT-001', 'LOT-003', 'Nissan alternator', 'NS-ALT-03', 'Electrical', 5, 'piece', 'Used', '30000.00'),
-            ('ZSP-CNT-001', 'LOT-004', 'Mazda side mirror', 'MZ-MR-04', 'Body parts', 8, 'piece', 'Used', '9000.00'),
-            ('ZSP-CNT-001', 'LOT-005', 'Suzuki tail light', 'SZ-TL-05', 'Lights', 6, 'piece', 'Used', '11000.00'),
-            ('ZSP-CNT-002', 'LOT-101', 'Toyota Prius engine assembly', 'TY-ENG-PR', 'Engine', 2, 'piece', 'Used', '240000.00'),
-            ('ZSP-CNT-002', 'LOT-102', 'Honda Vezel transmission', 'HN-TR-VZ', 'Transmission', 2, 'piece', 'Used', '190000.00'),
-            ('ZSP-CNT-002', 'LOT-103', 'Daihatsu Mira door set', 'DH-DR-MR', 'Body parts', 4, 'set', 'Used', '65000.00'),
-            ('ZSP-CNT-002', 'LOT-104', 'Assorted clips and brackets', 'MIX-CLIP', 'Body parts', 30, 'box', 'Used', '12000.00'),
-            ('ZSP-CNT-002', 'LOT-105', 'Toyota headlight pair', 'TY-HL-01', 'Lights', 2, 'pair', 'Used', '22000.00'),
-            ('ZSP-CNT-003', 'LOT-201', 'Toyota Aqua ABS pump', 'TY-ABS-AQ', 'Electrical', 3, 'piece', 'Used', '42000.00'),
-            ('ZSP-CNT-003', 'LOT-202', 'Suzuki Swift shock set', 'SZ-SHK-SW', 'Suspension', 5, 'set', 'Used', '28000.00'),
-            ('ZSP-CNT-003', 'LOT-203', 'Nissan Note radiator', 'NS-RAD-NT', 'Engine', 4, 'piece', 'Used', '22000.00'),
-            ('ZSP-CNT-004', 'LOT-301', 'Unsorted dashboard electronics', 'MIX-DASH', 'Electrical', 12, 'box', 'Unknown', '15000.00'),
-            ('ZSP-CNT-004', 'LOT-302', 'Damaged bumper bundle', 'MIX-BMP-DMG', 'Body parts', 7, 'piece', 'Damaged', '6000.00'),
+            ('ZSP-CNT-001', 'LOT-001', 'Toyota headlight pair', 'TY-HL-01', 'Lights', 4, 'pair', '18000.00'),
+            ('ZSP-CNT-001', 'LOT-002', 'Honda front bumper', 'HN-BM-02', 'Body parts', 3, 'piece', '24000.00'),
+            ('ZSP-CNT-001', 'LOT-003', 'Nissan alternator', 'NS-ALT-03', 'Electrical', 5, 'piece', '30000.00'),
+            ('ZSP-CNT-001', 'LOT-004', 'Mazda side mirror', 'MZ-MR-04', 'Body parts', 8, 'piece', '9000.00'),
+            ('ZSP-CNT-001', 'LOT-005', 'Suzuki tail light', 'SZ-TL-05', 'Lights', 6, 'piece', '11000.00'),
+            ('ZSP-CNT-001', 'LOT-006', 'Fuel pump', 'FP-ASSY', 'Engine', 4, 'piece', '26000.00'),
+            ('ZSP-CNT-002', 'LOT-101', 'Toyota Prius engine assembly', 'TY-ENG-PR', 'Engine', 2, 'piece', '240000.00'),
+            ('ZSP-CNT-002', 'LOT-102', 'Honda Vezel transmission', 'HN-TR-VZ', 'Transmission', 2, 'piece', '190000.00'),
+            ('ZSP-CNT-002', 'LOT-103', 'Daihatsu Mira door set', 'DH-DR-MR', 'Body parts', 4, 'set', '65000.00'),
+            ('ZSP-CNT-002', 'LOT-104', 'Assorted clips and brackets', 'MIX-CLIP', 'Body parts', 30, 'box', '12000.00'),
+            ('ZSP-CNT-002', 'LOT-105', 'Toyota headlight pair', 'TY-HL-01', 'Lights', 2, 'pair', '22000.00'),
+            ('ZSP-CNT-002', 'LOT-106', 'Fuel pump', 'FP-ASSY', 'Electrical', 3, 'piece', '29500.00'),
+            ('ZSP-CNT-003', 'LOT-201', 'Toyota Aqua ABS pump', 'TY-ABS-AQ', 'Electrical', 3, 'piece', '42000.00'),
+            ('ZSP-CNT-003', 'LOT-202', 'Suzuki Swift shock set', 'SZ-SHK-SW', 'Suspension', 5, 'set', '28000.00'),
+            ('ZSP-CNT-003', 'LOT-203', 'Nissan Note radiator', 'NS-RAD-NT', 'Engine', 4, 'piece', '22000.00'),
+            ('ZSP-CNT-003', 'LOT-204', 'Toyota headlight pair', 'TY-HL-01', 'Exterior', 3, 'pair', '25000.00'),
+            ('ZSP-CNT-003', 'LOT-205', 'Fuel pump', 'FP-ASSY', 'Engine', 2, 'piece', '31000.00'),
+            ('ZSP-CNT-004', 'LOT-301', 'Unsorted dashboard electronics', 'MIX-DASH', 'Electrical', 12, 'box', '15000.00'),
+            ('ZSP-CNT-004', 'LOT-302', 'Damaged bumper bundle', 'MIX-BMP-DMG', 'Body parts', 7, 'piece', '6000.00'),
+            ('ZSP-CNT-004', 'LOT-303', 'Toyota headlight pair', 'TY-HL-01', 'Lights', 1, 'pair', '26000.00'),
         ]
         demo_part_pool = [
-            ('Door handle set', 'DH-HND', 'Body parts', 12, 'set', 'Used', '8500.00'),
-            ('Fuel pump', 'FP-ASSY', 'Engine', 5, 'piece', 'Used', '26000.00'),
-            ('Bonnet hinge pair', 'BN-HNG', 'Body parts', 6, 'pair', 'Used', '7000.00'),
-            ('Rear bumper garnish', 'RB-GRN', 'Body parts', 9, 'piece', 'Used', '11500.00'),
-            ('Power window switch', 'PW-SW', 'Electrical', 14, 'piece', 'Used', '6500.00'),
-            ('AC compressor', 'AC-CMP', 'Engine', 4, 'piece', 'Used', '42000.00'),
-            ('Steering rack', 'ST-RCK', 'Suspension', 3, 'piece', 'Used', '52000.00'),
-            ('Tailgate lock', 'TG-LCK', 'Body parts', 10, 'piece', 'Used', '7600.00'),
-            ('Side fender', 'SD-FND', 'Body parts', 7, 'piece', 'Used', '15500.00'),
-            ('Throttle body', 'TH-BDY', 'Engine', 5, 'piece', 'Used', '33000.00'),
-            ('Ignition coil pack', 'IG-COIL', 'Electrical', 18, 'piece', 'Used', '5200.00'),
-            ('Brake caliper pair', 'BR-CAL', 'Suspension', 5, 'pair', 'Used', '21000.00'),
-            ('Wiper motor', 'WP-MTR', 'Electrical', 8, 'piece', 'Used', '10500.00'),
-            ('Radiator fan', 'RD-FAN', 'Engine', 6, 'piece', 'Used', '18500.00'),
-            ('Dashboard vent set', 'DS-VENT', 'Interior', 11, 'set', 'Used', '4800.00'),
+            ('Door handle set', 'DH-HND', 'Body parts', 12, 'set', '8500.00'),
+            ('Fuel pump', 'FP-ASSY', 'Engine', 5, 'piece', '26000.00'),
+            ('Bonnet hinge pair', 'BN-HNG', 'Body parts', 6, 'pair', '7000.00'),
+            ('Rear bumper garnish', 'RB-GRN', 'Body parts', 9, 'piece', '11500.00'),
+            ('Power window switch', 'PW-SW', 'Electrical', 14, 'piece', '6500.00'),
+            ('AC compressor', 'AC-CMP', 'Engine', 4, 'piece', '42000.00'),
+            ('Steering rack', 'ST-RCK', 'Suspension', 3, 'piece', '52000.00'),
+            ('Tailgate lock', 'TG-LCK', 'Body parts', 10, 'piece', '7600.00'),
+            ('Side fender', 'SD-FND', 'Body parts', 7, 'piece', '15500.00'),
+            ('Throttle body', 'TH-BDY', 'Engine', 5, 'piece', '33000.00'),
+            ('Ignition coil pack', 'IG-COIL', 'Electrical', 18, 'piece', '5200.00'),
+            ('Brake caliper pair', 'BR-CAL', 'Suspension', 5, 'pair', '21000.00'),
+            ('Wiper motor', 'WP-MTR', 'Electrical', 8, 'piece', '10500.00'),
+            ('Radiator fan', 'RD-FAN', 'Engine', 6, 'piece', '18500.00'),
+            ('Dashboard vent set', 'DS-VENT', 'Interior', 11, 'set', '4800.00'),
         ]
         existing_counts = {}
         for container_ref, *_ in item_specs:
@@ -166,7 +171,7 @@ class Command(BaseCommand):
         for container_ref in containers:
             needed = max(15 - existing_counts.get(container_ref, 0), 0)
             for offset in range(needed):
-                name, number, category, quantity, unit, condition, reserve = demo_part_pool[offset % len(demo_part_pool)]
+                name, number, category, quantity, unit, reserve = demo_part_pool[offset % len(demo_part_pool)]
                 lot_prefix = container_ref.rsplit('-', 1)[-1]
                 item_specs.append((
                     container_ref,
@@ -176,11 +181,10 @@ class Command(BaseCommand):
                     category,
                     quantity,
                     unit,
-                    condition,
                     reserve,
                 ))
         items = {}
-        for container_ref, lot, name, part_number, category, quantity, unit, condition, reserve in item_specs:
+        for container_ref, lot, name, part_number, category, quantity, unit, reserve in item_specs:
             raw_unit_cost = (Decimal(reserve) * Decimal('0.62')).quantize(Decimal('0.01'))
             item, item_created = ContainerItem.objects.get_or_create(
                 container=containers[container_ref],
@@ -189,7 +193,6 @@ class Command(BaseCommand):
                     'part_name': name,
                     'part_number': part_number,
                     'category': category,
-                    'condition': condition,
                     'quantity': quantity,
                     'unit': unit,
                     'reserve_price': Decimal(reserve),
@@ -206,7 +209,6 @@ class Command(BaseCommand):
                             'part_name': item.part_name,
                             'part_number': item.part_number or '',
                             'category': item.category or '',
-                            'condition': item.condition or '',
                             'unit': item.unit or 'piece',
                             'quantity': item.quantity,
                             'reserve_price': item.reserve_price,
@@ -216,14 +218,13 @@ class Command(BaseCommand):
                         item.part_name = name
                         item.part_number = part_number
                         item.category = category
-                        item.condition = condition
                         item.quantity = quantity
                         item.unit = unit
                         item.reserve_price = Decimal(reserve)
                         item.raw_unit_cost = raw_unit_cost
                         item.updated_by = admin
                         item.save(update_fields=[
-                            'part_name', 'part_number', 'category', 'condition', 'quantity',
+                            'part_name', 'part_number', 'category', 'quantity',
                             'unit', 'reserve_price', 'raw_unit_cost', 'updated_by', 'updated_at',
                         ])
                         apply_container_inventory_delta(user=admin, before=before, after=item)
@@ -241,8 +242,6 @@ class Command(BaseCommand):
             lot: PartInventory.objects.filter(
                 part_name=item.part_name,
                 part_number=item.part_number or '',
-                category=item.category or '',
-                condition=item.condition or '',
                 unit=item.unit or 'piece',
             ).first()
             for lot, item in items.items()
@@ -411,7 +410,6 @@ class Command(BaseCommand):
                 'Radiator fan',
             ],
             DropdownOption.Group.ITEM_CATEGORY: ['Body parts', 'Electrical', 'Engine', 'Interior', 'Lights', 'Suspension', 'Transmission'],
-            DropdownOption.Group.ITEM_CONDITION: ['Unknown', 'Used', 'New', 'Damaged'],
             DropdownOption.Group.ITEM_UNIT: ['piece', 'set', 'pair', 'kg', 'box'],
         }
         for group, labels in option_groups.items():

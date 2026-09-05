@@ -13,7 +13,7 @@ class CustomerAdmin(admin.ModelAdmin):
 class ContainerItemInline(admin.TabularInline):
     model = ContainerItem
     extra = 0
-    fields = ('lot_number', 'part_name', 'part_number', 'category', 'condition', 'quantity', 'unit')
+    fields = ('lot_number', 'part_name', 'part_number', 'category', 'quantity', 'unit')
 
 
 @admin.register(Container)
@@ -26,16 +26,16 @@ class ContainerAdmin(admin.ModelAdmin):
 
 @admin.register(ContainerItem)
 class ContainerItemAdmin(admin.ModelAdmin):
-    list_display = ('lot_number', 'part_name', 'container', 'category', 'condition', 'quantity', 'unit')
+    list_display = ('lot_number', 'part_name', 'container', 'category', 'quantity', 'unit')
     search_fields = ('lot_number', 'part_name', 'part_number')
-    list_filter = ('condition', 'category')
+    list_filter = ('category',)
 
 
 @admin.register(PartInventory)
 class PartInventoryAdmin(admin.ModelAdmin):
-    list_display = ('part_name', 'part_number', 'category', 'condition', 'quantity', 'unit')
+    list_display = ('part_name', 'part_number', 'category', 'quantity', 'unit')
     search_fields = ('part_name', 'part_number', 'description')
-    list_filter = ('condition', 'category', 'unit')
+    list_filter = ('category', 'unit')
 
 
 @admin.register(InventoryBatch)

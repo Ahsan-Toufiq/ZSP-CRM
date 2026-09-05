@@ -88,12 +88,24 @@ def net_unit_cost_for_batch(batch: InventoryBatch) -> Decimal:
     return Decimal(batch.raw_unit_cost or 0).quantize(MONEY_QUANTUM)
 
 
+def merge_category_values(*values) -> str:
+    labels = []
+    seen = set()
+    for value in values:
+        for label in str(value or '').split(','):
+            cleaned = label.strip()
+            key = cleaned.casefold()
+            if cleaned and key not in seen:
+                labels.append(cleaned)
+                seen.add(key)
+    return ', '.join(labels)
+
+
 def _part_payload(source) -> dict:
     return {
         'part_name': source.part_name,
         'part_number': source.part_number or '',
         'category': source.category or '',
-        'condition': source.condition or '',
         'unit': source.unit or 'piece',
         'reserve_price': source.reserve_price,
         'description': source.description or '',
@@ -104,8 +116,6 @@ def _part_inventory_for_payload(payload: dict) -> PartInventory | None:
     return PartInventory.objects.select_for_update().filter(
         part_name=payload['part_name'],
         part_number=payload['part_number'],
-        category=payload['category'],
-        condition=payload['condition'],
         unit=payload['unit'],
     ).first()
 
@@ -168,20 +178,26 @@ def apply_container_inventory_delta(*, user, before: dict | None = None, after: 
             )
         else:
             inventory.quantity = int(inventory.quantity) + int(after.quantity)
+            inventory.category = merge_category_values(inventory.category, payload['category'])
             if not inventory.description and payload['description']:
                 inventory.description = payload['description']
             if inventory.reserve_price is None and payload['reserve_price'] is not None:
                 inventory.reserve_price = payload['reserve_price']
             inventory.updated_by = user
-            inventory.save(update_fields=['quantity', 'description', 'reserve_price', 'updated_by', 'updated_at'])
+            inventory.save(update_fields=['quantity', 'category', 'description', 'reserve_price', 'updated_by', 'updated_at'])
         _sync_container_batch(user=user, container_item=after, inventory=inventory)
 
 
-def _manual_batch_for_item(*, user, item: PartInventory) -> InventoryBatch:
+def _manual_batch_for_item(*, user, item: PartInventory, source_container=None, raw_unit_cost=Decimal('0.00')) -> InventoryBatch:
     batch = (
         InventoryBatch.objects
         .select_for_update(of=('self',))
-        .filter(item=item, container__isnull=True, container_item__isnull=True)
+        .filter(
+            item=item,
+            container=source_container,
+            container_item__isnull=True,
+            raw_unit_cost=raw_unit_cost,
+        )
         .order_by()
         .first()
     )
@@ -189,19 +205,32 @@ def _manual_batch_for_item(*, user, item: PartInventory) -> InventoryBatch:
         return batch
     return InventoryBatch.objects.create(
         item=item,
-        source_label='Manual adjustment',
+        container=source_container,
+        source_label=source_container.reference if source_container else 'Manual adjustment',
         quantity=0,
-        raw_unit_cost=Decimal('0.00'),
+        raw_unit_cost=raw_unit_cost,
         created_by=user,
         updated_by=user,
     )
 
 
-def sync_manual_inventory_batch_delta(*, user, item: PartInventory, before_quantity: int = 0) -> None:
+def sync_manual_inventory_batch_delta(
+    *,
+    user,
+    item: PartInventory,
+    before_quantity: int = 0,
+    source_container=None,
+    raw_unit_cost=Decimal('0.00'),
+) -> None:
     delta = int(item.quantity) - int(before_quantity)
     if delta == 0:
         return
-    batch = _manual_batch_for_item(user=user, item=item)
+    batch = _manual_batch_for_item(
+        user=user,
+        item=item,
+        source_container=source_container,
+        raw_unit_cost=Decimal(raw_unit_cost or 0).quantize(MONEY_QUANTUM),
+    )
     next_quantity = int(batch.quantity) + delta
     sold = sold_quantity_for_batch(batch)
     if next_quantity < sold:

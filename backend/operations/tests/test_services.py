@@ -265,7 +265,6 @@ def test_new_item_category_persists_as_dropdown_option(user):
             'lot_number': 'OPT-1',
             'part_name': 'Custom mirror',
             'category': 'Custom Category',
-            'condition': 'Refurbished',
             'quantity': 1,
             'unit': 'crate',
         },
@@ -275,7 +274,6 @@ def test_new_item_category_persists_as_dropdown_option(user):
     serializer.save(created_by=user, updated_by=user)
 
     assert DropdownOption.objects.filter(group=DropdownOption.Group.ITEM_CATEGORY, label='Custom Category').exists()
-    assert DropdownOption.objects.filter(group=DropdownOption.Group.ITEM_CONDITION, label='Refurbished').exists()
     assert DropdownOption.objects.filter(group=DropdownOption.Group.ITEM_UNIT, label='crate').exists()
     assert DropdownOption.objects.filter(group=DropdownOption.Group.PART_NAME, label='Custom mirror').exists()
 
@@ -314,3 +312,90 @@ def test_container_manifest_delta_updates_parts_inventory_without_rewriting_mani
     part.refresh_from_db()
     assert manifest_item.quantity == 2
     assert part.quantity == 5
+
+
+@pytest.mark.django_db
+def test_container_item_with_same_part_identity_accumulates_existing_manifest_and_inventory(user):
+    from operations.serializers import ContainerItemSerializer
+
+    container = Container.objects.create(reference='CNT-MERGE')
+    request = type('Request', (), {'user': user})()
+    first = ContainerItemSerializer(
+        data={
+            'container': str(container.id),
+            'part_name': 'Fuel pump',
+            'part_number': 'FP-ASSY',
+            'category': 'Engine',
+            'quantity': 2,
+            'unit': 'piece',
+            'raw_unit_cost': '1000.00',
+        },
+        context={'request': request},
+    )
+    assert first.is_valid(), first.errors
+    first_item = first.save(created_by=user, updated_by=user)
+
+    second = ContainerItemSerializer(
+        data={
+            'container': str(container.id),
+            'part_name': 'Fuel pump',
+            'part_number': 'FP-ASSY',
+            'category': 'Electrical',
+            'quantity': 3,
+            'unit': 'piece',
+            'raw_unit_cost': '2000.00',
+        },
+        context={'request': request},
+    )
+    assert second.is_valid(), second.errors
+    merged_item = second.save(created_by=user, updated_by=user)
+
+    first_item.refresh_from_db()
+    part = PartInventory.objects.get(part_name='Fuel pump', part_number='FP-ASSY')
+    assert merged_item.id == first_item.id
+    assert first_item.quantity == 5
+    assert first_item.raw_unit_cost == Decimal('1600.00')
+    assert part.quantity == 5
+    assert part.category == 'Engine, Electrical'
+    assert part.batches.count() == 1
+    assert part.batches.get().quantity == 5
+
+
+@pytest.mark.django_db
+def test_direct_parts_inventory_requires_source_container_and_creates_source_batch(user):
+    from operations.serializers import PartInventorySerializer
+
+    container = Container.objects.create(reference='CNT-DIRECT')
+    request = type('Request', (), {'user': user})()
+    missing_source = PartInventorySerializer(
+        data={
+            'part_name': 'Bonnet hinge pair',
+            'quantity': 2,
+            'unit': 'pair',
+        },
+        context={'request': request},
+    )
+    assert not missing_source.is_valid()
+    assert 'source_container' in missing_source.errors
+
+    serializer = PartInventorySerializer(
+        data={
+            'part_name': 'Bonnet hinge pair',
+            'part_number': 'BN-HNG',
+            'category': 'Body parts',
+            'quantity': 2,
+            'unit': 'pair',
+            'source_container': str(container.id),
+            'raw_unit_cost': '7000.00',
+        },
+        context={'request': request},
+    )
+    assert serializer.is_valid(), serializer.errors
+    part = serializer.save(created_by=user, updated_by=user)
+
+    batch = part.batches.get()
+    assert batch.container == container
+    assert batch.container_item is None
+    assert batch.quantity == 2
+    assert batch.raw_unit_cost == Decimal('7000.00')
+    assert container.items.count() == 0

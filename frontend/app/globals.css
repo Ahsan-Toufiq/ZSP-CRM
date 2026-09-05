@@ -606,6 +606,22 @@ tr:last-child td {
   border-bottom: 0;
 }
 
+tr.row-success td {
+  background: #eefaf0;
+}
+
+tr.row-success td:first-child {
+  border-left: 4px solid var(--success);
+}
+
+tr.row-danger td {
+  background: #fff1f2;
+}
+
+tr.row-danger td:first-child {
+  border-left: 4px solid var(--danger);
+}
+
 td select {
   min-height: 34px;
   padding: 5px 9px;
@@ -636,7 +652,7 @@ td select {
 }
 
 .inventory-main {
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
 }
 
 .line-stack {

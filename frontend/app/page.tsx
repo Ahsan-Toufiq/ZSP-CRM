@@ -133,6 +133,19 @@ function pakistanLocalDate() {
   return `${value.year}-${value.month}-${value.day}`;
 }
 
+function partIdentity(name: string, number: string, unit: string) {
+  return [name.trim().toLowerCase(), number.trim().toLowerCase(), unit.trim().toLowerCase()].join('|');
+}
+
+function chequeRowClass(cheque: Cheque) {
+  const status = cheque.status_name.toLowerCase();
+  if (['cleared', 'settled', 'settled by cash'].includes(status)) return '';
+  const today = pakistanLocalDate();
+  if (cheque.expiry_date < today) return 'row-danger';
+  if (cheque.cheque_date <= today && cheque.expiry_date >= today) return 'row-success';
+  return '';
+}
+
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [isAuthenticated, setAuthenticated] = useState(false);
@@ -509,8 +522,8 @@ export default function Home() {
       <ModalShell modal={modal} onClose={() => setModal(null)}>
         {modal?.type === 'customer' ? <CustomerForm customer={modal.customer} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'container' ? <ContainerForm container={modal.container} onSave={save} isSaving={saving} /> : null}
-        {modal?.type === 'item' ? <ItemForm item={modal.item} containerId={modal.containerId} containers={containers} options={dropdownOptions} onSave={save} isSaving={saving} /> : null}
-        {modal?.type === 'part' ? <PartForm part={modal.part} options={dropdownOptions} onSave={save} isSaving={saving} /> : null}
+        {modal?.type === 'item' ? <ItemForm item={modal.item} containerId={modal.containerId} containers={containers} items={items} options={dropdownOptions} onSave={save} isSaving={saving} /> : null}
+        {modal?.type === 'part' ? <PartForm part={modal.part} containers={containers} options={dropdownOptions} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'sale' ? <SaleForm sale={modal.sale} customers={customers} availableBatches={availableBatches} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} selectedCustomer={newSaleCustomer} onAddCustomer={() => setSaleCustomerOverlayOpen(true)} /> : null}
         {modal?.type === 'cheque' ? <ChequeForm cheque={modal.cheque} customers={customers} statuses={chequeStatuses} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'cheque-status' ? <ChequeStatusForm onSave={save} isSaving={saving} /> : null}
@@ -580,7 +593,6 @@ function ContainersPanel({
       <div className="section-head inventory-workspace-head">
         <div>
           <h2>Containers & Inventory</h2>
-          <p className="muted">Switch between sellable stock and original container manifests without leaving this module.</p>
         </div>
         <div className="segmented-control" role="tablist" aria-label="Inventory views">
           <button
@@ -623,9 +635,10 @@ function ContainersPanel({
                     {expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
                     <div>
                       <strong>{part.part_name}</strong>
-                      <span>{part.part_number || 'No part number'} · {part.category || 'No category'} · {part.condition || 'No condition'}</span>
+                      <span>{part.part_number || 'No part number'} · {part.category || 'No category'}</span>
                     </div>
                     <span className="stock-pill">Lifetime {part.quantity} {part.unit}</span>
+                    <span className="stock-pill">{part.batches?.length || 0} price source{(part.batches?.length || 0) === 1 ? '' : 's'}</span>
                     <strong>{part.available_quantity} {part.unit} available</strong>
                   </button>
                   {canWrite ? (
@@ -755,11 +768,11 @@ function SalesPanel({ sales, canWrite, onAdd, onEdit, onPrint }: { sales: Auctio
 }
 
 function ChequesPanel({ cheques, statuses, canWrite, onAdd, onEdit, onStatus, onAddStatus }: { cheques: Cheque[]; statuses: ChequeStatus[]; canWrite: boolean; onAdd: () => void; onEdit: (cheque: Cheque) => void; onStatus: (cheque: Cheque, statusId: UUID) => void; onAddStatus: () => void }) {
-  return <section className="panel"><div className="section-head"><div><h2>Cheque control</h2><p className="muted">Receivables reduce only when a cheque reaches a settlement status.</p></div>{canWrite ? <div className="head-actions"><button className="btn" onClick={onAddStatus}><Plus size={18} /> Status</button><button className="btn primary" onClick={onAdd}><Plus size={18} /> Cheque</button></div> : null}</div><DataTable headers={['Cheque', 'Customer', 'Name on cheque', 'Bank', 'Amount', 'Dates', 'Status', 'Actions']} rows={cheques.map((cheque) => [cheque.cheque_number, cheque.customer_name, cheque.name_on_cheque || '-', cheque.bank_name, money(cheque.amount), <div key="dates">Cheque: {cheque.cheque_date}<span className="cell-note">Expiry: {cheque.expiry_date}</span></div>, canWrite ? <select key="status" value={cheque.status} onChange={(event) => onStatus(cheque, event.target.value)}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select> : <span key="status" className={statusClass(cheque.status_name)}>{cheque.status_name}</span>, canWrite ? <button className="icon-btn" key="edit" onClick={() => onEdit(cheque)} aria-label={`Edit ${cheque.cheque_number}`}><Pencil size={16} /></button> : <span className="muted" key="view">View only</span>])} /></section>;
+  return <section className="panel"><div className="section-head"><div><h2>Cheque control</h2><p className="muted">Receivables reduce only when a cheque reaches a settlement status.</p></div>{canWrite ? <div className="head-actions"><button className="btn" onClick={onAddStatus}><Plus size={18} /> Status</button><button className="btn primary" onClick={onAdd}><Plus size={18} /> Cheque</button></div> : null}</div><DataTable headers={['Cheque', 'Customer', 'Name on cheque', 'Bank', 'Amount', 'Dates', 'Status', 'Actions']} rows={cheques.map((cheque) => ({ className: chequeRowClass(cheque), cells: [cheque.cheque_number, cheque.customer_name, cheque.name_on_cheque || '-', cheque.bank_name, money(cheque.amount), <div key="dates">Cheque: {cheque.cheque_date}<span className="cell-note">Expiry: {cheque.expiry_date}</span></div>, canWrite ? <select key="status" value={cheque.status} onChange={(event) => onStatus(cheque, event.target.value)}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select> : <span key="status" className={statusClass(cheque.status_name)}>{cheque.status_name}</span>, canWrite ? <button className="icon-btn" key="edit" onClick={() => onEdit(cheque)} aria-label={`Edit ${cheque.cheque_number}`}><Pencil size={16} /></button> : <span className="muted" key="view">View only</span>] }))} /></section>;
 }
 
 function SettingsPanel({ options, chequeStatuses, canWrite, onAdd, onAddChequeStatus }: { options: DropdownOption[]; chequeStatuses: ChequeStatus[]; canWrite: boolean; onAdd: (group?: DropdownOption['group']) => void; onAddChequeStatus: () => void }) {
-  const groups: DropdownOption['group'][] = ['bank', 'part_name', 'item_category', 'item_condition', 'item_unit'];
+  const groups: DropdownOption['group'][] = ['bank', 'part_name', 'item_category', 'item_unit'];
   return <section className="panel"><div className="section-head"><div><h2>Dropdown settings</h2><p className="muted">Persisted values here appear in future entry dialogs for all users.</p></div>{canWrite ? <button className="btn primary" onClick={() => onAdd()}><Plus size={18} /> Dropdown value</button> : null}</div><div className="settings-grid">{groups.map((group) => <article className="option-card" key={group}><div className="section-head slim"><h3>{group.replace('_', ' ')}</h3>{canWrite ? <button className="icon-btn" onClick={() => onAdd(group)} aria-label={`Add ${group}`}><Plus size={16} /></button> : null}</div><div className="chips">{options.filter((option) => option.group === group && option.is_active).map((option) => <span className="chip" key={option.id}>{option.label}</span>)}</div></article>)}<article className="option-card"><div className="section-head slim"><h3>cheque statuses</h3>{canWrite ? <button className="icon-btn" onClick={onAddChequeStatus} aria-label="Add cheque status"><Plus size={16} /></button> : null}</div><div className="chips">{chequeStatuses.filter((status) => status.is_active).map((status) => <span className="chip" key={status.id}>{status.name}<small>{status.balance_effect.replaceAll('_', ' ')}</small></span>)}</div></article></div></section>;
 }
 
@@ -772,12 +785,21 @@ function ContainerForm({ container, onSave, isSaving }: { container?: Container;
   return <FormFrame title={container ? 'Edit container' : 'Add container'} isSaving={isSaving} onSubmit={(form) => onSave(container ? `/operations/containers/${container.id}/` : '/operations/containers/', { ...form, added_cost: form.added_cost || '0.00' }, container ? 'patch' : 'post')}><Field name="reference" label="Container reference" defaultValue={container?.reference} required /><Field name="origin_country" label="Origin country" defaultValue={container?.origin_country} /><Field name="supplier_name" label="Supplier" defaultValue={container?.supplier_name} /><Field name="arrival_date" label="Arrival date" type="date" defaultValue={container?.arrival_date || ''} /><Field name="added_cost" label="Added container cost" type="number" defaultValue={container?.added_cost || '0.00'} min="0" step="0.01" /><Select name="status" label="Status" defaultValue={container?.status} options={[['draft', 'Draft'], ['receiving', 'Receiving'], ['ready_for_auction', 'Ready for auction'], ['closed', 'Closed']]} required /><Field name="manifest_notes" label="Manifest notes" defaultValue={container?.manifest_notes} textarea /></FormFrame>;
 }
 
-function ItemForm({ item, containerId, containers, options, onSave, isSaving }: { item?: ContainerItem; containerId?: UUID; containers: Container[]; options: DropdownOption[]; onSave: SaveHandler; isSaving: boolean }) {
-  return <FormFrame title={item ? 'Edit container manifest item' : 'Add container manifest item'} isSaving={isSaving} onSubmit={(form) => onSave(item ? `/operations/items/${item.id}/` : '/operations/items/', { ...form, lot_number: '', quantity: Number(form.quantity || 1), raw_unit_cost: form.raw_unit_cost || '0.00', reserve_price: form.reserve_price || null }, item ? 'patch' : 'post')}><Select name="container" label="Container" defaultValue={item?.container || containerId} options={containers.map((container) => [container.id, container.reference])} required /><OptionText name="part_name" label="Part name" defaultValue={item?.part_name} options={optionLabels(options, 'part_name')} required /><Field name="part_number" label="Part number" defaultValue={item?.part_number} /><OptionText name="category" label="Category" defaultValue={item?.category} options={optionLabels(options, 'item_category')} /><OptionText name="condition" label="Condition" defaultValue={item?.condition} options={optionLabels(options, 'item_condition')} /><Field name="quantity" label="Quantity" type="number" defaultValue={String(item?.quantity ?? 1)} min="1" required /><OptionText name="unit" label="Unit" defaultValue={item?.unit || 'piece'} options={optionLabels(options, 'item_unit')} required /><Field name="raw_unit_cost" label="Raw unit cost" type="number" defaultValue={item?.raw_unit_cost || '0.00'} min="0" step="0.01" required /><Field name="reserve_price" label="Reserve price" type="number" defaultValue={item?.reserve_price || ''} min="0" step="0.01" /><Field name="description" label="Description" defaultValue={item?.description} textarea /></FormFrame>;
+function ItemForm({ item, containerId, containers, items, options, onSave, isSaving }: { item?: ContainerItem; containerId?: UUID; containers: Container[]; items: ContainerItem[]; options: DropdownOption[]; onSave: SaveHandler; isSaving: boolean }) {
+  return <FormFrame title={item ? 'Edit container manifest item' : 'Add container manifest item'} isSaving={isSaving} onSubmit={(form) => {
+    const selectedContainer = String(form.container || '');
+    const duplicate = !item && items.find((candidate) => candidate.container === selectedContainer && partIdentity(candidate.part_name, candidate.part_number, candidate.unit) === partIdentity(String(form.part_name || ''), String(form.part_number || ''), String(form.unit || 'piece')));
+    if (duplicate && !window.confirm('This part already exists in this container. Confirming will accumulate the quantity into the existing manifest item instead of creating a duplicate row.')) return;
+    onSave(item ? `/operations/items/${item.id}/` : '/operations/items/', { ...form, lot_number: '', quantity: Number(form.quantity || 1), raw_unit_cost: form.raw_unit_cost || '0.00', reserve_price: form.reserve_price || null }, item ? 'patch' : 'post');
+  }}><Select name="container" label="Container" defaultValue={item?.container || containerId} options={containers.map((container) => [container.id, container.reference])} required /><OptionText name="part_name" label="Part name" defaultValue={item?.part_name} options={optionLabels(options, 'part_name')} required /><Field name="part_number" label="Part number" defaultValue={item?.part_number} /><OptionText name="category" label="Category" defaultValue={item?.category} options={optionLabels(options, 'item_category')} /><Field name="quantity" label="Quantity" type="number" defaultValue={String(item?.quantity ?? 1)} min="1" required /><OptionText name="unit" label="Unit" defaultValue={item?.unit || 'piece'} options={optionLabels(options, 'item_unit')} required /><Field name="raw_unit_cost" label="Raw unit cost" type="number" defaultValue={item?.raw_unit_cost || '0.00'} min="0" step="0.01" required /><Field name="reserve_price" label="Reserve price" type="number" defaultValue={item?.reserve_price || ''} min="0" step="0.01" /><Field name="description" label="Description" defaultValue={item?.description} textarea /></FormFrame>;
 }
 
-function PartForm({ part, options, onSave, isSaving }: { part?: PartInventory; options: DropdownOption[]; onSave: SaveHandler; isSaving: boolean }) {
-  return <FormFrame title={part ? 'Edit parts inventory' : 'Add parts inventory'} isSaving={isSaving} onSubmit={(form) => onSave(part ? `/operations/parts/${part.id}/` : '/operations/parts/', { ...form, quantity: Number(form.quantity || 1), reserve_price: form.reserve_price || null }, part ? 'patch' : 'post')}><OptionText name="part_name" label="Part name" defaultValue={part?.part_name} options={optionLabels(options, 'part_name')} required /><Field name="part_number" label="Part number" defaultValue={part?.part_number} /><OptionText name="category" label="Category" defaultValue={part?.category} options={optionLabels(options, 'item_category')} /><OptionText name="condition" label="Condition" defaultValue={part?.condition} options={optionLabels(options, 'item_condition')} /><Field name="quantity" label="Quantity" type="number" defaultValue={String(part?.quantity ?? 1)} required /><OptionText name="unit" label="Unit" defaultValue={part?.unit || 'piece'} options={optionLabels(options, 'item_unit')} required /><Field name="reserve_price" label="Reserve price" type="number" defaultValue={part?.reserve_price || ''} /><Field name="description" label="Description" defaultValue={part?.description} textarea /></FormFrame>;
+function PartForm({ part, containers, options, onSave, isSaving }: { part?: PartInventory; containers: Container[]; options: DropdownOption[]; onSave: SaveHandler; isSaving: boolean }) {
+  return <FormFrame title={part ? 'Edit parts inventory' : 'Add parts inventory'} isSaving={isSaving} onSubmit={(form) => {
+    const payload = { ...form, quantity: Number(form.quantity || 1), reserve_price: form.reserve_price || null };
+    if (!part) Object.assign(payload, { raw_unit_cost: form.raw_unit_cost || '0.00' });
+    onSave(part ? `/operations/parts/${part.id}/` : '/operations/parts/', payload, part ? 'patch' : 'post');
+  }}><OptionText name="part_name" label="Part name" defaultValue={part?.part_name} options={optionLabels(options, 'part_name')} required /><Field name="part_number" label="Part number" defaultValue={part?.part_number} /><OptionText name="category" label="Category" defaultValue={part?.category} options={optionLabels(options, 'item_category')} />{!part ? <Select name="source_container" label="Source container" options={containers.map((container) => [container.id, container.reference])} required /> : null}<Field name="quantity" label="Quantity" type="number" defaultValue={String(part?.quantity ?? 1)} required /><OptionText name="unit" label="Unit" defaultValue={part?.unit || 'piece'} options={optionLabels(options, 'item_unit')} required />{!part ? <Field name="raw_unit_cost" label="Raw unit cost" type="number" defaultValue="0.00" min="0" step="0.01" required /> : null}<Field name="reserve_price" label="Reserve price" type="number" defaultValue={part?.reserve_price || ''} /><Field name="description" label="Description" defaultValue={part?.description} textarea /></FormFrame>;
 }
 
 function SaleForm({
@@ -809,7 +831,6 @@ function SaleForm({
     part_name: line.item.part_name,
     part_number: line.item.part_number,
     category: line.item.category,
-    condition: line.item.condition,
     unit: line.item.unit,
     container: null,
     container_reference: null,
@@ -951,7 +972,7 @@ function ChequeStatusForm({ onSave, isSaving }: { onSave: SaveHandler; isSaving:
 }
 
 function DropdownOptionForm({ group, onSave, isSaving }: { group?: DropdownOption['group']; onSave: SaveHandler; isSaving: boolean }) {
-  return <FormFrame title="Add dropdown value" isSaving={isSaving} onSubmit={(form) => onSave('/catalog/dropdown-options/', { ...form, sort_order: Number(form.sort_order || 100) })}><Select name="group" label="Dropdown" defaultValue={group} options={[['bank', 'Bank'], ['part_name', 'Part name'], ['item_category', 'Item category'], ['item_condition', 'Item condition'], ['item_unit', 'Item unit']]} required /><Field name="label" label="Value" required /><Field name="sort_order" label="Sort order" type="number" defaultValue="100" /></FormFrame>;
+  return <FormFrame title="Add dropdown value" isSaving={isSaving} onSubmit={(form) => onSave('/catalog/dropdown-options/', { ...form, sort_order: Number(form.sort_order || 100) })}><Select name="group" label="Dropdown" defaultValue={group} options={[['bank', 'Bank'], ['part_name', 'Part name'], ['item_category', 'Item category'], ['item_unit', 'Item unit']]} required /><Field name="label" label="Value" required /><Field name="sort_order" label="Sort order" type="number" defaultValue="100" /></FormFrame>;
 }
 
 function UserForm({ user, onSave, isSaving }: { user?: ManagedUser; onSave: SaveHandler; isSaving: boolean }) {
@@ -1008,9 +1029,11 @@ function OptionText({ name, label, options, required = false, defaultValue = '' 
   return <div className="field"><label htmlFor={name}>{label}</label><input id={name} name={name} required={required} defaultValue={defaultValue ?? ''} list={`${name}-options`} placeholder="+ Add new or select existing" /><datalist id={`${name}-options`}>{options.map((option) => <option key={option} value={option} />)}</datalist><span className="help-text">Type a new value here and it will be saved for future entries.</span></div>;
 }
 
-function DataTable({ headers, rows }: { headers: string[]; rows: React.ReactNode[][] }) {
+type DataRow = React.ReactNode[] | { cells: React.ReactNode[]; className?: string };
+
+function DataTable({ headers, rows }: { headers: string[]; rows: DataRow[] }) {
   if (rows.length === 0) return <div className="empty-state"><Search size={22} /> No records yet.</div>;
-  return <div className="table-wrap"><table><thead><tr>{headers.map((header) => <th key={header}>{header}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>)}</tbody></table></div>;
+  return <div className="table-wrap"><table><thead><tr>{headers.map((header) => <th key={header}>{header}</th>)}</tr></thead><tbody>{rows.map((row, index) => { const cells = Array.isArray(row) ? row : row.cells; const className = Array.isArray(row) ? undefined : row.className; return <tr key={index} className={className}>{cells.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>; })}</tbody></table></div>;
 }
 
 function gatePassPrintHtml(gatePass: GatePass) {
