@@ -171,7 +171,7 @@ class Command(BaseCommand):
         for container_ref in containers:
             needed = max(15 - existing_counts.get(container_ref, 0), 0)
             for offset in range(needed):
-                name, number, category, quantity, unit, reserve = demo_part_pool[offset % len(demo_part_pool)]
+                name, number, category, quantity, unit, raw_cost = demo_part_pool[offset % len(demo_part_pool)]
                 lot_prefix = container_ref.rsplit('-', 1)[-1]
                 item_specs.append((
                     container_ref,
@@ -181,11 +181,11 @@ class Command(BaseCommand):
                     category,
                     quantity,
                     unit,
-                    reserve,
+                    raw_cost,
                 ))
         items = {}
-        for container_ref, lot, name, part_number, category, quantity, unit, reserve in item_specs:
-            raw_unit_cost = (Decimal(reserve) * Decimal('0.62')).quantize(Decimal('0.01'))
+        for container_ref, lot, name, part_number, category, quantity, unit, raw_cost in item_specs:
+            raw_unit_cost = Decimal(raw_cost).quantize(Decimal('0.01'))
             item, item_created = ContainerItem.objects.get_or_create(
                 container=containers[container_ref],
                 lot_number=lot,
@@ -195,7 +195,6 @@ class Command(BaseCommand):
                     'category': category,
                     'quantity': quantity,
                     'unit': unit,
-                    'reserve_price': Decimal(reserve),
                     'raw_unit_cost': raw_unit_cost,
                     'created_by': admin,
                     'updated_by': admin,
@@ -211,7 +210,6 @@ class Command(BaseCommand):
                             'category': item.category or '',
                             'unit': item.unit or 'piece',
                             'quantity': item.quantity,
-                            'reserve_price': item.reserve_price,
                             'raw_unit_cost': item.raw_unit_cost,
                             'description': item.description or '',
                         }
@@ -220,20 +218,18 @@ class Command(BaseCommand):
                         item.category = category
                         item.quantity = quantity
                         item.unit = unit
-                        item.reserve_price = Decimal(reserve)
                         item.raw_unit_cost = raw_unit_cost
                         item.updated_by = admin
                         item.save(update_fields=[
                             'part_name', 'part_number', 'category', 'quantity',
-                            'unit', 'reserve_price', 'raw_unit_cost', 'updated_by', 'updated_at',
+                            'unit', 'raw_unit_cost', 'updated_by', 'updated_at',
                         ])
                         apply_container_inventory_delta(user=admin, before=before, after=item)
                 except ValidationError:
                     item.refresh_from_db()
-                    item.reserve_price = Decimal(reserve)
                     item.raw_unit_cost = raw_unit_cost
                     item.updated_by = admin
-                    item.save(update_fields=['reserve_price', 'raw_unit_cost', 'updated_by', 'updated_at'])
+                    item.save(update_fields=['raw_unit_cost', 'updated_by', 'updated_at'])
             if item_created:
                 with transaction.atomic():
                     apply_container_inventory_delta(user=admin, after=item)

@@ -165,7 +165,6 @@ class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
             'category': instance.category or '',
             'unit': instance.unit or 'piece',
             'quantity': instance.quantity,
-            'reserve_price': instance.reserve_price,
             'description': instance.description or '',
         }
         apply_container_inventory_delta(user=self.request.user, before=before)

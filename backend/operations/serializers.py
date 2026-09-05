@@ -88,7 +88,7 @@ class ContainerItemSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'container', 'container_reference', 'lot_number', 'part_name',
             'part_number', 'description', 'category', 'quantity',
-            'unit', 'reserve_price', 'raw_unit_cost', 'raw_total_cost',
+            'unit', 'raw_unit_cost', 'raw_total_cost',
             'added_cost_share', 'net_unit_cost', 'net_total_cost', 'status',
             'created_at', 'updated_at',
         ]
@@ -133,7 +133,6 @@ class ContainerItemSerializer(serializers.ModelSerializer):
             'category': instance.category or '',
             'unit': instance.unit or 'piece',
             'quantity': instance.quantity,
-            'reserve_price': instance.reserve_price,
             'raw_unit_cost': instance.raw_unit_cost,
             'description': instance.description or '',
         }
@@ -165,12 +164,10 @@ class ContainerItemSerializer(serializers.ModelSerializer):
                 existing.category = merge_category_values(existing.category, validated_data.get('category', ''))
                 if validated_data.get('description'):
                     existing.description = merge_category_values(existing.description, validated_data.get('description', ''))
-                if validated_data.get('reserve_price') is not None:
-                    existing.reserve_price = validated_data.get('reserve_price')
                 existing.updated_by = self.context['request'].user
                 existing.save(update_fields=[
                     'quantity', 'raw_unit_cost', 'category', 'description',
-                    'reserve_price', 'updated_by', 'updated_at',
+                    'updated_by', 'updated_at',
                 ])
                 apply_container_inventory_delta(user=self.context['request'].user, before=before, after=existing)
                 return existing
@@ -245,7 +242,7 @@ class PartInventorySerializer(serializers.ModelSerializer):
         model = PartInventory
         fields = [
             'id', 'part_name', 'part_number', 'description', 'category',
-            'quantity', 'unit', 'reserve_price', 'sold_quantity',
+            'quantity', 'unit', 'sold_quantity',
             'available_quantity', 'batches', 'source_container',
             'raw_unit_cost', 'created_at', 'updated_at',
         ]
@@ -302,10 +299,8 @@ class PartInventorySerializer(serializers.ModelSerializer):
                 instance.category = merge_category_values(instance.category, validated_data.get('category', ''))
                 if not instance.description and validated_data.get('description'):
                     instance.description = validated_data['description']
-                if instance.reserve_price is None and validated_data.get('reserve_price') is not None:
-                    instance.reserve_price = validated_data['reserve_price']
                 instance.updated_by = self.context['request'].user
-                instance.save(update_fields=['quantity', 'category', 'description', 'reserve_price', 'updated_by', 'updated_at'])
+                instance.save(update_fields=['quantity', 'category', 'description', 'updated_by', 'updated_at'])
             sync_manual_inventory_batch_delta(
                 user=self.context['request'].user,
                 item=instance,
@@ -362,7 +357,6 @@ class AuctionSaleLineReadSerializer(serializers.ModelSerializer):
             'category': item.category,
             'quantity': item.quantity,
             'unit': item.unit,
-            'reserve_price': item.reserve_price,
             'sold_quantity': sold_quantity,
             'available_quantity': max(int(item.quantity) - int(sold_quantity or 0), 0),
             'created_at': item.created_at,
@@ -413,7 +407,6 @@ class GatePassSaleLineReadSerializer(serializers.ModelSerializer):
             'category': item.category,
             'quantity': item.quantity,
             'unit': item.unit,
-            'reserve_price': item.reserve_price,
             'sold_quantity': sold_quantity_for_item(item),
             'available_quantity': available_quantity_for_item(item),
             'created_at': item.created_at,

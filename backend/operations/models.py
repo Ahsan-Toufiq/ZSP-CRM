@@ -81,7 +81,6 @@ class ContainerItem(UserStampedModel):
     category = models.CharField(max_length=120, blank=True)
     quantity = models.PositiveIntegerField(default=1)
     unit = models.CharField(max_length=30, default='piece')
-    reserve_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     raw_unit_cost = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     status = models.CharField(max_length=30, choices=Status.choices, default=Status.AVAILABLE)
 
@@ -105,7 +104,6 @@ class PartInventory(UserStampedModel):
     category = models.CharField(max_length=120, blank=True)
     quantity = models.PositiveIntegerField(default=1)
     unit = models.CharField(max_length=30, default='piece')
-    reserve_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
 
     class Meta:
         ordering = ['part_name', 'part_number']

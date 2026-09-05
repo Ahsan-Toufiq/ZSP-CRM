@@ -107,7 +107,6 @@ def _part_payload(source) -> dict:
         'part_number': source.part_number or '',
         'category': source.category or '',
         'unit': source.unit or 'piece',
-        'reserve_price': source.reserve_price,
         'description': source.description or '',
     }
 
@@ -181,10 +180,8 @@ def apply_container_inventory_delta(*, user, before: dict | None = None, after: 
             inventory.category = merge_category_values(inventory.category, payload['category'])
             if not inventory.description and payload['description']:
                 inventory.description = payload['description']
-            if inventory.reserve_price is None and payload['reserve_price'] is not None:
-                inventory.reserve_price = payload['reserve_price']
             inventory.updated_by = user
-            inventory.save(update_fields=['quantity', 'category', 'description', 'reserve_price', 'updated_by', 'updated_at'])
+            inventory.save(update_fields=['quantity', 'category', 'description', 'updated_by', 'updated_at'])
         _sync_container_batch(user=user, container_item=after, inventory=inventory)
 
 

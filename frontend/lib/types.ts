@@ -58,7 +58,6 @@ export interface ContainerItem {
   category: string;
   quantity: number;
   unit: string;
-  reserve_price: string | null;
   raw_unit_cost: string;
   raw_total_cost: string;
   added_cost_share: string;
@@ -75,7 +74,6 @@ export interface PartInventory {
   category: string;
   quantity: number;
   unit: string;
-  reserve_price: string | null;
   sold_quantity: number;
   available_quantity: number;
   batches: InventoryBatch[];
