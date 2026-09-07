@@ -1,13 +1,16 @@
 from decimal import Decimal
 
-from django.db.models import Count, DecimalField, Prefetch, Q, Sum, Value
+from django.db.models import Count, DecimalField, F, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
+from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
-from accounts.permissions import DashboardPermission, FinancePermission
+from accounts.permissions import DashboardPermission, FinancePermission, has_tab_access
 from finance.models import Cheque, ChequeSettlementAllocation, ChequeStatus, CustomerLedgerEntry
+from finance.reporting import build_credit_report, credit_report_csv_response, credit_report_payload, credit_report_pdf_response
 from finance.serializers import (
     ChequeSerializer,
     ChequeStatusChangeSerializer,
@@ -112,6 +115,7 @@ class CustomerBalanceViewSet(viewsets.ReadOnlyModelViewSet):
 @api_view(['GET'])
 @permission_classes([DashboardPermission])
 def dashboard_summary(request):
+    today = timezone.localdate()
     ledger_totals = CustomerLedgerEntry.objects.aggregate(debit=Sum('debit'), credit=Sum('credit'))
     receivable = (ledger_totals['debit'] or 0) - (ledger_totals['credit'] or 0)
     parts = PartInventory.objects.annotate(
@@ -123,6 +127,18 @@ def dashboard_summary(request):
     available_parts = sum(1 for part in parts if part.quantity > part.sold_quantity)
     sold_out_parts = parts.count() - available_parts
     cheque_counts = Cheque.objects.values('status__name').annotate(count=Count('id'))
+    pending_in_date_cheques = (
+        Cheque.objects
+        .select_related('customer', 'status')
+        .filter(
+            cheque_date__lte=today,
+            expiry_date__gte=today,
+            status__balance_effect=ChequeStatus.BalanceEffect.NONE,
+        )
+        .exclude(status__name__iexact='Bounced')
+        .order_by('cheque_date', 'expiry_date', 'customer__name')[:8]
+    )
+    cheque_amounts_by_status = Cheque.objects.values('status__name').annotate(total=Coalesce(Sum('amount'), Value(Decimal('0.00')), output_field=DecimalField(max_digits=14, decimal_places=2)))
 
     return Response({
         'containers': Container.objects.count(),
@@ -137,5 +153,39 @@ def dashboard_summary(request):
             'printed': GatePass.objects.filter(print_status=GatePass.PrintStatus.PRINTED).count(),
         },
         'cheques_by_status': {row['status__name']: row['count'] for row in cheque_counts},
+        'cheque_amounts_by_status': {row['status__name']: row['total'] for row in cheque_amounts_by_status},
+        'pending_in_date_cheques': [
+            {
+                'id': str(cheque.id),
+                'cheque_number': cheque.cheque_number,
+                'customer_name': cheque.customer.name,
+                'bank_name': cheque.bank_name,
+                'amount': cheque.amount,
+                'cheque_date': cheque.cheque_date,
+                'expiry_date': cheque.expiry_date,
+                'status_name': cheque.status.name,
+            }
+            for cheque in pending_in_date_cheques
+        ],
+        'creditors': {
+            'count': Customer.objects.annotate(
+                debit_total=Coalesce(Sum('ledger_entries__debit'), Value(Decimal('0.00')), output_field=DecimalField(max_digits=14, decimal_places=2)),
+                credit_total=Coalesce(Sum('ledger_entries__credit'), Value(Decimal('0.00')), output_field=DecimalField(max_digits=14, decimal_places=2)),
+            ).filter(debit_total__gt=F('credit_total')).count(),
+            'total_outstanding': receivable,
+        },
         'customer_receivable': receivable,
     })
+
+
+@api_view(['GET'])
+def credit_report(request):
+    if not has_tab_access(request.user, 'customers'):
+        raise PermissionDenied('You do not have access to customer balance reports.')
+    report = build_credit_report()
+    export_format = request.query_params.get('export', 'json').lower()
+    if export_format == 'csv':
+        return credit_report_csv_response(report)
+    if export_format == 'pdf':
+        return credit_report_pdf_response(report)
+    return Response(credit_report_payload(report))

@@ -13,7 +13,7 @@ class CustomerAdmin(admin.ModelAdmin):
 class ContainerItemInline(admin.TabularInline):
     model = ContainerItem
     extra = 0
-    fields = ('lot_number', 'part_name', 'part_number', 'category', 'quantity', 'unit')
+    fields = ('parent_item', 'lot_number', 'part_name', 'part_number', 'category', 'quantity', 'unit', 'raw_unit_cost', 'net_unit_cost')
 
 
 @admin.register(Container)
@@ -26,9 +26,9 @@ class ContainerAdmin(admin.ModelAdmin):
 
 @admin.register(ContainerItem)
 class ContainerItemAdmin(admin.ModelAdmin):
-    list_display = ('lot_number', 'part_name', 'container', 'category', 'quantity', 'unit')
-    search_fields = ('lot_number', 'part_name', 'part_number')
-    list_filter = ('category',)
+    list_display = ('lot_number', 'part_name', 'container', 'parent_item', 'category', 'quantity', 'unit', 'raw_unit_cost', 'net_unit_cost')
+    search_fields = ('lot_number', 'part_name', 'part_number', 'container__reference')
+    list_filter = ('category', 'container')
 
 
 @admin.register(PartInventory)
@@ -40,7 +40,7 @@ class PartInventoryAdmin(admin.ModelAdmin):
 
 @admin.register(InventoryBatch)
 class InventoryBatchAdmin(admin.ModelAdmin):
-    list_display = ('item', 'container', 'source_label', 'quantity', 'raw_unit_cost')
+    list_display = ('item', 'container', 'source_label', 'quantity', 'raw_unit_cost', 'net_unit_cost')
     search_fields = ('item__part_name', 'item__part_number', 'container__reference', 'source_label')
     list_filter = ('container',)
 
@@ -66,7 +66,7 @@ class GatePassLineInline(admin.TabularInline):
 
 @admin.register(GatePass)
 class GatePassAdmin(admin.ModelAdmin):
-    list_display = ('gate_pass_number', 'issued_to_name', 'vehicle_number', 'status', 'print_status', 'issued_at', 'printed_at', 'verified_at')
+    list_display = ('gate_pass_number', 'issued_to_name', 'vehicle_number', 'status', 'print_status', 'issued_at', 'printed_at')
     search_fields = ('gate_pass_number', 'issued_to_name', 'vehicle_number')
     list_filter = ('status', 'print_status')
     inlines = [GatePassLineInline]

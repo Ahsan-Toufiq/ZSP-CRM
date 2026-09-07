@@ -1,10 +1,12 @@
 from decimal import Decimal
+from datetime import timedelta
 
 import pytest
 from django.contrib.auth.models import User
 from django.utils import timezone
 
 from finance.models import ChequeSettlementAllocation, ChequeStatus, CustomerLedgerEntry
+from finance.reporting import build_credit_report
 from finance.services import change_cheque_status, create_cheque
 from operations.models import AuctionSale, Customer, InventoryBatch, PartInventory
 from operations.services import create_auction_sale
@@ -164,3 +166,43 @@ def test_new_cheque_bank_persists_as_dropdown_option(user, customer):
     )
 
     assert DropdownOption.objects.filter(group=DropdownOption.Group.BANK, label='Custom Test Bank').exists()
+
+
+@pytest.mark.django_db
+def test_credit_report_includes_aging_and_last_payment_date(user, customer):
+    item = PartInventory.objects.create(part_name='Report alternator', quantity=2, unit='piece')
+    batch = make_batch(item)
+    first_sale = create_auction_sale(
+        user=user,
+        sale_date=timezone.localdate() - timedelta(days=45),
+        payment_type=AuctionSale.PaymentType.CREDIT,
+        customer=customer,
+        lines=[{'inventory_batch': batch, 'sold_price': Decimal('10000.00')}],
+    )
+    create_auction_sale(
+        user=user,
+        sale_date=timezone.localdate() - timedelta(days=95),
+        payment_type=AuctionSale.PaymentType.CREDIT,
+        customer=customer,
+        lines=[{'inventory_batch': batch, 'sold_price': Decimal('7000.00')}],
+    )
+    cheque = create_cheque(
+        user=user,
+        cheque_number='CHQ-REPORT-001',
+        customer=customer,
+        name_on_cheque='Zulfiqar Autos',
+        bank_name='HBL',
+        amount=Decimal('4000.00'),
+        cheque_date=timezone.localdate(),
+        expiry_date=timezone.localdate(),
+        status=ChequeStatus.objects.get(name='Cleared'),
+    )
+
+    report = build_credit_report()
+    row = next(customer_row for customer_row in report.customers if customer_row['id'] == str(customer.id))
+
+    assert row['remaining_balance'] == Decimal('13000.00')
+    assert row['last_payment_date'] == timezone.localdate()
+    assert row['aging']['days_31_60'] == first_sale.total_amount
+    assert row['aging']['over_90'] == Decimal('3000.00')
+    assert report.totals['creditor_count'] == 1

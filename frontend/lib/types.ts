@@ -51,6 +51,7 @@ export interface ContainerItem {
   id: UUID;
   container: UUID;
   container_reference: string;
+  parent_item: UUID | null;
   lot_number: string;
   part_name: string;
   part_number: string;
@@ -64,6 +65,8 @@ export interface ContainerItem {
   net_unit_cost: string;
   net_total_cost: string;
   status: string;
+  has_subparts: boolean;
+  subpart_count: number;
 }
 
 export interface PartInventory {
@@ -107,6 +110,9 @@ export interface AuctionSaleLine {
   sold_price: string;
   raw_unit_cost_snapshot: string;
   net_unit_cost_snapshot: string;
+  current_raw_unit_cost: string;
+  current_net_unit_cost: string;
+  current_profit: string;
   line_total: string;
   notes: string;
 }
@@ -186,6 +192,68 @@ export interface ChequeSettlementAllocation {
   created_at: string;
 }
 
+export interface CreditReportSaleItem {
+  part_name: string;
+  part_number: string;
+  category: string;
+  quantity: number;
+  sold_price: string;
+  line_total: string;
+}
+
+export interface CreditReportSale {
+  sale_number: string;
+  sale_date: string;
+  days_old: number;
+  total_amount: string;
+  settled_amount: string;
+  outstanding_amount: string;
+  aging_bucket: string;
+  items: CreditReportSaleItem[];
+  settlements: {
+    cheque_number: string;
+    amount: string;
+    created_at: string;
+  }[];
+}
+
+export interface CreditReportCustomer {
+  id: UUID;
+  name: string;
+  phone: string;
+  is_active: boolean;
+  total_debit: string;
+  total_credit: string;
+  remaining_balance: string;
+  last_payment_date: string | null;
+  aging: Record<string, string>;
+  sale_breakdown: CreditReportSale[];
+}
+
+export interface CreditReport {
+  generated_at: string;
+  aging_buckets: { key: string; label: string }[];
+  totals: {
+    creditor_count: number;
+    customer_count: number;
+    total_outstanding: string;
+    customer_credit_balance: string;
+    aging: Record<string, string>;
+  };
+  customers: CreditReportCustomer[];
+}
+
+export interface DashboardCheque {
+  id: UUID;
+  cheque_number: string;
+  customer_name: string;
+  bank_name: string;
+  amount: string;
+  cheque_date: string;
+  expiry_date: string;
+  status_name: string;
+}
+
 export interface DropdownOption {
   id: UUID;
   group: 'bank' | 'part_name' | 'item_category' | 'item_unit';
@@ -226,6 +294,12 @@ export interface DashboardSummary {
     verified?: number;
   };
   cheques_by_status: Record<string, number>;
+  cheque_amounts_by_status: Record<string, string | number>;
+  pending_in_date_cheques: DashboardCheque[];
+  creditors: {
+    count: number;
+    total_outstanding: string | number;
+  };
   customer_receivable: string | number;
 }
 

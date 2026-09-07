@@ -13,7 +13,7 @@ from catalog.models import DropdownOption
 from finance.models import Cheque, ChequeStatus
 from finance.services import change_cheque_status, create_cheque
 from operations.models import AuctionSale, Container, ContainerItem, Customer, PartInventory
-from operations.services import apply_container_inventory_delta, create_auction_sale
+from operations.services import apply_container_inventory_delta, create_auction_sale, create_subparts, is_container_cost_locked, recalculate_container_net_costs
 
 
 class Command(BaseCommand):
@@ -117,7 +117,7 @@ class Command(BaseCommand):
                     'origin_country': origin,
                     'supplier_name': supplier,
                     'arrival_date': today - timedelta(days=days_ago),
-                    'status': Container.Status.READY_FOR_AUCTION if reference != 'ZSP-CNT-004' else Container.Status.RECEIVING,
+                    'status': Container.Status.READY_FOR_AUCTION if reference != 'ZSP-CNT-004' else Container.Status.GODOWN_LOADING,
                     'manifest_notes': notes,
                     'added_cost': Decimal(added_cost),
                     'created_by': admin,
@@ -147,6 +147,10 @@ class Command(BaseCommand):
             ('ZSP-CNT-004', 'LOT-301', 'Unsorted dashboard electronics', 'MIX-DASH', 'Electrical', 12, 'box', '15000.00'),
             ('ZSP-CNT-004', 'LOT-302', 'Damaged bumper bundle', 'MIX-BMP-DMG', 'Body parts', 7, 'piece', '6000.00'),
             ('ZSP-CNT-004', 'LOT-303', 'Toyota headlight pair', 'TY-HL-01', 'Lights', 1, 'pair', '26000.00'),
+            ('ZSP-CNT-004', 'LOT-304', 'Cracked hybrid battery pack', 'HY-BAT-DMG', 'Electrical', 1, 'piece', '85000.00'),
+            ('ZSP-CNT-004', 'LOT-305', 'Unmarked mirror shells', '', 'Body parts', 9, 'piece', '2800.00'),
+            ('ZSP-CNT-003', 'LOT-206', 'Damaged dashboard assembly', 'DSH-DMG', 'Interior', 2, 'piece', '32000.00'),
+            ('ZSP-CNT-003', 'LOT-207', 'Unmarked mirror shells', '', 'Body parts', 6, 'piece', '3100.00'),
         ]
         demo_part_pool = [
             ('Door handle set', 'DH-HND', 'Body parts', 12, 'set', '8500.00'),
@@ -232,16 +236,72 @@ class Command(BaseCommand):
                     item.save(update_fields=['raw_unit_cost', 'updated_by', 'updated_at'])
             if item_created:
                 with transaction.atomic():
+                    if is_container_cost_locked(item.container):
+                        item.net_unit_cost = item.raw_unit_cost
+                        item.save(update_fields=['net_unit_cost'])
                     apply_container_inventory_delta(user=admin, after=item)
             items[lot] = item
+        for container in containers.values():
+            if not is_container_cost_locked(container):
+                recalculate_container_net_costs(user=admin, container=container)
         parts = {
             lot: PartInventory.objects.filter(
                 part_name=item.part_name,
                 part_number=item.part_number or '',
+                category=item.category or '',
                 unit=item.unit or 'piece',
             ).first()
             for lot, item in items.items()
         }
+
+        subpart_specs = [
+            (
+                'LOT-302',
+                2,
+                [
+                    ('Bumper side bracket', 'BMP-BRKT-L', 'Body parts', 4, 'piece', '1200.00', 'Reusable brackets taken from damaged bumper bundle.'),
+                    ('Bumper fog lamp trim', 'BMP-FOG-TR', 'Body parts', 2, 'piece', '1800.00', 'Trim pieces split from damaged bumper bundle.'),
+                ],
+            ),
+            (
+                'LOT-304',
+                1,
+                [
+                    ('Hybrid battery cell', 'HY-CELL', 'Electrical', 18, 'piece', '3700.00', 'Pack opened; cells are now sellable individually.'),
+                    ('Battery management module', 'BMS-MOD', 'Electrical', 1, 'piece', '9500.00', 'Module recovered from opened battery pack.'),
+                    ('Hybrid battery casing', 'HY-CASE', 'Electrical', 1, 'piece', '4200.00', 'Remaining casing from the opened pack.'),
+                ],
+            ),
+            (
+                'LOT-206',
+                1,
+                [
+                    ('Dashboard vent set', 'DS-VENT', 'Interior', 3, 'set', '5200.00', 'Locked container split: net cost uses only parent share.'),
+                    ('Instrument cluster lens', 'IC-LENS', 'Interior', 2, 'piece', '2400.00', 'Child row shown under the dashboard assembly.'),
+                ],
+            ),
+        ]
+        for parent_lot, split_quantity, children in subpart_specs:
+            parent = items.get(parent_lot)
+            if parent is None or parent.subparts.exists() or parent.quantity < split_quantity:
+                continue
+            create_subparts(
+                user=admin,
+                parent_item=parent,
+                split_quantity=split_quantity,
+                subparts=[
+                    {
+                        'part_name': name,
+                        'part_number': number,
+                        'category': category,
+                        'quantity': quantity,
+                        'unit': unit,
+                        'raw_unit_cost': Decimal(raw_cost),
+                        'description': description,
+                    }
+                    for name, number, category, quantity, unit, raw_cost, description in children
+                ],
+            )
 
         sale_specs = [
             (

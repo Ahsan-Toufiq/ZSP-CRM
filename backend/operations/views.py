@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count, DecimalField, ExpressionWrapper, F, IntegerField, OuterRef, Prefetch, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from rest_framework import status, viewsets
@@ -24,8 +25,9 @@ from operations.serializers import (
     GatePassUpdateSerializer,
     InventoryBatchSerializer,
     PartInventorySerializer,
+    SubpartCreateSerializer,
 )
-from operations.services import apply_container_inventory_delta, mark_gate_pass_printed, sold_quantity_for_item
+from operations.services import apply_container_inventory_delta, is_container_cost_locked, mark_gate_pass_printed, recalculate_container_net_costs, sold_quantity_for_item
 
 
 raw_item_cost_expression = ExpressionWrapper(
@@ -127,7 +129,7 @@ class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
     serializer_class = ContainerItemSerializer
     permission_classes = [OperationsPermission]
     filterset_fields = ['container', 'status', 'category']
-    search_fields = ['lot_number', 'part_name', 'part_number', 'description', 'category']
+    search_fields = ['lot_number', 'part_name', 'part_number', 'description', 'category', 'container__reference']
     ordering_fields = ['lot_number', 'part_name', 'created_at']
 
     def get_queryset(self):
@@ -153,11 +155,13 @@ class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
                     Value(Decimal('0.00')),
                     output_field=DecimalField(max_digits=14, decimal_places=2),
                 ),
+                subpart_count_total=Count('subparts'),
             )
             .order_by('container__reference', 'part_name', 'lot_number')
         )
 
     def perform_destroy(self, instance):
+        container = instance.container
         before = {
             'container_item_id': instance.id,
             'part_name': instance.part_name,
@@ -169,13 +173,30 @@ class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
         }
         apply_container_inventory_delta(user=self.request.user, before=before)
         instance.delete()
+        if not is_container_cost_locked(container):
+            recalculate_container_net_costs(user=self.request.user, container=container)
+
+    @action(detail=True, methods=['post'], url_path='subparts')
+    def subparts(self, request, pk=None):
+        parent_item = self.get_object()
+        serializer = SubpartCreateSerializer(
+            data=request.data,
+            context={'request': request, 'parent_item': parent_item},
+        )
+        serializer.is_valid(raise_exception=True)
+        try:
+            subparts = serializer.save()
+        except DjangoValidationError as exc:
+            detail = getattr(exc, 'message_dict', None) or getattr(exc, 'messages', None) or str(exc)
+            raise ValidationError(detail) from exc
+        return Response(ContainerItemSerializer(subparts, many=True, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
 
 class PartInventoryViewSet(UserStampedMixin, viewsets.ModelViewSet):
     serializer_class = PartInventorySerializer
     permission_classes = [OperationsPermission]
     filterset_fields = ['category', 'unit']
-    search_fields = ['part_name', 'part_number', 'description', 'category']
+    search_fields = ['part_name', 'part_number', 'description', 'category', 'batches__container__reference', 'batches__source_label']
     ordering_fields = ['part_name', 'part_number', 'created_at', 'quantity']
 
     def get_queryset(self):
@@ -292,7 +313,7 @@ class GatePassViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return (
             GatePass.objects
-            .select_related('sale', 'verified_by')
+            .select_related('sale')
             .prefetch_related(Prefetch('lines__sale_line', queryset=sale_line_queryset()))
             .order_by('-issued_at')
         )

@@ -5,6 +5,7 @@ from finance.views import (
     ChequeStatusViewSet,
     ChequeViewSet,
     CustomerBalanceViewSet,
+    credit_report,
     LedgerEntryViewSet,
     dashboard_summary,
 )
@@ -17,5 +18,6 @@ router.register('customer-balances', CustomerBalanceViewSet, basename='customer-
 
 urlpatterns = [
     path('dashboard-summary/', dashboard_summary, name='dashboard-summary'),
+    path('credit-report/', credit_report, name='credit-report'),
     *router.urls,
 ]

@@ -7,7 +7,7 @@ from rest_framework.test import APIClient
 
 from accounts.models import UserProfile
 from accounts.permissions import full_tab_permissions
-from operations.models import AuctionSale, Customer, InventoryBatch, PartInventory
+from operations.models import AuctionSale, Container, ContainerItem, Customer, InventoryBatch, PartInventory
 from operations.services import create_auction_sale
 
 
@@ -65,3 +65,56 @@ def test_customer_with_transactions_cannot_be_deleted(api_client, admin_user):
     assert response.status_code == 409
     assert response.data['blocking_records']['auction_sales'] == 1
     assert Customer.objects.filter(id=customer.id).exists()
+
+
+@pytest.mark.django_db
+def test_subpart_split_over_available_quantity_returns_validation_error(api_client):
+    container = Container.objects.create(reference='CNT-API-SUB', status=Container.Status.READY_FOR_AUCTION)
+    parent_part = PartInventory.objects.create(
+        part_name='Damaged lamp',
+        part_number='D-LAMP',
+        category='Lights',
+        quantity=1,
+        unit='piece',
+    )
+    parent = ContainerItem.objects.create(
+        container=container,
+        part_name='Damaged lamp',
+        part_number='D-LAMP',
+        category='Lights',
+        quantity=1,
+        unit='piece',
+        raw_unit_cost=Decimal('5000.00'),
+        net_unit_cost=Decimal('5000.00'),
+    )
+    InventoryBatch.objects.create(
+        item=parent_part,
+        container=container,
+        container_item=parent,
+        quantity=1,
+        raw_unit_cost=parent.raw_unit_cost,
+        net_unit_cost=parent.net_unit_cost,
+    )
+
+    response = api_client.post(
+        f'/api/operations/items/{parent.id}/subparts/',
+        {
+            'split_quantity': 2,
+            'subparts': [
+                {
+                    'part_name': 'Lamp clip',
+                    'part_number': 'CLIP',
+                    'category': 'Lights',
+                    'quantity': 1,
+                    'unit': 'piece',
+                    'raw_unit_cost': '100.00',
+                },
+            ],
+        },
+        format='json',
+    )
+
+    assert response.status_code == 400
+    assert 'split_quantity' in response.data
+    parent.refresh_from_db()
+    assert parent.quantity == 1

@@ -9,7 +9,7 @@ from catalog.models import DropdownOption
 from finance.models import Cheque, ChequeStatus, CustomerLedgerEntry
 from finance.services import change_cheque_status
 from operations.models import AuctionSale, Container, ContainerItem, GatePassLine, InventoryBatch, PartInventory
-from operations.services import available_quantity_for_item, create_auction_sale, issue_gate_pass, mark_gate_pass_printed, update_auction_sale, verify_gate_pass
+from operations.services import available_quantity_for_batch, available_quantity_for_item, create_auction_sale, issue_gate_pass, mark_gate_pass_printed, recalculate_container_net_costs, update_auction_sale
 
 
 @pytest.fixture
@@ -164,7 +164,7 @@ def test_sale_selects_specific_cost_batch_for_same_part(user, customer, item):
 
 
 @pytest.mark.django_db
-def test_sale_auto_creates_gate_pass_and_verification_does_not_release_stock(user, customer, item):
+def test_sale_auto_creates_gate_pass_without_release_verification(user, customer, item):
     batch = make_batch(item)
     sale = create_auction_sale(
         user=user,
@@ -188,9 +188,9 @@ def test_sale_auto_creates_gate_pass_and_verification_does_not_release_stock(use
     assert available_quantity_for_item(item) == 0
     assert GatePassLine.objects.filter(sale_line=sale_line).count() == 1
 
-    verify_gate_pass(user=user, gate_pass=gate_pass)
-    item.refresh_from_db()
-    assert available_quantity_for_item(item) == 0
+    mark_gate_pass_printed(user=user, gate_pass=gate_pass)
+    gate_pass.refresh_from_db()
+    assert gate_pass.print_status == gate_pass.PrintStatus.PRINTED
 
 
 @pytest.mark.django_db
@@ -279,7 +279,7 @@ def test_new_item_category_persists_as_dropdown_option(user):
 
 
 @pytest.mark.django_db
-def test_container_manifest_delta_updates_parts_inventory_without_rewriting_manifest(user):
+def test_aggregate_parts_inventory_quantity_is_controlled_by_source_rows(user):
     from operations.serializers import ContainerItemSerializer, PartInventorySerializer
 
     container = Container.objects.create(reference='CNT-DELTA')
@@ -305,13 +305,13 @@ def test_container_manifest_delta_updates_parts_inventory_without_rewriting_mani
         partial=True,
         context={'request': request},
     )
-    assert part_serializer.is_valid(), part_serializer.errors
-    part_serializer.save(updated_by=user)
+    assert not part_serializer.is_valid()
+    assert 'quantity' in part_serializer.errors
 
     manifest_item.refresh_from_db()
     part.refresh_from_db()
     assert manifest_item.quantity == 2
-    assert part.quantity == 5
+    assert part.quantity == 2
 
 
 @pytest.mark.django_db
@@ -340,7 +340,7 @@ def test_container_item_with_same_part_identity_accumulates_existing_manifest_an
             'container': str(container.id),
             'part_name': 'Fuel pump',
             'part_number': 'FP-ASSY',
-            'category': 'Electrical',
+            'category': 'Engine',
             'quantity': 3,
             'unit': 'piece',
             'raw_unit_cost': '2000.00',
@@ -351,18 +351,45 @@ def test_container_item_with_same_part_identity_accumulates_existing_manifest_an
     merged_item = second.save(created_by=user, updated_by=user)
 
     first_item.refresh_from_db()
-    part = PartInventory.objects.get(part_name='Fuel pump', part_number='FP-ASSY')
+    part = PartInventory.objects.get(part_name='Fuel pump', part_number='FP-ASSY', category='Engine')
     assert merged_item.id == first_item.id
     assert first_item.quantity == 5
     assert first_item.raw_unit_cost == Decimal('1600.00')
     assert part.quantity == 5
-    assert part.category == 'Engine, Electrical'
+    assert part.category == 'Engine'
     assert part.batches.count() == 1
     assert part.batches.get().quantity == 5
 
 
 @pytest.mark.django_db
-def test_direct_parts_inventory_requires_source_container_and_creates_source_batch(user):
+def test_same_part_number_with_different_category_is_separate_inventory(user):
+    from operations.serializers import ContainerItemSerializer
+
+    container = Container.objects.create(reference='CNT-CAT-ID')
+    request = type('Request', (), {'user': user})()
+    for category in ['Engine', 'Electrical']:
+        serializer = ContainerItemSerializer(
+            data={
+                'container': str(container.id),
+                'part_name': 'Fuel pump',
+                'part_number': 'FP-ASSY',
+                'category': category,
+                'quantity': 2,
+                'unit': 'piece',
+                'raw_unit_cost': '1000.00',
+            },
+            context={'request': request},
+        )
+        assert serializer.is_valid(), serializer.errors
+        serializer.save(created_by=user, updated_by=user)
+
+    assert PartInventory.objects.filter(part_name='Fuel pump', part_number='FP-ASSY').count() == 2
+    assert PartInventory.objects.get(part_name='Fuel pump', part_number='FP-ASSY', category='Engine').quantity == 2
+    assert PartInventory.objects.get(part_name='Fuel pump', part_number='FP-ASSY', category='Electrical').quantity == 2
+
+
+@pytest.mark.django_db
+def test_direct_parts_inventory_requires_source_container_and_creates_container_source(user):
     from operations.serializers import PartInventorySerializer
 
     container = Container.objects.create(reference='CNT-DIRECT')
@@ -376,7 +403,7 @@ def test_direct_parts_inventory_requires_source_container_and_creates_source_bat
         context={'request': request},
     )
     assert not missing_source.is_valid()
-    assert 'source_container' in missing_source.errors
+    assert 'sources' in missing_source.errors
 
     serializer = PartInventorySerializer(
         data={
@@ -395,7 +422,115 @@ def test_direct_parts_inventory_requires_source_container_and_creates_source_bat
 
     batch = part.batches.get()
     assert batch.container == container
-    assert batch.container_item is None
+    assert batch.container_item is not None
     assert batch.quantity == 2
     assert batch.raw_unit_cost == Decimal('7000.00')
-    assert container.items.count() == 0
+    assert container.items.count() == 1
+
+
+@pytest.mark.django_db
+def test_blank_part_number_identity_accumulates_by_name_category_and_unit(user):
+    from operations.serializers import ContainerItemSerializer
+
+    container = Container.objects.create(reference='CNT-BLANK')
+    request = type('Request', (), {'user': user})()
+    for _ in range(2):
+        serializer = ContainerItemSerializer(
+            data={
+                'container': str(container.id),
+                'part_name': 'Unknown clip set',
+                'part_number': '',
+                'category': 'Body parts',
+                'quantity': 2,
+                'unit': 'set',
+                'raw_unit_cost': '500.00',
+            },
+            context={'request': request},
+        )
+        assert serializer.is_valid(), serializer.errors
+        serializer.save(created_by=user, updated_by=user)
+
+    assert ContainerItem.objects.count() == 1
+    assert PartInventory.objects.get(part_name='Unknown clip set', part_number='', category='Body parts').quantity == 4
+
+
+@pytest.mark.django_db
+def test_pre_auction_inventory_change_recalculates_all_container_net_costs(user):
+    container = Container.objects.create(reference='CNT-REPRICE', status=Container.Status.GODOWN_LOADING, added_cost=Decimal('300.00'))
+    first = ContainerItem.objects.create(container=container, part_name='A', quantity=1, raw_unit_cost=Decimal('100.00'), created_by=user, updated_by=user)
+    second = ContainerItem.objects.create(container=container, part_name='B', quantity=1, raw_unit_cost=Decimal('200.00'), created_by=user, updated_by=user)
+
+    recalculate_container_net_costs(user=user, container=container)
+    first.refresh_from_db()
+    second.refresh_from_db()
+
+    assert first.net_unit_cost == Decimal('200.00')
+    assert second.net_unit_cost == Decimal('400.00')
+
+
+@pytest.mark.django_db
+def test_ready_container_new_inventory_does_not_reprice_existing_items(user):
+    from operations.serializers import ContainerItemSerializer
+
+    container = Container.objects.create(reference='CNT-LOCKED', status=Container.Status.GODOWN_LOADING, added_cost=Decimal('300.00'))
+    existing = ContainerItem.objects.create(container=container, part_name='A', quantity=1, raw_unit_cost=Decimal('100.00'), created_by=user, updated_by=user)
+    recalculate_container_net_costs(user=user, container=container)
+    existing.refresh_from_db()
+    locked_cost = existing.net_unit_cost
+    container.status = Container.Status.READY_FOR_AUCTION
+    container.save(update_fields=['status'])
+
+    request = type('Request', (), {'user': user})()
+    serializer = ContainerItemSerializer(
+        data={
+            'container': str(container.id),
+            'part_name': 'B',
+            'quantity': 1,
+            'unit': 'piece',
+            'raw_unit_cost': '500.00',
+        },
+        context={'request': request},
+    )
+    assert serializer.is_valid(), serializer.errors
+    new_item = serializer.save(created_by=user, updated_by=user)
+
+    existing.refresh_from_db()
+    assert existing.net_unit_cost == locked_cost
+    assert new_item.net_unit_cost == Decimal('500.00')
+
+
+@pytest.mark.django_db
+def test_subpart_creation_reduces_parent_and_creates_sellable_sources(user):
+    from operations.services import create_subparts
+
+    container = Container.objects.create(reference='CNT-SUB', status=Container.Status.READY_FOR_AUCTION, added_cost=Decimal('1000.00'))
+    parent_part = PartInventory.objects.create(part_name='Damaged bumper', part_number='D-BMP', category='Body parts', quantity=2, unit='piece')
+    parent = ContainerItem.objects.create(
+        container=container,
+        part_name='Damaged bumper',
+        part_number='D-BMP',
+        category='Body parts',
+        quantity=2,
+        unit='piece',
+        raw_unit_cost=Decimal('10000.00'),
+        net_unit_cost=Decimal('11000.00'),
+        created_by=user,
+        updated_by=user,
+    )
+    InventoryBatch.objects.create(item=parent_part, container=container, container_item=parent, quantity=2, raw_unit_cost=parent.raw_unit_cost, net_unit_cost=parent.net_unit_cost)
+
+    created = create_subparts(
+        user=user,
+        parent_item=parent,
+        split_quantity=1,
+        subparts=[
+            {'part_name': 'Bumper bracket', 'part_number': 'BRKT', 'category': 'Body parts', 'quantity': 2, 'unit': 'piece', 'raw_unit_cost': Decimal('1000.00')},
+            {'part_name': 'Bumper grill', 'part_number': 'GRILL', 'category': 'Body parts', 'quantity': 1, 'unit': 'piece', 'raw_unit_cost': Decimal('3000.00')},
+        ],
+    )
+
+    parent.refresh_from_db()
+    assert parent.quantity == 1
+    assert len(created) == 2
+    assert available_quantity_for_batch(InventoryBatch.objects.get(container_item=parent)) == 1
+    assert PartInventory.objects.get(part_name='Bumper bracket', part_number='BRKT', category='Body parts').quantity == 2

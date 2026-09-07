@@ -40,8 +40,13 @@ class Customer(UserStampedModel):
 
 class Container(UserStampedModel):
     class Status(models.TextChoices):
-        DRAFT = 'draft', 'Draft'
-        RECEIVING = 'receiving', 'Receiving'
+        CONTAINER_BOUGHT = 'container_bought', 'Container Bought'
+        GODOWN_LOADING = 'godown_loading', 'Godown Loading'
+        SHIP_LOADING = 'ship_loading', 'Ship Loading'
+        PORT_LOADING = 'port_loading', 'Port Loading'
+        PORT_OPEN = 'port_open', 'Port Open'
+        PORT_CLOSE = 'port_close', 'Port Close'
+        EDAN_GATE = 'edan_gate', 'EDAN Gate'
         READY_FOR_AUCTION = 'ready_for_auction', 'Ready for auction'
         CLOSED = 'closed', 'Closed'
 
@@ -50,7 +55,7 @@ class Container(UserStampedModel):
     supplier_name = models.CharField(max_length=180, blank=True)
     arrival_date = models.DateField(null=True, blank=True)
     manifest_notes = models.TextField(blank=True)
-    status = models.CharField(max_length=30, choices=Status.choices, default=Status.DRAFT)
+    status = models.CharField(max_length=30, choices=Status.choices, default=Status.CONTAINER_BOUGHT)
     added_cost = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
 
     class Meta:
@@ -74,6 +79,7 @@ class ContainerItem(UserStampedModel):
         VOID = 'void', 'Void'
 
     container = models.ForeignKey(Container, on_delete=models.PROTECT, related_name='items')
+    parent_item = models.ForeignKey('self', on_delete=models.PROTECT, related_name='subparts', null=True, blank=True)
     lot_number = models.CharField(max_length=80, blank=True)
     part_name = models.CharField(max_length=180)
     part_number = models.CharField(max_length=120, blank=True)
@@ -82,6 +88,7 @@ class ContainerItem(UserStampedModel):
     quantity = models.PositiveIntegerField(default=1)
     unit = models.CharField(max_length=30, default='piece')
     raw_unit_cost = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
+    net_unit_cost = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     status = models.CharField(max_length=30, choices=Status.choices, default=Status.AVAILABLE)
 
     class Meta:
@@ -90,6 +97,7 @@ class ContainerItem(UserStampedModel):
             models.Index(fields=['part_name']),
             models.Index(fields=['part_number']),
             models.Index(fields=['category']),
+            models.Index(fields=['parent_item']),
         ]
 
     def __str__(self) -> str:
@@ -109,7 +117,7 @@ class PartInventory(UserStampedModel):
         ordering = ['part_name', 'part_number']
         constraints = [
             models.UniqueConstraint(
-                fields=['part_name', 'part_number', 'unit'],
+                fields=['part_name', 'part_number', 'category', 'unit'],
                 name='unique_sellable_part_inventory',
             ),
             models.CheckConstraint(condition=models.Q(quantity__gte=0), name='part_inventory_quantity_non_negative'),
@@ -131,6 +139,7 @@ class InventoryBatch(UserStampedModel):
     source_label = models.CharField(max_length=180, blank=True)
     quantity = models.PositiveIntegerField(default=0)
     raw_unit_cost = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
+    net_unit_cost = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     notes = models.TextField(blank=True)
 
     class Meta:

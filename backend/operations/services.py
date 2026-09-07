@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models import DecimalField, ExpressionWrapper, F, Sum
 from django.utils import timezone
 
@@ -10,9 +10,10 @@ from catalog.models import DropdownOption
 from catalog.services import ensure_dropdown_option
 from finance.models import ChequeStatus, CustomerLedgerEntry
 from finance.services import create_cheque
-from operations.models import AuctionSale, AuctionSaleLine, ContainerItem, GatePass, GatePassLine, InventoryBatch, PartInventory
+from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, GatePass, GatePassLine, InventoryBatch, PartInventory
 
 MONEY_QUANTUM = Decimal('0.01')
+LOCKED_COST_STATUSES = {Container.Status.READY_FOR_AUCTION, Container.Status.CLOSED}
 
 
 def _number(prefix: str) -> str:
@@ -60,12 +61,78 @@ def available_quantity_for_batch(batch: InventoryBatch, *, excluding_sale: Aucti
     return max(int(batch.quantity) - sold_quantity_for_batch(batch, excluding_sale=excluding_sale), 0)
 
 
+def is_container_cost_locked(container: Container) -> bool:
+    return container.status in LOCKED_COST_STATUSES
+
+
+def raw_total_for_container_item(container_item: ContainerItem) -> Decimal:
+    return Decimal(container_item.raw_unit_cost or 0) * Decimal(container_item.quantity or 0)
+
+
 def net_unit_cost_for_container_item(container_item: ContainerItem) -> Decimal:
+    return Decimal(container_item.net_unit_cost or 0).quantize(MONEY_QUANTUM)
+
+
+def _proportional_net_unit_cost(container_item: ContainerItem, container_raw_total: Decimal) -> Decimal:
     if not container_item.quantity:
         return Decimal('0.00')
-    raw_total = Decimal(container_item.raw_unit_cost) * Decimal(container_item.quantity)
+    raw_total = raw_total_for_container_item(container_item)
     if raw_total <= 0:
-        return Decimal(container_item.raw_unit_cost)
+        return Decimal(container_item.raw_unit_cost or 0).quantize(MONEY_QUANTUM)
+    if container_raw_total <= 0:
+        return Decimal(container_item.raw_unit_cost or 0).quantize(MONEY_QUANTUM)
+    added_share_total = Decimal(container_item.container.added_cost or 0) * (raw_total / container_raw_total)
+    return (Decimal(container_item.raw_unit_cost or 0) + (added_share_total / Decimal(container_item.quantity))).quantize(MONEY_QUANTUM)
+
+
+def recalculate_container_net_costs(*, user, container: Container) -> None:
+    def _recalculate() -> None:
+        items = list(ContainerItem.objects.select_for_update(of=('self',)).filter(container=container).order_by('created_at'))
+        container_raw_total = sum((raw_total_for_container_item(item) for item in items), Decimal('0.00'))
+        for item in items:
+            item.net_unit_cost = _proportional_net_unit_cost(item, container_raw_total)
+            item.updated_by = user
+            item.save(update_fields=['net_unit_cost', 'updated_by', 'updated_at'])
+            InventoryBatch.objects.filter(container_item=item).update(
+                net_unit_cost=item.net_unit_cost,
+                updated_by=user,
+                updated_at=timezone.now(),
+            )
+
+    if connection.in_atomic_block:
+        _recalculate()
+    else:
+        with transaction.atomic():
+            _recalculate()
+
+
+def price_new_locked_container_item(container_item: ContainerItem) -> None:
+    container_item.net_unit_cost = Decimal(container_item.raw_unit_cost or 0).quantize(MONEY_QUANTUM)
+
+
+def price_locked_quantity_merge(
+    *,
+    container_item: ContainerItem,
+    old_quantity: int,
+    old_net_unit_cost: Decimal,
+    incoming_quantity: int,
+    incoming_raw_unit_cost: Decimal,
+) -> None:
+    next_quantity = int(old_quantity) + int(incoming_quantity)
+    if next_quantity <= 0:
+        container_item.net_unit_cost = Decimal('0.00')
+        return
+    preserved_total = Decimal(old_net_unit_cost or 0) * Decimal(old_quantity)
+    incoming_total = Decimal(incoming_raw_unit_cost or 0) * Decimal(incoming_quantity)
+    container_item.net_unit_cost = ((preserved_total + incoming_total) / Decimal(next_quantity)).quantize(MONEY_QUANTUM)
+
+
+def legacy_proportional_net_unit_cost(container_item: ContainerItem) -> Decimal:
+    if not container_item.quantity:
+        return Decimal('0.00')
+    raw_total = raw_total_for_container_item(container_item)
+    if raw_total <= 0:
+        return Decimal(container_item.raw_unit_cost or 0).quantize(MONEY_QUANTUM)
     raw_total_expression = ExpressionWrapper(
         F('raw_unit_cost') * F('quantity'),
         output_field=DecimalField(max_digits=14, decimal_places=2),
@@ -77,28 +144,13 @@ def net_unit_cost_for_container_item(container_item: ContainerItem) -> Decimal:
         or Decimal('0.00')
     )
     if container_raw_total <= 0:
-        return Decimal(container_item.raw_unit_cost)
+        return Decimal(container_item.raw_unit_cost or 0).quantize(MONEY_QUANTUM)
     added_share_total = Decimal(container_item.container.added_cost or 0) * (raw_total / container_raw_total)
-    return (Decimal(container_item.raw_unit_cost) + (added_share_total / Decimal(container_item.quantity))).quantize(MONEY_QUANTUM)
+    return (Decimal(container_item.raw_unit_cost or 0) + (added_share_total / Decimal(container_item.quantity))).quantize(MONEY_QUANTUM)
 
 
 def net_unit_cost_for_batch(batch: InventoryBatch) -> Decimal:
-    if batch.container_item_id:
-        return net_unit_cost_for_container_item(batch.container_item)
-    return Decimal(batch.raw_unit_cost or 0).quantize(MONEY_QUANTUM)
-
-
-def merge_category_values(*values) -> str:
-    labels = []
-    seen = set()
-    for value in values:
-        for label in str(value or '').split(','):
-            cleaned = label.strip()
-            key = cleaned.casefold()
-            if cleaned and key not in seen:
-                labels.append(cleaned)
-                seen.add(key)
-    return ', '.join(labels)
+    return Decimal(batch.net_unit_cost or batch.raw_unit_cost or 0).quantize(MONEY_QUANTUM)
 
 
 def _part_payload(source) -> dict:
@@ -111,10 +163,25 @@ def _part_payload(source) -> dict:
     }
 
 
+def _container_item_snapshot(instance: ContainerItem) -> dict:
+    return {
+        'container_item_id': instance.id,
+        'part_name': instance.part_name,
+        'part_number': instance.part_number or '',
+        'category': instance.category or '',
+        'unit': instance.unit or 'piece',
+        'quantity': instance.quantity,
+        'raw_unit_cost': instance.raw_unit_cost,
+        'net_unit_cost': instance.net_unit_cost,
+        'description': instance.description or '',
+    }
+
+
 def _part_inventory_for_payload(payload: dict) -> PartInventory | None:
     return PartInventory.objects.select_for_update().filter(
         part_name=payload['part_name'],
         part_number=payload['part_number'],
+        category=payload['category'],
         unit=payload['unit'],
     ).first()
 
@@ -128,6 +195,7 @@ def _sync_container_batch(*, user, container_item: ContainerItem, inventory: Par
             'source_label': container_item.container.reference,
             'quantity': container_item.quantity,
             'raw_unit_cost': container_item.raw_unit_cost,
+            'net_unit_cost': container_item.net_unit_cost,
             'notes': container_item.description or '',
             'updated_by': user,
             'created_by': user,
@@ -177,66 +245,165 @@ def apply_container_inventory_delta(*, user, before: dict | None = None, after: 
             )
         else:
             inventory.quantity = int(inventory.quantity) + int(after.quantity)
-            inventory.category = merge_category_values(inventory.category, payload['category'])
             if not inventory.description and payload['description']:
                 inventory.description = payload['description']
             inventory.updated_by = user
-            inventory.save(update_fields=['quantity', 'category', 'description', 'updated_by', 'updated_at'])
+            inventory.save(update_fields=['quantity', 'description', 'updated_by', 'updated_at'])
         _sync_container_batch(user=user, container_item=after, inventory=inventory)
 
 
-def _manual_batch_for_item(*, user, item: PartInventory, source_container=None, raw_unit_cost=Decimal('0.00')) -> InventoryBatch:
-    batch = (
-        InventoryBatch.objects
+def _ensure_subpart_dropdown_options(*, user, payload: dict) -> None:
+    ensure_dropdown_option(group=DropdownOption.Group.PART_NAME, label=payload.get('part_name', ''), user=user)
+    ensure_dropdown_option(group=DropdownOption.Group.ITEM_CATEGORY, label=payload.get('category', ''), user=user)
+    ensure_dropdown_option(group=DropdownOption.Group.ITEM_UNIT, label=payload.get('unit', ''), user=user)
+
+
+def _locked_subpart_net_costs(*, parent_item: ContainerItem, split_quantity: int, subparts: list[dict]) -> list[Decimal]:
+    parent_added_share_total = max(
+        Decimal(parent_item.net_unit_cost or 0) - Decimal(parent_item.raw_unit_cost or 0),
+        Decimal('0.00'),
+    ) * Decimal(split_quantity)
+    subpart_raw_totals = [
+        Decimal(subpart.get('raw_unit_cost') or 0) * Decimal(subpart.get('quantity') or 0)
+        for subpart in subparts
+    ]
+    all_raw_total = sum(subpart_raw_totals, Decimal('0.00'))
+    costs = []
+    for subpart, raw_total in zip(subparts, subpart_raw_totals, strict=True):
+        quantity = Decimal(subpart.get('quantity') or 0)
+        raw_unit_cost = Decimal(subpart.get('raw_unit_cost') or 0)
+        if quantity <= 0 or parent_added_share_total <= 0 or all_raw_total <= 0:
+            costs.append(raw_unit_cost.quantize(MONEY_QUANTUM))
+            continue
+        added_share = parent_added_share_total * (raw_total / all_raw_total)
+        costs.append((raw_unit_cost + (added_share / quantity)).quantize(MONEY_QUANTUM))
+    return costs
+
+
+@transaction.atomic
+def create_subparts(*, user, parent_item: ContainerItem, split_quantity: int, subparts: list[dict]) -> list[ContainerItem]:
+    parent_item = (
+        ContainerItem.objects
         .select_for_update(of=('self',))
-        .filter(
-            item=item,
-            container=source_container,
-            container_item__isnull=True,
-            raw_unit_cost=raw_unit_cost,
-        )
-        .order_by()
-        .first()
+        .select_related('container')
+        .get(id=parent_item.id)
     )
-    if batch is not None:
-        return batch
-    return InventoryBatch.objects.create(
-        item=item,
-        container=source_container,
-        source_label=source_container.reference if source_container else 'Manual adjustment',
-        quantity=0,
-        raw_unit_cost=raw_unit_cost,
-        created_by=user,
-        updated_by=user,
-    )
+    if parent_item.parent_item_id:
+        raise ValidationError({'parent_item': 'Create subparts from the original container part, not from another subpart.'})
+    if split_quantity <= 0:
+        raise ValidationError({'split_quantity': 'Split quantity must be greater than zero.'})
+    if not subparts:
+        raise ValidationError({'subparts': 'At least one subpart is required.'})
 
-
-def sync_manual_inventory_batch_delta(
-    *,
-    user,
-    item: PartInventory,
-    before_quantity: int = 0,
-    source_container=None,
-    raw_unit_cost=Decimal('0.00'),
-) -> None:
-    delta = int(item.quantity) - int(before_quantity)
-    if delta == 0:
-        return
-    batch = _manual_batch_for_item(
-        user=user,
-        item=item,
-        source_container=source_container,
-        raw_unit_cost=Decimal(raw_unit_cost or 0).quantize(MONEY_QUANTUM),
-    )
-    next_quantity = int(batch.quantity) + delta
-    sold = sold_quantity_for_batch(batch)
-    if next_quantity < sold:
+    parent_batch = InventoryBatch.objects.select_for_update(of=('self',)).filter(container_item=parent_item).first()
+    available_parent_quantity = available_quantity_for_batch(parent_batch) if parent_batch else parent_item.quantity
+    if split_quantity > available_parent_quantity:
         raise ValidationError({
-            'quantity': f'Cannot reduce manual stock below {sold} already sold unit(s) for {item.part_name}.',
+            'split_quantity': f'Only {available_parent_quantity} unsold unit(s) are available to split for {parent_item.part_name}.',
         })
-    batch.quantity = max(next_quantity, 0)
-    batch.updated_by = user
-    batch.save(update_fields=['quantity', 'updated_by', 'updated_at'])
+
+    for subpart in subparts:
+        if int(subpart.get('quantity') or 0) <= 0:
+            raise ValidationError({'subparts': 'Each subpart quantity must be greater than zero.'})
+        if Decimal(subpart.get('raw_unit_cost') or 0) < 0:
+            raise ValidationError({'subparts': 'Subpart raw cost cannot be negative.'})
+        if not str(subpart.get('part_name') or '').strip():
+            raise ValidationError({'subparts': 'Each subpart needs a part name.'})
+
+    locked = is_container_cost_locked(parent_item.container)
+    locked_net_costs = _locked_subpart_net_costs(parent_item=parent_item, split_quantity=split_quantity, subparts=subparts) if locked else []
+
+    parent_before = _container_item_snapshot(parent_item)
+    parent_item.quantity -= split_quantity
+    parent_item.updated_by = user
+    parent_item.save(update_fields=['quantity', 'updated_by', 'updated_at'])
+    apply_container_inventory_delta(user=user, before=parent_before, after=parent_item)
+
+    created_or_updated = []
+    for index, subpart in enumerate(subparts):
+        payload = {
+            'part_name': str(subpart.get('part_name') or '').strip(),
+            'part_number': str(subpart.get('part_number') or '').strip(),
+            'category': str(subpart.get('category') or '').strip(),
+            'unit': str(subpart.get('unit') or 'piece').strip() or 'piece',
+            'description': str(subpart.get('description') or '').strip(),
+            'quantity': int(subpart.get('quantity') or 1),
+            'raw_unit_cost': Decimal(subpart.get('raw_unit_cost') or 0).quantize(MONEY_QUANTUM),
+        }
+        _ensure_subpart_dropdown_options(user=user, payload=payload)
+        existing = (
+            ContainerItem.objects
+            .select_for_update(of=('self',))
+            .filter(
+                container=parent_item.container,
+                parent_item=parent_item,
+                part_name=payload['part_name'],
+                part_number=payload['part_number'],
+                category=payload['category'],
+                unit=payload['unit'],
+            )
+            .order_by('created_at')
+            .first()
+        )
+        if existing is not None:
+            before = _container_item_snapshot(existing)
+            old_quantity = existing.quantity
+            old_net_unit_cost = existing.net_unit_cost
+            incoming_quantity = payload['quantity']
+            next_quantity = old_quantity + incoming_quantity
+            weighted_raw_total = (existing.raw_unit_cost * old_quantity) + (payload['raw_unit_cost'] * incoming_quantity)
+            existing.quantity = next_quantity
+            existing.raw_unit_cost = (weighted_raw_total / next_quantity).quantize(MONEY_QUANTUM)
+            existing.description = payload['description'] or existing.description
+            if locked:
+                incoming_net = locked_net_costs[index]
+                price_locked_quantity_merge(
+                    container_item=existing,
+                    old_quantity=old_quantity,
+                    old_net_unit_cost=old_net_unit_cost,
+                    incoming_quantity=incoming_quantity,
+                    incoming_raw_unit_cost=incoming_net,
+                )
+            existing.updated_by = user
+            existing.save(update_fields=['quantity', 'raw_unit_cost', 'net_unit_cost', 'description', 'updated_by', 'updated_at'])
+            apply_container_inventory_delta(user=user, before=before, after=existing)
+            created_or_updated.append(existing)
+            continue
+
+        item = ContainerItem.objects.create(
+            container=parent_item.container,
+            parent_item=parent_item,
+            part_name=payload['part_name'],
+            part_number=payload['part_number'],
+            category=payload['category'],
+            quantity=payload['quantity'],
+            unit=payload['unit'],
+            raw_unit_cost=payload['raw_unit_cost'],
+            net_unit_cost=locked_net_costs[index] if locked else payload['raw_unit_cost'],
+            description=payload['description'],
+            created_by=user,
+            updated_by=user,
+        )
+        apply_container_inventory_delta(user=user, after=item)
+        created_or_updated.append(item)
+
+    if not locked:
+        recalculate_container_net_costs(user=user, container=parent_item.container)
+        refreshed = []
+        for item in created_or_updated:
+            item.refresh_from_db()
+            refreshed.append(item)
+        created_or_updated = refreshed
+
+    AuditLog.objects.create(
+        actor=user,
+        action='container_item.subparts_created',
+        entity_type='ContainerItem',
+        entity_id=str(parent_item.id),
+        message=f'Created {len(created_or_updated)} subpart row(s) from {parent_item.part_name}',
+        metadata={'split_quantity': split_quantity},
+    )
+    return created_or_updated
 
 
 def _batch_id(line) -> str:
@@ -573,8 +740,6 @@ def issue_gate_pass(*, user, sale_line_ids, issued_to_name, issued_to_phone='', 
 @transaction.atomic
 def update_gate_pass(*, user, gate_pass: GatePass, sale_line_ids, issued_to_name, issued_to_phone='', vehicle_number='', driver_name='', notes='') -> GatePass:
     gate_pass = GatePass.objects.select_for_update().select_related('sale').get(id=gate_pass.id)
-    if gate_pass.status == GatePass.Status.VERIFIED:
-        raise ValidationError({'status': 'Verified gate passes cannot be modified.'})
     if gate_pass.sale_id:
         sale = gate_pass.sale
     else:
@@ -611,29 +776,5 @@ def mark_gate_pass_printed(*, user, gate_pass: GatePass) -> GatePass:
         entity_type='GatePass',
         entity_id=str(gate_pass.id),
         message=f'Printed gate pass {gate_pass.gate_pass_number}',
-    )
-    return gate_pass
-
-
-@transaction.atomic
-def verify_gate_pass(*, user, gate_pass: GatePass) -> GatePass:
-    gate_pass = GatePass.objects.select_for_update().get(id=gate_pass.id)
-    if gate_pass.status == GatePass.Status.VERIFIED:
-        return gate_pass
-    if gate_pass.status != GatePass.Status.ISSUED:
-        raise ValidationError({'status': 'Only issued gate passes can be verified.'})
-
-    gate_pass.status = GatePass.Status.VERIFIED
-    gate_pass.verified_at = timezone.now()
-    gate_pass.verified_by = user
-    gate_pass.updated_by = user
-    gate_pass.save(update_fields=['status', 'verified_at', 'verified_by', 'updated_by', 'updated_at'])
-
-    AuditLog.objects.create(
-        actor=user,
-        action='gate_pass.verified',
-        entity_type='GatePass',
-        entity_id=str(gate_pass.id),
-        message=f'Verified gate pass {gate_pass.gate_pass_number}',
     )
     return gate_pass
