@@ -139,13 +139,14 @@ class CustomerBalanceSerializer(serializers.ModelSerializer):
                 for allocation in sale.cheque_allocations.all()
             ]
             active_allocated = sum((allocation['amount'] for allocation in allocations if not allocation['is_reversed']), 0)
+            receivable_amount = sale.receivable_amount
             breakdown.append({
                 'id': str(sale.id),
                 'sale_number': sale.sale_number,
                 'sale_date': sale.sale_date,
                 'total_amount': sale.total_amount,
                 'settled_amount': active_allocated,
-                'outstanding_amount': sale.total_amount - active_allocated,
+                'outstanding_amount': receivable_amount - active_allocated,
                 'items': [
                     {
                         'part_name': line.item.part_name,

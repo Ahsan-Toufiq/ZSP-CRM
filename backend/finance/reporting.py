@@ -76,7 +76,7 @@ def build_credit_report() -> CreditReport:
         sale_breakdown = []
         for sale in customer.auction_sales.all():
             allocated = sum((_money(allocation.amount) for allocation in sale.cheque_allocations.all()), Decimal('0.00'))
-            outstanding = _money(sale.total_amount) - allocated
+            outstanding = _money(sale.receivable_amount) - allocated
             if outstanding <= 0:
                 continue
             days_old = max((today - sale.sale_date).days, 0)

@@ -126,6 +126,10 @@ export interface AuctionSale {
   payment_type: string;
   notes: string;
   total_amount: string;
+  cash_amount: string;
+  cheque_amount: string;
+  credit_amount: string;
+  receivable_amount: string;
   is_cancelled: boolean;
   lines: AuctionSaleLine[];
   gate_pass: {

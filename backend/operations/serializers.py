@@ -2,10 +2,12 @@ from decimal import Decimal
 
 from django.db import transaction
 from django.db.models import Sum
+from django.utils import timezone
 from rest_framework import serializers
 
 from catalog.models import DropdownOption
 from catalog.services import ensure_dropdown_option
+from finance.models import CustomerLedgerEntry
 from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass, GatePassLine, InventoryBatch, PartInventory
 from operations.services import (
     apply_container_inventory_delta,
@@ -30,14 +32,46 @@ class CustomerSerializer(serializers.ModelSerializer):
     balance = serializers.SerializerMethodField()
     can_delete = serializers.SerializerMethodField()
     customer_type = serializers.ChoiceField(choices=Customer.CustomerType.choices, required=False, default=Customer.CustomerType.INDIVIDUAL)
+    opening_balance = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0.00'), required=False, write_only=True, default=Decimal('0.00'))
+    opening_balance_direction = serializers.ChoiceField(
+        choices=[('receivable', 'Customer owes ZSP'), ('credit', 'Customer has advance/credit')],
+        required=False,
+        write_only=True,
+        default='receivable',
+    )
 
     class Meta:
         model = Customer
         fields = [
             'id', 'name', 'customer_type', 'phone', 'email', 'cnic_or_tax_id',
             'address', 'notes', 'is_active', 'balance', 'can_delete', 'created_at', 'updated_at',
+            'opening_balance', 'opening_balance_direction',
         ]
         read_only_fields = ['id', 'balance', 'can_delete', 'created_at', 'updated_at']
+
+    @transaction.atomic
+    def create(self, validated_data):
+        opening_balance = validated_data.pop('opening_balance', Decimal('0.00')) or Decimal('0.00')
+        opening_balance_direction = validated_data.pop('opening_balance_direction', 'receivable')
+        customer = super().create(validated_data)
+        if opening_balance > 0:
+            user = self.context['request'].user
+            CustomerLedgerEntry.objects.create(
+                customer=customer,
+                entry_date=timezone.localdate(),
+                entry_type=CustomerLedgerEntry.EntryType.ADJUSTMENT,
+                description='Opening balance',
+                debit=opening_balance if opening_balance_direction == 'receivable' else Decimal('0.00'),
+                credit=opening_balance if opening_balance_direction == 'credit' else Decimal('0.00'),
+                created_by=user,
+                updated_by=user,
+            )
+        return customer
+
+    def update(self, instance, validated_data):
+        validated_data.pop('opening_balance', None)
+        validated_data.pop('opening_balance_direction', None)
+        return super().update(instance, validated_data)
 
     def get_balance(self, obj):
         if hasattr(obj, 'ledger_debit') and hasattr(obj, 'ledger_credit'):
@@ -538,19 +572,39 @@ class ChequeForSaleSerializer(serializers.Serializer):
         return attrs
 
 
+class PaymentBreakdownSerializer(serializers.Serializer):
+    cash_amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0.00'), required=False, default=Decimal('0.00'))
+    cheque_amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0.00'), required=False, default=Decimal('0.00'))
+    credit_amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0.00'), required=False, default=Decimal('0.00'))
+
+
 class AuctionSaleSerializer(serializers.ModelSerializer):
     lines = AuctionSaleLineReadSerializer(read_only=True, many=True)
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     gate_pass = serializers.SerializerMethodField()
+    cheque_amount = serializers.SerializerMethodField()
+    receivable_amount = serializers.SerializerMethodField()
 
     class Meta:
         model = AuctionSale
         fields = [
             'id', 'sale_number', 'sale_date', 'customer', 'customer_name',
-            'payment_type', 'notes', 'total_amount', 'is_cancelled',
+            'payment_type', 'notes', 'total_amount', 'cash_amount',
+            'cheque_amount', 'credit_amount', 'receivable_amount', 'is_cancelled',
             'lines', 'gate_pass', 'created_at', 'updated_at',
         ]
-        read_only_fields = ['id', 'sale_number', 'total_amount', 'is_cancelled', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'sale_number', 'total_amount', 'cash_amount', 'cheque_amount', 'credit_amount', 'receivable_amount', 'is_cancelled', 'created_at', 'updated_at']
+
+    def get_cheque_amount(self, obj):
+        prefetched = getattr(obj, '_prefetched_objects_cache', {}).get('cheques')
+        if prefetched is not None:
+            amount = sum((cheque.amount for cheque in prefetched), Decimal('0.00'))
+        else:
+            amount = obj.cheques.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        return f'{amount.quantize(Decimal("0.01")):.2f}'
+
+    def get_receivable_amount(self, obj):
+        return f'{obj.receivable_amount.quantize(Decimal("0.01")):.2f}'
 
     def get_gate_pass(self, obj):
         try:
@@ -583,6 +637,7 @@ class AuctionSaleCreateSerializer(serializers.Serializer):
     notes = serializers.CharField(required=False, allow_blank=True)
     lines = AuctionSaleLineWriteSerializer(many=True)
     cheque = ChequeForSaleSerializer(required=False)
+    payment_breakdown = PaymentBreakdownSerializer(required=False)
     gate_pass = GatePassDetailsSerializer(required=False)
 
     def create(self, validated_data):
@@ -598,6 +653,8 @@ class AuctionSaleUpdateSerializer(serializers.Serializer):
     payment_type = serializers.ChoiceField(choices=AuctionSale.PaymentType.choices, required=False)
     notes = serializers.CharField(required=False, allow_blank=True)
     lines = AuctionSaleLineUpdateSerializer(many=True, required=False)
+    payment_breakdown = PaymentBreakdownSerializer(required=False)
+    cheque = ChequeForSaleSerializer(required=False)
     gate_pass = GatePassDetailsSerializer(required=False)
 
     def update(self, instance, validated_data):

@@ -228,6 +228,7 @@ export default function Home() {
   const [expandedContainers, setExpandedContainers] = useState<Set<UUID>>(new Set());
   const [expandedCustomers, setExpandedCustomers] = useState<Set<UUID>>(new Set());
   const [expandedParts, setExpandedParts] = useState<Set<UUID>>(new Set());
+  const [inventoryPane, setInventoryPane] = useState<'parts' | 'containers'>('parts');
   const [message, setMessage] = useState('');
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
@@ -631,7 +632,7 @@ export default function Home() {
         {loading ? <LoadingState label={`Loading ${currentTitle.toLowerCase()}...`} /> : null}
         {!loading && activeTab === 'dashboard' ? <Dashboard summary={summary} /> : null}
         {!loading && activeTab === 'customers' ? <CustomersPanel canWrite={canWrite('customers')} customers={customers} ledgerByCustomer={ledgerByCustomer} creditReport={creditReport} expanded={expandedCustomers} onToggle={(id) => toggleSet(setExpandedCustomers, id)} onAdd={() => setModal({ type: 'customer' })} onEdit={(customer) => setModal({ type: 'customer', customer })} onDelete={(customer) => remove(`/operations/customers/${customer.id}/`)} onStatus={(customer) => quickPatch(`/operations/customers/${customer.id}/`, { is_active: !customer.is_active })} onDownloadReport={downloadCreditReport} /> : null}
-        {!loading && activeTab === 'containers' ? <ContainersPanel canWrite={canWrite('containers')} containers={containers} items={items} itemsByContainer={itemsByContainer} parts={parts} expandedContainers={expandedContainers} expandedParts={expandedParts} onToggleContainer={(id) => toggleSet(setExpandedContainers, id)} onTogglePart={(id) => toggleSet(setExpandedParts, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddSubparts={(item) => setModal({ type: 'subparts', parentItem: item })} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} /> : null}
+        {!loading && activeTab === 'containers' ? <ContainersPanel canWrite={canWrite('containers')} containers={containers} items={items} itemsByContainer={itemsByContainer} parts={parts} expandedContainers={expandedContainers} expandedParts={expandedParts} inventoryPane={inventoryPane} onInventoryPaneChange={setInventoryPane} onToggleContainer={(id) => toggleSet(setExpandedContainers, id)} onTogglePart={(id) => toggleSet(setExpandedParts, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onDelete={(container) => remove(`/operations/containers/${container.id}/`)} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddSubparts={(item) => setModal({ type: 'subparts', parentItem: item })} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} /> : null}
         {!loading && activeTab === 'sales' ? <SalesPanel canWrite={canWrite('sales')} sales={sales} onAdd={() => { setNewSaleCustomer(null); setModal({ type: 'sale' }); }} onEdit={(sale) => { setNewSaleCustomer(null); setModal({ type: 'sale', sale }); }} onPrint={printSaleGatePass} /> : null}
         {!loading && activeTab === 'cheques' ? <ChequesPanel canWrite={canWrite('cheques')} cheques={cheques} statuses={chequeStatuses} onAdd={() => setModal({ type: 'cheque' })} onEdit={(cheque) => setModal({ type: 'cheque', cheque })} onStatus={markChequeStatus} onAddStatus={() => setModal({ type: 'cheque-status' })} /> : null}
         {!loading && activeTab === 'settings' ? <SettingsPanel canWrite={canWrite('settings')} options={dropdownOptions} chequeStatuses={chequeStatuses} onAdd={(group) => setModal({ type: 'dropdown-option', group })} onAddChequeStatus={() => setModal({ type: 'cheque-status' })} /> : null}
@@ -858,11 +859,14 @@ function ContainersPanel({
   parts,
   expandedContainers,
   expandedParts,
+  inventoryPane,
   canWrite,
+  onInventoryPaneChange,
   onToggleContainer,
   onTogglePart,
   onAdd,
   onEdit,
+  onDelete,
   onAddItem,
   onEditItem,
   onDeleteItem,
@@ -877,11 +881,14 @@ function ContainersPanel({
   parts: PartInventory[];
   expandedContainers: Set<UUID>;
   expandedParts: Set<UUID>;
+  inventoryPane: 'parts' | 'containers';
   canWrite: boolean;
+  onInventoryPaneChange: (pane: 'parts' | 'containers') => void;
   onToggleContainer: (id: UUID) => void;
   onTogglePart: (id: UUID) => void;
   onAdd: () => void;
   onEdit: (container: Container) => void;
+  onDelete: (container: Container) => void;
   onAddItem: (containerId: UUID) => void;
   onEditItem: (item: ContainerItem) => void;
   onDeleteItem: (item: ContainerItem) => void;
@@ -890,7 +897,6 @@ function ContainersPanel({
   onEditPart: (part: PartInventory) => void;
   onDeletePart: (part: PartInventory) => void;
 }) {
-  const [inventoryPane, setInventoryPane] = useState<'parts' | 'containers'>('parts');
   const [partSearch, setPartSearch] = useState('');
   const [containerSearch, setContainerSearch] = useState('');
   const [containerItemSearch, setContainerItemSearch] = useState<Record<string, string>>({});
@@ -918,7 +924,7 @@ function ContainersPanel({
             role="tab"
             aria-selected={inventoryPane === 'parts'}
             className={inventoryPane === 'parts' ? 'active' : ''}
-            onClick={() => setInventoryPane('parts')}
+            onClick={() => onInventoryPaneChange('parts')}
           >
             <Boxes size={16} /> Parts Inventory
           </button>
@@ -927,7 +933,7 @@ function ContainersPanel({
             role="tab"
             aria-selected={inventoryPane === 'containers'}
             className={inventoryPane === 'containers' ? 'active' : ''}
-            onClick={() => setInventoryPane('containers')}
+            onClick={() => onInventoryPaneChange('containers')}
           >
             <ContainerIcon size={16} /> Container Inventory
           </button>
@@ -1078,6 +1084,7 @@ function ContainersPanel({
                     <div className="record-actions">
                       <button className="btn small" onClick={() => onAddItem(container.id)}><Plus size={16} /> Add manifest item</button>
                       <button className="icon-btn" onClick={() => onEdit(container)} aria-label={`Edit ${container.reference}`}><Pencil size={16} /></button>
+                      <button className="icon-btn danger" onClick={() => onDelete(container)} aria-label={`Delete ${container.reference}`} title={`Delete ${container.reference}`}><Trash2 size={16} /></button>
                     </div>
                   ) : null}
                   {expanded ? (
@@ -1148,7 +1155,35 @@ function SettingsPanel({ options, chequeStatuses, canWrite, onAdd, onAddChequeSt
 
 function CustomerForm({ customer, onSave, isSaving }: { customer?: Customer; onSave: SaveHandler; isSaving: boolean }) {
   const [phone, setPhone] = useState(customer?.phone || '+92');
-  return <FormFrame title={customer ? 'Edit customer' : 'Add customer'} isSaving={isSaving} onSubmit={(form) => onSave(customer ? `/operations/customers/${customer.id}/` : '/operations/customers/', { ...form, phone, customer_type: form.customer_type || 'individual', is_active: form.is_active === 'true' }, customer ? 'patch' : 'post')}><Field name="name" label="Customer name" defaultValue={customer?.name} required /><PhoneField value={phone} onChange={(value) => setPhone(value || '')} /><Select name="customer_type" label="Customer type" defaultValue={customer?.customer_type || 'individual'} options={[['individual', 'Individual'], ['business', 'Business']]} /><Field name="email" label="Email" type="email" defaultValue={customer?.email} /><Field name="cnic_or_tax_id" label="CNIC / tax ID" defaultValue={customer?.cnic_or_tax_id} /><Select name="is_active" label="Status" defaultValue={String(customer?.is_active ?? true)} options={[['true', 'Active'], ['false', 'Inactive']]} required /><Field name="address" label="Address" defaultValue={customer?.address} textarea /></FormFrame>;
+  return (
+    <FormFrame
+      title={customer ? 'Edit customer' : 'Add customer'}
+      isSaving={isSaving}
+      onSubmit={(form) => {
+        const payload = {
+          ...form,
+          phone,
+          customer_type: form.customer_type || 'individual',
+          is_active: form.is_active === 'true',
+        };
+        onSave(customer ? `/operations/customers/${customer.id}/` : '/operations/customers/', payload, customer ? 'patch' : 'post');
+      }}
+    >
+      <Field name="name" label="Customer name" defaultValue={customer?.name} required />
+      <PhoneField value={phone} onChange={(value) => setPhone(value || '')} />
+      <Select name="customer_type" label="Customer type" defaultValue={customer?.customer_type || 'individual'} options={[['individual', 'Individual'], ['business', 'Business']]} />
+      {!customer ? (
+        <>
+          <Field name="opening_balance" label="Opening balance" type="number" defaultValue="0.00" min="0" step="0.01" />
+          <Select name="opening_balance_direction" label="Opening balance direction" defaultValue="receivable" options={[['receivable', 'Customer owes ZSP'], ['credit', 'Customer has advance/credit']]} />
+        </>
+      ) : null}
+      <Field name="email" label="Email" type="email" defaultValue={customer?.email} />
+      <Field name="cnic_or_tax_id" label="CNIC / tax ID" defaultValue={customer?.cnic_or_tax_id} />
+      <Select name="is_active" label="Status" defaultValue={String(customer?.is_active ?? true)} options={[['true', 'Active'], ['false', 'Inactive']]} required />
+      <Field name="address" label="Address" defaultValue={customer?.address} textarea />
+    </FormFrame>
+  );
 }
 
 function ContainerForm({ container, onSave, isSaving }: { container?: Container; onSave: SaveHandler; isSaving: boolean }) {
@@ -1255,6 +1290,8 @@ function SaleForm({
   onAddCustomer: () => void;
 }) {
   const [paymentType, setPaymentType] = useState(sale?.payment_type || 'cash');
+  const [mixedCashAmount, setMixedCashAmount] = useState(sale?.cash_amount || '0.00');
+  const [mixedChequeAmount, setMixedChequeAmount] = useState(sale?.cheque_amount || '0.00');
   const [customerId, setCustomerId] = useState(sale?.customer || '');
   const [issuedToOverride, setIssuedToOverride] = useState<string | null>(sale?.gate_pass?.issued_to_name ?? null);
   const saleBatches: BatchWithPart[] = sale?.lines.map((line) => ({
@@ -1281,6 +1318,10 @@ function SaleForm({
   const selectedCustomerName = customers.find((customer) => customer.id === customerId)?.name || '';
   const issuedToName = issuedToOverride ?? selectedCustomerName;
   const saleTotal = lineRows.reduce((total, line) => total + (Number(line.quantity || 0) * Number(line.sold_price || 0)), 0);
+  const cashPortion = paymentType === 'cash' ? saleTotal : paymentType === 'mixed' ? Number(mixedCashAmount || 0) : 0;
+  const chequePortion = paymentType === 'cheque' ? saleTotal : paymentType === 'mixed' ? Number(mixedChequeAmount || 0) : 0;
+  const creditPortion = paymentType === 'credit' ? saleTotal : paymentType === 'mixed' ? Math.max(saleTotal - cashPortion - chequePortion, 0) : 0;
+  const mixedSplitValid = paymentType !== 'mixed' || (cashPortion + chequePortion <= saleTotal && [cashPortion, chequePortion, creditPortion].filter((amount) => amount > 0).length >= 2);
   const updateLine = (key: string, updates: Partial<(typeof lineRows)[number]>) => setLineRows((rows) => rows.map((row) => row.key === key ? { ...row, ...updates } : row));
   const addLine = () => setLineRows((rows) => [...rows, { key: crypto.randomUUID(), inventory_batch: '', quantity: 1, sold_price: '', notes: '' }]);
   const removeLine = (key: string) => setLineRows((rows) => rows.length === 1 ? rows : rows.filter((row) => row.key !== key));
@@ -1320,7 +1361,14 @@ function SaleForm({
           },
         };
         if (!sale) payload.payment_type = paymentType;
-        if (paymentType === 'cheque' && !sale) {
+        if (!sale && paymentType === 'mixed') {
+          payload.payment_breakdown = {
+            cash_amount: cashPortion.toFixed(2),
+            cheque_amount: chequePortion.toFixed(2),
+            credit_amount: creditPortion.toFixed(2),
+          };
+        }
+        if ((paymentType === 'cheque' || (paymentType === 'mixed' && chequePortion > 0)) && !sale) {
           payload.cheque = {
             cheque_number: form.cheque_number,
             name_on_cheque: form.name_on_cheque,
@@ -1378,7 +1426,37 @@ function SaleForm({
         })}
         <div className="total-bar"><span>Sale total</span><strong>{money(saleTotal)}</strong></div>
       </div>
-      {paymentType === 'cheque' && !sale ? <ChequeFields banks={banks} /> : null}
+      {paymentType === 'mixed' && !sale ? (
+        <div className="subform full-span mixed-payment-panel">
+          <div className="inline-between">
+            <h3>Mixed payment split</h3>
+            <span className={mixedSplitValid ? 'badge good' : 'badge bad'}>{mixedSplitValid ? 'Balanced' : 'Needs adjustment'}</span>
+          </div>
+          <div className="payment-split-grid">
+            <label className="payment-tile" htmlFor="mixed_cash_amount">
+              <span>Cash received now</span>
+              <strong>{money(cashPortion)}</strong>
+              <input id="mixed_cash_amount" type="number" min="0" max={saleTotal} step="0.01" value={mixedCashAmount} onChange={(event) => setMixedCashAmount(event.currentTarget.value)} />
+            </label>
+            <label className="payment-tile" htmlFor="mixed_cheque_amount">
+              <span>Cheque amount</span>
+              <strong>{money(chequePortion)}</strong>
+              <input id="mixed_cheque_amount" type="number" min="0" max={saleTotal} step="0.01" value={mixedChequeAmount} onChange={(event) => setMixedChequeAmount(event.currentTarget.value)} />
+            </label>
+            <div className="payment-tile readonly">
+              <span>Credit balance</span>
+              <strong>{money(creditPortion)}</strong>
+              <small>Auto-calculated from sale total</small>
+            </div>
+          </div>
+          <div className="payment-explainer">
+            <span>Immediate cash will not enter receivables.</span>
+            <span>Cheque and credit portions remain outstanding until settled.</span>
+          </div>
+        </div>
+      ) : null}
+      {((paymentType === 'cheque') || (paymentType === 'mixed' && chequePortion > 0)) && !sale ? <ChequeFields banks={banks} showAmount={paymentType === 'mixed'} amount={chequePortion} /> : null}
+      {sale ? <div className="subform full-span"><h3>Payment split</h3><div className="payment-summary-grid"><span>Cash: <strong>{money(sale.cash_amount)}</strong></span><span>Cheque: <strong>{money(sale.cheque_amount)}</strong></span><span>Credit: <strong>{money(sale.credit_amount)}</strong></span><span>Receivable: <strong>{money(sale.receivable_amount)}</strong></span></div></div> : null}
       <div className="subform full-span">
         <h3>Gate pass details</h3>
         <div className="field"><label htmlFor="issued_to_name">Issued to</label><input id="issued_to_name" name="issued_to_name" value={issuedToName} onChange={(event) => { setIssuedToOverride(event.currentTarget.value); }} /></div>
@@ -1409,8 +1487,24 @@ function UserForm({ user, onSave, isSaving }: { user?: ManagedUser; onSave: Save
   return <FormFrame title={user ? 'Edit user account' : 'Create user account'} isSaving={isSaving} onSubmit={(form, raw) => { const tabPermissions = Object.fromEntries(tabOptions.map((tab) => [tab.id, raw.get(`tab_permission_${tab.id}`) || 'none'])); const payload: Record<string, unknown> = { username: form.username, first_name: form.first_name || '', last_name: form.last_name || '', is_active: form.is_active === 'true', tab_permissions: tabPermissions }; if (form.password) payload.password = form.password; onSave(user ? `/auth/users/${user.id}/` : '/auth/users/', payload, user ? 'patch' : 'post'); }}><Field name="username" label="Username" defaultValue={user?.username || ''} autoComplete="off" required /><Field name="first_name" label="First name" defaultValue={user?.first_name || ''} autoComplete="off" required /><Field name="last_name" label="Last name" defaultValue={user?.last_name || ''} autoComplete="off" /><Field name="password" label={user ? 'New password' : 'Password'} type="password" defaultValue="" autoComplete="new-password" required={!user} /><Select name="is_active" label="Status" defaultValue={String(user?.is_active ?? true)} options={[['true', 'Active'], ['false', 'Inactive']]} required /><PermissionMatrix defaults={defaultPermissions} /></FormFrame>;
 }
 
-function ChequeFields({ banks }: { banks: string[] }) {
-  return <div className="subform"><h3>Cheque details</h3><Field name="cheque_number" label="Cheque number" required /><Field name="name_on_cheque" label="Name on cheque" required /><OptionText name="bank_name" label="Bank" options={banks} required /><Field name="branch_name" label="Branch" /><Field name="account_title" label="Account title" /><Field name="cheque_date" label="Cheque date" type="date" required /><Field name="expiry_date" label="Expiry date" type="date" required /><Field name="received_date" label="Received date" type="date" /><Field name="cheque_notes" label="Cheque notes" textarea /></div>;
+function ChequeFields({ banks, showAmount = false, amount = 0 }: { banks: string[]; showAmount?: boolean; amount?: number }) {
+  return (
+    <div className="subform">
+      <div className="inline-between">
+        <h3>Cheque details</h3>
+        {showAmount ? <span className="badge warn">Cheque {money(amount)}</span> : null}
+      </div>
+      <Field name="cheque_number" label="Cheque number" required />
+      <Field name="name_on_cheque" label="Name on cheque" required />
+      <OptionText name="bank_name" label="Bank" options={banks} required />
+      <Field name="branch_name" label="Branch" />
+      <Field name="account_title" label="Account title" />
+      <Field name="cheque_date" label="Cheque date" type="date" required />
+      <Field name="expiry_date" label="Expiry date" type="date" required />
+      <Field name="received_date" label="Received date" type="date" />
+      <Field name="cheque_notes" label="Cheque notes" textarea />
+    </div>
+  );
 }
 
 function FormFrame({ title, onSubmit, children, isSaving = false }: { title: string; onSubmit: (payload: Record<string, FormDataEntryValue>, raw: FormData) => void; children: ReactNode; isSaving?: boolean }) {

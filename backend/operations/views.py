@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count, DecimalField, ExpressionWrapper, F, IntegerField, OuterRef, Prefetch, Q, Subquery, Sum, Value
+from django.db.models.deletion import ProtectedError
 from django.db.models.functions import Coalesce
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -123,6 +124,18 @@ class ContainerViewSet(UserStampedMixin, viewsets.ModelViewSet):
                 output_field=DecimalField(max_digits=14, decimal_places=2),
             ),
         ).order_by('-arrival_date', '-created_at')
+
+    def destroy(self, request, *args, **kwargs):
+        try:
+            return super().destroy(request, *args, **kwargs)
+        except ProtectedError as exc:
+            return Response(
+                {
+                    'detail': 'This container has inventory or transaction history and cannot be deleted.',
+                    'protected_records': len(exc.protected_objects),
+                },
+                status=HTTP_409_CONFLICT,
+            )
 
 
 class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
@@ -268,7 +281,11 @@ class AuctionSaleViewSet(viewsets.ModelViewSet):
         return (
             AuctionSale.objects
             .select_related('customer')
-            .prefetch_related(Prefetch('lines', queryset=sale_line_queryset()), Prefetch('gate_pass__lines__sale_line', queryset=sale_line_queryset()))
+            .prefetch_related(
+                'cheques',
+                Prefetch('lines', queryset=sale_line_queryset()),
+                Prefetch('gate_pass__lines__sale_line', queryset=sale_line_queryset()),
+            )
             .order_by('-sale_date', '-created_at')
         )
 

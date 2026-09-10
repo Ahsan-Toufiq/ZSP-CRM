@@ -177,6 +177,8 @@ class AuctionSale(UserStampedModel):
     payment_type = models.CharField(max_length=20, choices=PaymentType.choices)
     notes = models.TextField(blank=True)
     total_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
+    cash_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
+    credit_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     is_cancelled = models.BooleanField(default=False)
     cancelled_at = models.DateTimeField(null=True, blank=True)
     cancelled_by = models.ForeignKey(
@@ -199,6 +201,12 @@ class AuctionSale(UserStampedModel):
     def clean(self):
         if self.payment_type != self.PaymentType.CASH and not self.customer_id:
             raise ValidationError({'customer': 'Customer is required for credit, cheque, and mixed sales.'})
+
+    @property
+    def receivable_amount(self) -> Decimal:
+        if self.payment_type == self.PaymentType.CASH:
+            return Decimal('0.00')
+        return max(Decimal(self.total_amount or 0) - Decimal(self.cash_amount or 0), Decimal('0.00'))
 
     def __str__(self) -> str:
         return self.sale_number

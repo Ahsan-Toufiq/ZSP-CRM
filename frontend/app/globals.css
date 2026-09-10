@@ -886,6 +886,94 @@ td select {
   font-size: 18px;
 }
 
+.mixed-payment-panel {
+  background: linear-gradient(180deg, #f8fbfa 0%, #eef8f5 100%);
+}
+
+.payment-split-grid,
+.payment-summary-grid {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.payment-summary-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.payment-tile,
+.payment-summary-grid span {
+  display: grid;
+  gap: 8px;
+  min-height: 112px;
+  padding: 14px;
+  border: 1px solid rgba(19, 127, 116, 0.16);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 12px 32px rgba(25, 40, 37, 0.05);
+}
+
+.payment-summary-grid span {
+  min-height: auto;
+}
+
+.payment-tile span,
+.payment-summary-grid span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.payment-tile strong,
+.payment-summary-grid strong {
+  color: var(--brand-dark);
+  font-size: 19px;
+}
+
+.payment-tile input {
+  width: 100%;
+  height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbfa;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 800;
+}
+
+.payment-tile.readonly {
+  background: #102d2a;
+  color: #ffffff;
+}
+
+.payment-tile.readonly span,
+.payment-tile.readonly small {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.payment-tile.readonly strong {
+  color: #ffffff;
+}
+
+.payment-explainer {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.payment-explainer span {
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .badge,
 .chip {
   display: inline-flex;
@@ -1345,6 +1433,8 @@ td select {
   .report-summary,
   .aging-grid,
   .customer-detail-grid,
+  .payment-split-grid,
+  .payment-summary-grid,
   .login-card {
     grid-template-columns: 1fr;
   }

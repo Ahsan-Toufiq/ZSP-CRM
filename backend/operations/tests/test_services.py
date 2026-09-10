@@ -225,6 +225,81 @@ def test_cheque_sale_creates_cheque_and_balance_settles_only_when_cleared(user, 
 
 
 @pytest.mark.django_db
+def test_mixed_sale_posts_only_non_cash_amount_to_customer_balance(user, customer, item):
+    batch = make_batch(item)
+    sale = create_auction_sale(
+        user=user,
+        sale_date=timezone.localdate(),
+        payment_type=AuctionSale.PaymentType.MIXED,
+        customer=customer,
+        lines=[{'inventory_batch': batch, 'sold_price': Decimal('15000.00')}],
+        payment_breakdown={
+            'cash_amount': Decimal('5000.00'),
+            'cheque_amount': Decimal('0.00'),
+            'credit_amount': Decimal('10000.00'),
+        },
+    )
+
+    entry = CustomerLedgerEntry.objects.get(sale=sale)
+    assert sale.cash_amount == Decimal('5000.00')
+    assert sale.credit_amount == Decimal('10000.00')
+    assert entry.debit == Decimal('10000.00')
+    assert Cheque.objects.filter(sale=sale).count() == 0
+
+
+@pytest.mark.django_db
+def test_mixed_sale_with_cheque_creates_partial_cheque_and_settles_that_portion(user, customer, item):
+    batch = make_batch(item)
+    sale = create_auction_sale(
+        user=user,
+        sale_date=timezone.localdate(),
+        payment_type=AuctionSale.PaymentType.MIXED,
+        customer=customer,
+        lines=[{'inventory_batch': batch, 'sold_price': Decimal('20000.00')}],
+        payment_breakdown={
+            'cash_amount': Decimal('5000.00'),
+            'cheque_amount': Decimal('7000.00'),
+            'credit_amount': Decimal('8000.00'),
+        },
+        cheque={
+            'cheque_number': 'CHQ-MIX-001',
+            'name_on_cheque': 'Zulfiqar Autos',
+            'bank_name': 'HBL',
+            'cheque_date': timezone.localdate(),
+            'expiry_date': timezone.localdate(),
+            'received_date': None,
+        },
+    )
+
+    cheque = Cheque.objects.get(sale=sale)
+    assert cheque.amount == Decimal('7000.00')
+    assert CustomerLedgerEntry.objects.get(sale=sale).debit == Decimal('15000.00')
+
+    change_cheque_status(user=user, cheque=cheque, status=ChequeStatus.objects.get(name='Cleared'))
+    entries = CustomerLedgerEntry.objects.filter(customer=customer)
+    assert sum(entry.debit for entry in entries) == Decimal('15000.00')
+    assert sum(entry.credit for entry in entries) == Decimal('7000.00')
+
+
+@pytest.mark.django_db
+def test_mixed_sale_rejects_unbalanced_payment_split(user, customer, item):
+    batch = make_batch(item)
+    with pytest.raises(ValidationError):
+        create_auction_sale(
+            user=user,
+            sale_date=timezone.localdate(),
+            payment_type=AuctionSale.PaymentType.MIXED,
+            customer=customer,
+            lines=[{'inventory_batch': batch, 'sold_price': Decimal('15000.00')}],
+            payment_breakdown={
+                'cash_amount': Decimal('5000.00'),
+                'cheque_amount': Decimal('2000.00'),
+                'credit_amount': Decimal('1000.00'),
+            },
+        )
+
+
+@pytest.mark.django_db
 def test_sale_update_changes_gate_pass_lines_and_resets_print_status(user, customer, item, second_item):
     batch = make_batch(item)
     second_batch = make_batch(second_item)

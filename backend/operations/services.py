@@ -36,7 +36,46 @@ def _line_total(line) -> Decimal:
 
 
 def _sale_total(lines) -> Decimal:
-    return sum((_line_total(line) for line in lines), Decimal('0.00'))
+    return sum((_line_total(line) for line in lines), Decimal('0.00')).quantize(MONEY_QUANTUM)
+
+
+def _decimal_amount(value) -> Decimal:
+    return Decimal(value or 0).quantize(MONEY_QUANTUM)
+
+
+def _payment_split(*, payment_type, total, payment_breakdown=None, cheque=None):
+    payment_breakdown = payment_breakdown or {}
+    zero = Decimal('0.00')
+    if payment_type == AuctionSale.PaymentType.CASH:
+        return {'cash_amount': total, 'cheque_amount': zero, 'credit_amount': zero, 'receivable_amount': zero}
+    if payment_type == AuctionSale.PaymentType.CREDIT:
+        return {'cash_amount': zero, 'cheque_amount': zero, 'credit_amount': total, 'receivable_amount': total}
+    if payment_type == AuctionSale.PaymentType.CHEQUE:
+        if not cheque:
+            raise ValidationError({'cheque': 'Cheque details are required when payment type is cheque.'})
+        return {'cash_amount': zero, 'cheque_amount': total, 'credit_amount': zero, 'receivable_amount': total}
+
+    cash_amount = _decimal_amount(payment_breakdown.get('cash_amount'))
+    cheque_amount = _decimal_amount(payment_breakdown.get('cheque_amount'))
+    credit_amount = _decimal_amount(payment_breakdown.get('credit_amount'))
+    if min(cash_amount, cheque_amount, credit_amount) < 0:
+        raise ValidationError({'payment_breakdown': 'Payment amounts cannot be negative.'})
+    if cash_amount + cheque_amount + credit_amount != total:
+        raise ValidationError({'payment_breakdown': 'Cash, cheque, and credit amounts must equal the sale total.'})
+    if len([amount for amount in [cash_amount, cheque_amount, credit_amount] if amount > 0]) < 2:
+        raise ValidationError({'payment_breakdown': 'Mixed payment must use at least two payment methods.'})
+    if cheque_amount > 0 and not cheque:
+        raise ValidationError({'cheque': 'Cheque details are required when the mixed payment includes a cheque amount.'})
+    return {
+        'cash_amount': cash_amount,
+        'cheque_amount': cheque_amount,
+        'credit_amount': credit_amount,
+        'receivable_amount': cheque_amount + credit_amount,
+    }
+
+
+def _sale_cheque_total(sale: AuctionSale) -> Decimal:
+    return Decimal(sale.cheques.aggregate(total=Sum('amount'))['total'] or 0).quantize(MONEY_QUANTUM)
 
 
 def sold_quantity_for_item(item: PartInventory, *, excluding_sale: AuctionSale | None = None) -> int:
@@ -506,15 +545,15 @@ def create_auction_sale(
     lines=None,
     cheque=None,
     gate_pass=None,
+    payment_breakdown=None,
 ) -> AuctionSale:
     lines = lines or []
     if payment_type != AuctionSale.PaymentType.CASH and customer is None:
         raise ValidationError({'customer': 'Customer is required unless this is a cash sale.'})
-    if payment_type == AuctionSale.PaymentType.CHEQUE and not cheque:
-        raise ValidationError({'cheque': 'Cheque details are required when payment type is cheque.'})
 
     batches = _validate_sale_lines(lines)
     total = _sale_total(lines)
+    split = _payment_split(payment_type=payment_type, total=total, payment_breakdown=payment_breakdown, cheque=cheque)
 
     sale = AuctionSale.objects.create(
         sale_number=_number('D7-SALE'),
@@ -523,6 +562,8 @@ def create_auction_sale(
         customer=customer,
         notes=notes,
         total_amount=total,
+        cash_amount=split['cash_amount'],
+        credit_amount=split['credit_amount'],
         created_by=user,
         updated_by=user,
     )
@@ -542,24 +583,24 @@ def create_auction_sale(
             updated_by=user,
         )
 
-    if customer is not None and payment_type != AuctionSale.PaymentType.CASH:
+    if customer is not None and split['receivable_amount'] > 0:
         CustomerLedgerEntry.objects.create(
             customer=customer,
             entry_date=sale_date,
             entry_type=CustomerLedgerEntry.EntryType.SALE,
             description=f'Auction sale {sale.sale_number}',
-            debit=total,
+            debit=split['receivable_amount'],
             sale=sale,
             created_by=user,
             updated_by=user,
         )
 
-    if payment_type == AuctionSale.PaymentType.CHEQUE:
+    if split['cheque_amount'] > 0:
         pending_status = ChequeStatus.objects.filter(name='Pending', is_active=True).first()
         if pending_status is None:
             raise ValidationError({'cheque': 'Pending cheque status is not configured.'})
         cheque_data = dict(cheque)
-        cheque_data['amount'] = total
+        cheque_data['amount'] = split['cheque_amount']
         create_cheque(
             user=user,
             customer=customer,
@@ -592,6 +633,8 @@ def update_auction_sale(
     notes=None,
     lines=None,
     gate_pass=None,
+    payment_breakdown=None,
+    cheque=None,
 ) -> AuctionSale:
     sale = (
         AuctionSale.objects
@@ -664,25 +707,42 @@ def update_auction_sale(
 
         sale.total_amount = _sale_total(normalized)
 
+    if payment_breakdown is None and sale.payment_type == AuctionSale.PaymentType.MIXED:
+        existing_cheque_amount = _sale_cheque_total(sale)
+        existing_cash_amount = Decimal(sale.cash_amount or 0).quantize(MONEY_QUANTUM)
+        payment_breakdown = {
+            'cash_amount': existing_cash_amount,
+            'cheque_amount': existing_cheque_amount,
+            'credit_amount': max(sale.total_amount - existing_cash_amount - existing_cheque_amount, Decimal('0.00')),
+        }
+
+    split = _payment_split(
+        payment_type=sale.payment_type,
+        total=sale.total_amount,
+        payment_breakdown=payment_breakdown,
+        cheque=cheque or sale.cheques.first(),
+    )
+    sale.cash_amount = split['cash_amount']
+    sale.credit_amount = split['credit_amount']
     sale.updated_by = user
-    sale.save(update_fields=['sale_date', 'payment_type', 'customer', 'notes', 'total_amount', 'updated_by', 'updated_at'])
+    sale.save(update_fields=['sale_date', 'payment_type', 'customer', 'notes', 'total_amount', 'cash_amount', 'credit_amount', 'updated_by', 'updated_at'])
 
     sale.ledger_entries.filter(entry_type=CustomerLedgerEntry.EntryType.SALE).delete()
-    if sale.customer is not None and sale.payment_type != AuctionSale.PaymentType.CASH:
+    if sale.customer is not None and split['receivable_amount'] > 0:
         CustomerLedgerEntry.objects.create(
             customer=sale.customer,
             entry_date=sale.sale_date,
             entry_type=CustomerLedgerEntry.EntryType.SALE,
             description=f'Auction sale {sale.sale_number}',
-            debit=sale.total_amount,
+            debit=split['receivable_amount'],
             sale=sale,
             created_by=user,
             updated_by=user,
         )
 
-    if sale.payment_type == AuctionSale.PaymentType.CHEQUE:
+    if split['cheque_amount'] > 0:
         for sale_cheque in sale.cheques.select_related('status'):
-            sale_cheque.amount = sale.total_amount
+            sale_cheque.amount = split['cheque_amount']
             sale_cheque.customer = sale.customer
             sale_cheque.updated_by = user
             sale_cheque.save(update_fields=['amount', 'customer', 'updated_by', 'updated_at'])

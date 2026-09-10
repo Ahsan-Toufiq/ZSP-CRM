@@ -69,7 +69,7 @@ def _allocate_cheque_to_oldest_sales(*, user, cheque: Cheque) -> None:
     for sale in sales:
         if remaining <= 0:
             break
-        outstanding = Decimal(sale.total_amount) - _active_allocated_amount(sale)
+        outstanding = Decimal(sale.receivable_amount) - _active_allocated_amount(sale)
         if outstanding <= 0:
             continue
         amount = min(remaining, outstanding)
