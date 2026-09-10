@@ -7,6 +7,7 @@ const backendOrigin = process.env.BACKEND_API_ORIGIN
 
 const nextConfig: NextConfig = {
   experimental: {},
+  poweredByHeader: false,
   skipTrailingSlashRedirect: true,
   async headers() {
     return [
