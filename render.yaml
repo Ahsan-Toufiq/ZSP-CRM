@@ -37,10 +37,26 @@ services:
         value: None
       - key: CSRF_COOKIE_SAMESITE
         value: None
+      - key: SECURE_SSL_REDIRECT
+        value: true
+      - key: SECURE_HSTS_SECONDS
+        value: 31536000
+      - key: SECURE_HSTS_INCLUDE_SUBDOMAINS
+        value: true
+      - key: SECURE_HSTS_PRELOAD
+        value: true
+      - key: SECURE_REFERRER_POLICY
+        value: same-origin
+      - key: SECURE_CROSS_ORIGIN_OPENER_POLICY
+        value: same-origin
       - key: TIME_ZONE
         value: Asia/Karachi
       - key: LOGIN_THROTTLE_RATE
         value: 8/min
+      - key: PASSWORD_CHANGE_THROTTLE_RATE
+        value: 5/min
+      - key: EMAIL_BACKEND
+        value: django.core.mail.backends.smtp.EmailBackend
 
   - type: web
     name: digi7-zsp-frontend

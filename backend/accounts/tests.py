@@ -5,6 +5,7 @@ from rest_framework.test import APIClient
 
 from accounts.models import UserProfile
 from accounts.permissions import AccessLevel, full_tab_permissions
+from audit.models import AuditLog
 from catalog.models import DropdownOption
 from finance.models import ChequeStatus
 from operations.models import Container, ContainerItem, Customer, PartInventory
@@ -130,6 +131,82 @@ def test_permanent_digi7_admin_cannot_be_edited_or_deleted(api_client, admin_use
     assert delete_response.status_code == 400
     assert permanent.is_active is True
     assert permanent.is_superuser is True
+
+
+@pytest.mark.django_db
+def test_user_can_change_own_password_with_old_password(api_client):
+    user = user_with_permissions('password-owner', {'dashboard': AccessLevel.VIEW})
+    api_client.login(username=user.username, password='StrongPass123!')
+
+    response = api_client.post(
+        '/api/auth/change-password/',
+        {
+            'old_password': 'StrongPass123!',
+            'new_password': 'NewStrongPass123!',
+            'confirm_password': 'NewStrongPass123!',
+        },
+        format='json',
+    )
+    me_response = api_client.get('/api/auth/me/')
+
+    user.refresh_from_db()
+    assert response.status_code == 200
+    assert user.check_password('NewStrongPass123!')
+    assert me_response.status_code == 200
+    assert me_response.data['username'] == 'password-owner'
+    assert AuditLog.objects.filter(action='password_changed', actor=user).exists()
+
+
+@pytest.mark.django_db
+def test_change_password_requires_correct_old_password(api_client):
+    user = user_with_permissions('password-guarded', {'dashboard': AccessLevel.VIEW})
+    api_client.login(username=user.username, password='StrongPass123!')
+
+    response = api_client.post(
+        '/api/auth/change-password/',
+        {
+            'old_password': 'WrongPass123!',
+            'new_password': 'NewStrongPass123!',
+            'confirm_password': 'NewStrongPass123!',
+        },
+        format='json',
+    )
+
+    user.refresh_from_db()
+    assert response.status_code == 400
+    assert user.check_password('StrongPass123!')
+    assert not AuditLog.objects.filter(action='password_changed', actor=user).exists()
+
+
+@pytest.mark.django_db
+def test_change_password_validates_confirmation_and_strength(api_client):
+    user = user_with_permissions('password-validated', {'dashboard': AccessLevel.VIEW})
+    api_client.login(username=user.username, password='StrongPass123!')
+
+    mismatch_response = api_client.post(
+        '/api/auth/change-password/',
+        {
+            'old_password': 'StrongPass123!',
+            'new_password': 'NewStrongPass123!',
+            'confirm_password': 'DifferentStrongPass123!',
+        },
+        format='json',
+    )
+    weak_response = api_client.post(
+        '/api/auth/change-password/',
+        {
+            'old_password': 'StrongPass123!',
+            'new_password': 'password',
+            'confirm_password': 'password',
+        },
+        format='json',
+    )
+
+    user.refresh_from_db()
+    assert mismatch_response.status_code == 400
+    assert 'confirm_password' in mismatch_response.data
+    assert weak_response.status_code == 400
+    assert user.check_password('StrongPass123!')
 
 
 @pytest.mark.django_db

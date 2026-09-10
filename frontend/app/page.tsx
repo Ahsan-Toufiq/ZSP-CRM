@@ -9,6 +9,7 @@ import {
   Container as ContainerIcon,
   FileDown,
   Gavel,
+  KeyRound,
   LayoutDashboard,
   LogIn,
   LogOut,
@@ -61,6 +62,7 @@ type ModalState =
   | { type: 'cheque-status' }
   | { type: 'dropdown-option'; group?: DropdownOption['group'] }
   | { type: 'user'; user?: ManagedUser }
+  | { type: 'change-password' }
   | null;
 
 type SaleLineDraft = {
@@ -514,6 +516,21 @@ export default function Home() {
     }
   }
 
+  async function changePassword(path: string, payload: unknown) {
+    if (saving) return;
+    setMessage('');
+    setSaving(true);
+    try {
+      await post(path, payload);
+      setModal(null);
+      setMessage('Password changed successfully.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to change password.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   function toggleSet(setter: (value: (previous: Set<UUID>) => Set<UUID>) => void, id: UUID) {
     setter((previous) => {
       const next = new Set(previous);
@@ -620,7 +637,10 @@ export default function Home() {
         <nav className="nav">
           {visibleTabs.map((tab) => <button key={tab.id} className={activeTab === tab.id ? 'active' : ''} onClick={() => navigateTab(tab.id)}>{tab.icon}<span>{tab.label}</span></button>)}
         </nav>
-        <button className="btn sidebar-signout" onClick={handleLogout} disabled={signingOut}>{signingOut ? <ProcessingLoader /> : <LogOut size={18} />} {signingOut ? 'Signing out...' : 'Sign out'}</button>
+        <div className="sidebar-account-actions">
+          <button className="btn sidebar-secondary" onClick={() => setModal({ type: 'change-password' })}><KeyRound size={18} /> Change password</button>
+          <button className="btn sidebar-signout" onClick={handleLogout} disabled={signingOut}>{signingOut ? <ProcessingLoader /> : <LogOut size={18} />} {signingOut ? 'Signing out...' : 'Sign out'}</button>
+        </div>
       </aside>
       <section className="main">
         <header className="topbar">
@@ -649,6 +669,7 @@ export default function Home() {
         {modal?.type === 'cheque-status' ? <ChequeStatusForm onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'dropdown-option' ? <DropdownOptionForm group={modal.group} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'user' ? <UserForm user={modal.user} onSave={save} isSaving={saving} /> : null}
+        {modal?.type === 'change-password' ? <ChangePasswordForm onSave={changePassword} isSaving={saving} /> : null}
       </ModalShell>
       {saleCustomerOverlayOpen ? <ModalShell modal={{ type: 'customer' }} onClose={() => setSaleCustomerOverlayOpen(false)}><CustomerForm onSave={saveSaleCustomer} isSaving={saving} /></ModalShell> : null}
     </main>
@@ -1487,6 +1508,20 @@ function UserForm({ user, onSave, isSaving }: { user?: ManagedUser; onSave: Save
   return <FormFrame title={user ? 'Edit user account' : 'Create user account'} isSaving={isSaving} onSubmit={(form, raw) => { const tabPermissions = Object.fromEntries(tabOptions.map((tab) => [tab.id, raw.get(`tab_permission_${tab.id}`) || 'none'])); const payload: Record<string, unknown> = { username: form.username, first_name: form.first_name || '', last_name: form.last_name || '', is_active: form.is_active === 'true', tab_permissions: tabPermissions }; if (form.password) payload.password = form.password; onSave(user ? `/auth/users/${user.id}/` : '/auth/users/', payload, user ? 'patch' : 'post'); }}><Field name="username" label="Username" defaultValue={user?.username || ''} autoComplete="off" required /><Field name="first_name" label="First name" defaultValue={user?.first_name || ''} autoComplete="off" required /><Field name="last_name" label="Last name" defaultValue={user?.last_name || ''} autoComplete="off" /><Field name="password" label={user ? 'New password' : 'Password'} type="password" defaultValue="" autoComplete="new-password" required={!user} /><Select name="is_active" label="Status" defaultValue={String(user?.is_active ?? true)} options={[['true', 'Active'], ['false', 'Inactive']]} required /><PermissionMatrix defaults={defaultPermissions} /></FormFrame>;
 }
 
+function ChangePasswordForm({ onSave, isSaving }: { onSave: SaveHandler; isSaving: boolean }) {
+  return (
+    <FormFrame
+      title="Change password"
+      isSaving={isSaving}
+      onSubmit={(form) => onSave('/auth/change-password/', form)}
+    >
+      <Field name="old_password" label="Old password" type="password" autoComplete="current-password" required />
+      <Field name="new_password" label="New password" type="password" autoComplete="new-password" required />
+      <Field name="confirm_password" label="Confirm new password" type="password" autoComplete="new-password" required />
+    </FormFrame>
+  );
+}
+
 function ChequeFields({ banks, showAmount = false, amount = 0 }: { banks: string[]; showAmount?: boolean; amount?: number }) {
   return (
     <div className="subform">
@@ -1712,7 +1747,16 @@ function DataTable({ headers, rows }: { headers: string[]; rows: DataRow[] }) {
   return <div className="table-wrap"><table><thead><tr>{headers.map((header) => <th key={header}>{header}</th>)}</tr></thead><tbody>{rows.map((row, index) => { const cells = Array.isArray(row) ? row : row.cells; const className = Array.isArray(row) ? undefined : row.className; return <tr key={index} className={className}>{cells.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>; })}</tbody></table></div>;
 }
 
+function escapeHtml(value: unknown) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
 function gatePassPrintHtml(gatePass: GatePass) {
-  const copies = [1, 2].map((copy) => `<section class="copy"><header><div><h1>ZSP Gate Pass</h1><p>Digi7 controlled inventory release</p></div><strong>${gatePass.gate_pass_number}</strong></header><div class="grid"><p><b>Issued to</b><span>${gatePass.issued_to_name}</span></p><p><b>Phone</b><span>${gatePass.issued_to_phone || '-'}</span></p><p><b>Vehicle</b><span>${gatePass.vehicle_number || '-'}</span></p><p><b>Driver</b><span>${gatePass.driver_name || '-'}</span></p><p><b>Copy</b><span>${copy} of 2</span></p><p><b>Issued at</b><span>${new Date(gatePass.issued_at).toLocaleString()}</span></p></div><table><thead><tr><th>Part</th><th>Part number</th><th>Category</th><th>Qty</th><th>Unit price</th><th>Total</th></tr></thead><tbody>${gatePass.lines.map((line) => `<tr><td>${line.sale_line.item.part_name}</td><td>${line.sale_line.item.part_number || '-'}</td><td>${line.sale_line.item.category || '-'}</td><td>${line.sale_line.quantity} ${line.sale_line.item.unit}</td><td>${money(line.sale_line.sold_price)}</td><td>${money(line.sale_line.line_total)}</td></tr>`).join('')}</tbody></table><footer><div><span></span><b>Issued by</b></div><div class="stamp"><span></span><b>Authorisation stamp</b></div><div><span></span><b>Gatekeeper</b></div></footer></section>`).join('');
-  return `<!doctype html><html><head><title>${gatePass.gate_pass_number}</title><style>body{font-family:Arial,sans-serif;margin:0;color:#111827;background:#fff}.copy{page-break-after:always;padding:28px;min-height:92vh;border:2px solid #111827;margin:18px}header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111827;padding-bottom:16px}h1{margin:0;font-size:28px}p{margin:0}header p{color:#4b5563;margin-top:4px}header strong{font-size:20px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:22px 0}.grid p{border:1px solid #d1d5db;padding:10px}.grid b{display:block;font-size:11px;text-transform:uppercase;color:#4b5563}.grid span{display:block;margin-top:5px;font-size:15px}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{border:1px solid #111827;padding:10px;text-align:left}th{background:#f3f4f6}footer{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-top:60px}footer span{display:block;height:72px;border:1px dashed #6b7280;margin-bottom:8px}.stamp span{height:96px}footer b{font-size:12px;text-transform:uppercase;color:#374151}@media print{.copy{margin:0;border:2px solid #111827}.copy:last-child{page-break-after:auto}}</style></head><body>${copies}</body></html>`;
+  const copies = [1, 2].map((copy) => `<section class="copy"><header><div><h1>ZSP Gate Pass</h1><p>Digi7 controlled inventory release</p></div><strong>${escapeHtml(gatePass.gate_pass_number)}</strong></header><div class="grid"><p><b>Issued to</b><span>${escapeHtml(gatePass.issued_to_name)}</span></p><p><b>Phone</b><span>${escapeHtml(gatePass.issued_to_phone || '-')}</span></p><p><b>Vehicle</b><span>${escapeHtml(gatePass.vehicle_number || '-')}</span></p><p><b>Driver</b><span>${escapeHtml(gatePass.driver_name || '-')}</span></p><p><b>Copy</b><span>${copy} of 2</span></p><p><b>Issued at</b><span>${escapeHtml(new Date(gatePass.issued_at).toLocaleString())}</span></p></div><table><thead><tr><th>Part</th><th>Part number</th><th>Category</th><th>Qty</th><th>Unit price</th><th>Total</th></tr></thead><tbody>${gatePass.lines.map((line) => `<tr><td>${escapeHtml(line.sale_line.item.part_name)}</td><td>${escapeHtml(line.sale_line.item.part_number || '-')}</td><td>${escapeHtml(line.sale_line.item.category || '-')}</td><td>${escapeHtml(line.sale_line.quantity)} ${escapeHtml(line.sale_line.item.unit)}</td><td>${escapeHtml(money(line.sale_line.sold_price))}</td><td>${escapeHtml(money(line.sale_line.line_total))}</td></tr>`).join('')}</tbody></table><footer><div><span></span><b>Issued by</b></div><div class="stamp"><span></span><b>Authorisation stamp</b></div><div><span></span><b>Gatekeeper</b></div></footer></section>`).join('');
+  return `<!doctype html><html><head><title>${escapeHtml(gatePass.gate_pass_number)}</title><style>body{font-family:Arial,sans-serif;margin:0;color:#111827;background:#fff}.copy{page-break-after:always;padding:28px;min-height:92vh;border:2px solid #111827;margin:18px}header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111827;padding-bottom:16px}h1{margin:0;font-size:28px}p{margin:0}header p{color:#4b5563;margin-top:4px}header strong{font-size:20px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:22px 0}.grid p{border:1px solid #d1d5db;padding:10px}.grid b{display:block;font-size:11px;text-transform:uppercase;color:#4b5563}.grid span{display:block;margin-top:5px;font-size:15px}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{border:1px solid #111827;padding:10px;text-align:left}th{background:#f3f4f6}footer{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-top:60px}footer span{display:block;height:72px;border:1px dashed #6b7280;margin-bottom:8px}.stamp span{height:96px}footer b{font-size:12px;text-transform:uppercase;color:#374151}@media print{.copy{margin:0;border:2px solid #111827}.copy:last-child{page-break-after:auto}}</style></head><body>${copies}</body></html>`;
 }

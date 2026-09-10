@@ -150,14 +150,22 @@ h3 {
   color: #ffffff;
 }
 
-.sidebar-signout {
+.sidebar-account-actions {
+  display: grid;
+  gap: 8px;
   width: 100%;
   margin-top: auto;
+}
+
+.sidebar-secondary,
+.sidebar-signout {
+  width: 100%;
   border-color: rgba(255, 255, 255, 0.14);
   background: rgba(255, 255, 255, 0.07);
   color: #eaf5f2;
 }
 
+.sidebar-secondary:hover,
 .sidebar-signout:hover {
   background: rgba(255, 255, 255, 0.12);
   color: #ffffff;

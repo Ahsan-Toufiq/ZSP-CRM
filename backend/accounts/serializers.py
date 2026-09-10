@@ -1,6 +1,7 @@
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
+from django.utils.translation import gettext_lazy as _
 from rest_framework import serializers
 
 from accounts.models import UserProfile
@@ -23,6 +24,32 @@ class LoginSerializer(serializers.Serializer):
             raise serializers.ValidationError('This user account is inactive.')
         attrs['user'] = user
         return attrs
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    old_password = serializers.CharField(write_only=True, trim_whitespace=False)
+    new_password = serializers.CharField(write_only=True, trim_whitespace=False)
+    confirm_password = serializers.CharField(write_only=True, trim_whitespace=False)
+
+    def validate_old_password(self, value):
+        user = self.context['request'].user
+        if not user.check_password(value):
+            raise serializers.ValidationError(_('Old password is incorrect.'))
+        return value
+
+    def validate(self, attrs):
+        if attrs['new_password'] != attrs['confirm_password']:
+            raise serializers.ValidationError({'confirm_password': 'New password confirmation does not match.'})
+        if attrs['old_password'] == attrs['new_password']:
+            raise serializers.ValidationError({'new_password': 'New password must be different from the old password.'})
+        validate_password(attrs['new_password'], self.context['request'].user)
+        return attrs
+
+    def save(self, **kwargs):
+        user = self.context['request'].user
+        user.set_password(self.validated_data['new_password'])
+        user.save(update_fields=['password'])
+        return user
 
 
 class UserSerializer(serializers.Serializer):
