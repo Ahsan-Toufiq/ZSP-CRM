@@ -7,7 +7,7 @@ from core_models import TimeStampedModel
 class AuditLog(TimeStampedModel):
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.PROTECT,
+        on_delete=models.SET_NULL,
         related_name='audit_logs',
         null=True,
         blank=True,

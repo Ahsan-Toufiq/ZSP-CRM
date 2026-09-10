@@ -134,6 +134,25 @@ def test_permanent_digi7_admin_cannot_be_edited_or_deleted(api_client, admin_use
 
 
 @pytest.mark.django_db
+def test_admin_can_delete_user_with_audit_history(api_client, admin_user):
+    user = user_with_permissions('former-staff', {'dashboard': AccessLevel.VIEW})
+    AuditLog.objects.create(
+        actor=user,
+        action='password_changed',
+        entity_type='User',
+        entity_id=str(user.id),
+        message='User changed their own password.',
+    )
+    api_client.login(username=admin_user.username, password='StrongPass123!')
+
+    response = api_client.delete(f'/api/auth/users/{user.id}/')
+
+    assert response.status_code == 204
+    assert not User.objects.filter(id=user.id).exists()
+    assert AuditLog.objects.filter(action='password_changed', actor__isnull=True).exists()
+
+
+@pytest.mark.django_db
 def test_user_can_change_own_password_with_old_password(api_client):
     user = user_with_permissions('password-owner', {'dashboard': AccessLevel.VIEW})
     api_client.login(username=user.username, password='StrongPass123!')
