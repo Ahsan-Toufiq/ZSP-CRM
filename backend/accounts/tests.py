@@ -1,9 +1,13 @@
 import pytest
 from django.contrib.auth.models import User
+from django.core.management import call_command
 from rest_framework.test import APIClient
 
 from accounts.models import UserProfile
 from accounts.permissions import AccessLevel, full_tab_permissions
+from catalog.models import DropdownOption
+from finance.models import ChequeStatus
+from operations.models import Container, ContainerItem, Customer, PartInventory
 
 
 @pytest.fixture
@@ -126,3 +130,58 @@ def test_permanent_digi7_admin_cannot_be_edited_or_deleted(api_client, admin_use
     assert delete_response.status_code == 400
     assert permanent.is_active is True
     assert permanent.is_superuser is True
+
+
+@pytest.mark.django_db
+def test_reset_zsp_production_data_keeps_only_handover_users_and_configuration(monkeypatch):
+    dummy = User.objects.create_user(username='demo-operator', password='StrongPass123!')
+    UserProfile.objects.create(user=dummy, tab_permissions=full_tab_permissions())
+    customer = Customer.objects.create(name='Demo Customer', phone='+923001234567', created_by=dummy, updated_by=dummy)
+    container = Container.objects.create(reference='DEMO-CNTR', created_by=dummy, updated_by=dummy)
+    parent = ContainerItem.objects.create(
+        container=container,
+        part_name='Demo parent',
+        quantity=1,
+        created_by=dummy,
+        updated_by=dummy,
+    )
+    ContainerItem.objects.create(
+        container=container,
+        parent_item=parent,
+        part_name='Demo child',
+        quantity=1,
+        created_by=dummy,
+        updated_by=dummy,
+    )
+    PartInventory.objects.create(part_name='Demo Part', quantity=3, unit='piece', created_by=dummy, updated_by=dummy)
+    DropdownOption.objects.create(group=DropdownOption.Group.PART_NAME, label='Demo Part', created_by=dummy, updated_by=dummy)
+    DropdownOption.objects.create(group=DropdownOption.Group.BANK, label='Demo Bank', created_by=dummy, updated_by=dummy)
+    ChequeStatus.objects.create(name='Demo Status', created_by=dummy, updated_by=dummy)
+
+    monkeypatch.setenv('RESET_ZSP_ADMIN_PASSWORD', 'AdminResetPass123!')
+    monkeypatch.setenv('RESET_ZSP_CLIENT_PASSWORD', 'ClientResetPass123!')
+
+    call_command('reset_zsp_production_data', '--confirm')
+
+    assert set(User.objects.values_list('username', flat=True)) == {'admin', 'syed.zulfiqar'}
+    admin = User.objects.get(username='admin')
+    client = User.objects.get(username='syed.zulfiqar')
+    assert admin.get_full_name() == 'Ahsan Toufiq'
+    assert admin.is_superuser is True
+    assert admin.check_password('AdminResetPass123!')
+    assert client.get_full_name() == 'Syed Zulfiqar'
+    assert client.is_superuser is False
+    assert client.check_password('ClientResetPass123!')
+    assert client.profile.tab_permissions['users'] == AccessLevel.NONE
+    assert all(
+        level == AccessLevel.FULL
+        for tab, level in client.profile.tab_permissions.items()
+        if tab != 'users'
+    )
+    assert Customer.objects.count() == 0
+    assert Container.objects.count() == 0
+    assert ContainerItem.objects.count() == 0
+    assert PartInventory.objects.count() == 0
+    assert DropdownOption.objects.filter(group=DropdownOption.Group.PART_NAME).count() == 0
+    assert DropdownOption.objects.filter(group=DropdownOption.Group.BANK, label='Demo Bank', created_by=admin, updated_by=admin).exists()
+    assert ChequeStatus.objects.filter(name='Pending', balance_effect=ChequeStatus.BalanceEffect.NONE, created_by=admin).exists()

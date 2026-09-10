@@ -16,5 +16,6 @@ out/
 coverage/
 dist/
 build/
+backups/
 *.tsbuildinfo
 npm-debug.log*
