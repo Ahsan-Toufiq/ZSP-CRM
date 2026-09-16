@@ -1,18 +1,21 @@
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import Count, DecimalField, ExpressionWrapper, F, IntegerField, OuterRef, Prefetch, Q, Subquery, Sum, Value
+from django.db.models import Count, DecimalField, ExpressionWrapper, F, IntegerField, Max, Min, OuterRef, Prefetch, Q, Subquery, Sum, Value
 from django.db.models.deletion import ProtectedError
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, TruncDate, TruncMonth, TruncYear
+from django.utils import timezone
+from django.utils.dateparse import parse_date
 from rest_framework import status, viewsets
-from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.status import HTTP_409_CONFLICT
 
-from accounts.permissions import OperationsPermission
+from accounts.permissions import OperationsPermission, has_tab_access
 from finance.models import Cheque, CustomerLedgerEntry
 from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass, InventoryBatch, PartInventory
+from operations.reporting import build_inventory_report, inventory_report_csv_response, inventory_report_pdf_response, sale_invoice_pdf_response
 from operations.serializers import (
     AuctionSaleCreateSerializer,
     AuctionSaleLineReadSerializer,
@@ -320,6 +323,88 @@ class AuctionSaleViewSet(viewsets.ModelViewSet):
             return self.get_paginated_response(serializer.data)
         return Response(serializer.data)
 
+    @action(detail=False, methods=['get'], url_path='analytics')
+    def analytics(self, request):
+        if not has_tab_access(request.user, 'sales'):
+            raise PermissionDenied('You do not have access to sales analytics.')
+        base_queryset = AuctionSale.objects.filter(is_cancelled=False)
+        bounds = base_queryset.aggregate(oldest_sale_date=Min('sale_date'), latest_sale_date=Max('sale_date'))
+        oldest = bounds['oldest_sale_date']
+        latest = bounds['latest_sale_date']
+        start = parse_date(request.query_params.get('start') or '') or oldest
+        end = parse_date(request.query_params.get('end') or '') or latest
+        granularity = request.query_params.get('granularity', 'month')
+        if granularity not in {'day', 'month', 'year'}:
+            raise ValidationError({'granularity': 'Choose day, month, or year.'})
+        if oldest and start and start < oldest:
+            raise ValidationError({'start': f'Start date cannot be before {oldest}.'})
+        if latest and end and end > latest:
+            raise ValidationError({'end': f'End date cannot be after {latest}.'})
+        if start and end and start > end:
+            raise ValidationError({'end': 'End date cannot be before start date.'})
+
+        queryset = base_queryset
+        if start:
+            queryset = queryset.filter(sale_date__gte=start)
+        if end:
+            queryset = queryset.filter(sale_date__lte=end)
+
+        def bucketed(trunc, field_name):
+            return [
+                {
+                    'period': row[field_name].isoformat(),
+                    'total_amount': row['total_amount'] or Decimal('0.00'),
+                    'cash_amount': row['cash_amount'] or Decimal('0.00'),
+                    'credit_amount': row['credit_amount'] or Decimal('0.00'),
+                    'count': row['count'],
+                }
+                for row in (
+                    queryset
+                    .annotate(**{field_name: trunc('sale_date')})
+                    .values(field_name)
+                    .annotate(
+                        total_amount=Coalesce(Sum('total_amount'), Value(Decimal('0.00')), output_field=DecimalField(max_digits=14, decimal_places=2)),
+                        cash_amount=Coalesce(Sum('cash_amount'), Value(Decimal('0.00')), output_field=DecimalField(max_digits=14, decimal_places=2)),
+                        credit_amount=Coalesce(Sum('credit_amount'), Value(Decimal('0.00')), output_field=DecimalField(max_digits=14, decimal_places=2)),
+                        count=Count('id'),
+                    )
+                    .order_by(field_name)
+                )
+            ]
+
+        daily = bucketed(TruncDate, 'day')[-30:]
+        monthly = bucketed(TruncMonth, 'month')[-12:]
+        yearly = bucketed(TruncYear, 'year')[-6:]
+        selected_trunc = {'day': TruncDate, 'month': TruncMonth, 'year': TruncYear}[granularity]
+        selected = bucketed(selected_trunc, 'period')
+        totals = queryset.aggregate(
+            total_amount=Coalesce(Sum('total_amount'), Value(Decimal('0.00')), output_field=DecimalField(max_digits=14, decimal_places=2)),
+            cash_amount=Coalesce(Sum('cash_amount'), Value(Decimal('0.00')), output_field=DecimalField(max_digits=14, decimal_places=2)),
+            credit_amount=Coalesce(Sum('credit_amount'), Value(Decimal('0.00')), output_field=DecimalField(max_digits=14, decimal_places=2)),
+            sale_count=Count('id'),
+        )
+        return Response({
+            'generated_at': timezone.now(),
+            'date_bounds': {
+                'oldest_sale_date': oldest,
+                'latest_sale_date': latest,
+                'start': start,
+                'end': end,
+                'granularity': granularity,
+            },
+            'totals': totals,
+            'daily': daily,
+            'monthly': monthly,
+            'yearly': yearly,
+            'selected': selected,
+        })
+
+    @action(detail=True, methods=['get'], url_path='invoice')
+    def invoice(self, request, pk=None):
+        sale = self.get_object()
+        inline = request.query_params.get('disposition') == 'inline'
+        return sale_invoice_pdf_response(sale, inline=inline)
+
 
 class GatePassViewSet(viewsets.ModelViewSet):
     permission_classes = [OperationsPermission]
@@ -347,3 +432,18 @@ class GatePassViewSet(viewsets.ModelViewSet):
         gate_pass = self.get_object()
         gate_pass = mark_gate_pass_printed(user=request.user, gate_pass=gate_pass)
         return Response(GatePassSerializer(gate_pass, context={'request': request}).data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([OperationsPermission])
+def inventory_report(request):
+    if not has_tab_access(request.user, 'containers'):
+        raise PermissionDenied('You do not have access to inventory reports.')
+    container_id = request.query_params.get('container') or None
+    report = build_inventory_report(container_id=container_id)
+    export_format = request.query_params.get('export', 'pdf').lower()
+    if export_format == 'csv':
+        return inventory_report_csv_response(report)
+    if export_format == 'pdf':
+        return inventory_report_pdf_response(report)
+    raise ValidationError({'export': 'Supported export formats are pdf and csv.'})

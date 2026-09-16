@@ -31,6 +31,8 @@ export interface Customer {
   is_active: boolean;
   balance: string | number;
   can_delete: boolean;
+  opening_balance: string;
+  opening_balance_direction: 'receivable' | 'credit';
 }
 
 export interface Container {
@@ -141,6 +143,35 @@ export interface AuctionSale {
     driver_name: string;
     printed_at: string | null;
   } | null;
+}
+
+export interface SalesAnalyticsBucket {
+  period: string;
+  total_amount: string | number;
+  cash_amount: string | number;
+  credit_amount: string | number;
+  count: number;
+}
+
+export interface SalesAnalytics {
+  generated_at: string;
+  date_bounds: {
+    oldest_sale_date: string | null;
+    latest_sale_date: string | null;
+    start: string | null;
+    end: string | null;
+    granularity: 'day' | 'month' | 'year';
+  };
+  totals: {
+    total_amount: string | number;
+    cash_amount: string | number;
+    credit_amount: string | number;
+    sale_count: number;
+  };
+  daily: SalesAnalyticsBucket[];
+  monthly: SalesAnalyticsBucket[];
+  yearly: SalesAnalyticsBucket[];
+  selected: SalesAnalyticsBucket[];
 }
 
 export interface GatePass {

@@ -32,11 +32,10 @@ class CustomerSerializer(serializers.ModelSerializer):
     balance = serializers.SerializerMethodField()
     can_delete = serializers.SerializerMethodField()
     customer_type = serializers.ChoiceField(choices=Customer.CustomerType.choices, required=False, default=Customer.CustomerType.INDIVIDUAL)
-    opening_balance = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0.00'), required=False, write_only=True, default=Decimal('0.00'))
+    opening_balance = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0.00'), required=False, default=Decimal('0.00'))
     opening_balance_direction = serializers.ChoiceField(
         choices=[('receivable', 'Customer owes ZSP'), ('credit', 'Customer has advance/credit')],
         required=False,
-        write_only=True,
         default='receivable',
     )
 
@@ -49,29 +48,83 @@ class CustomerSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'balance', 'can_delete', 'created_at', 'updated_at']
 
-    @transaction.atomic
-    def create(self, validated_data):
-        opening_balance = validated_data.pop('opening_balance', Decimal('0.00')) or Decimal('0.00')
-        opening_balance_direction = validated_data.pop('opening_balance_direction', 'receivable')
-        customer = super().create(validated_data)
-        if opening_balance > 0:
-            user = self.context['request'].user
+    def _opening_balance_entry(self, customer):
+        return (
+            customer.ledger_entries
+            .filter(
+                entry_type=CustomerLedgerEntry.EntryType.ADJUSTMENT,
+                description='Opening balance',
+                sale__isnull=True,
+                cheque__isnull=True,
+            )
+            .order_by('created_at')
+            .first()
+        )
+
+    def _opening_balance_state(self, customer):
+        entry = self._opening_balance_entry(customer)
+        if entry is None:
+            return Decimal('0.00'), 'receivable'
+        if entry.debit > 0:
+            return entry.debit, 'receivable'
+        return entry.credit, 'credit'
+
+    def _sync_opening_balance(self, *, customer, amount, direction):
+        amount = Decimal(amount or 0).quantize(Decimal('0.01'))
+        entry = self._opening_balance_entry(customer)
+        if amount <= 0:
+            if entry is not None:
+                entry.delete()
+            return
+        user = self.context['request'].user
+        debit = amount if direction == 'receivable' else Decimal('0.00')
+        credit = amount if direction == 'credit' else Decimal('0.00')
+        if entry is None:
             CustomerLedgerEntry.objects.create(
                 customer=customer,
                 entry_date=timezone.localdate(),
                 entry_type=CustomerLedgerEntry.EntryType.ADJUSTMENT,
                 description='Opening balance',
-                debit=opening_balance if opening_balance_direction == 'receivable' else Decimal('0.00'),
-                credit=opening_balance if opening_balance_direction == 'credit' else Decimal('0.00'),
+                debit=debit,
+                credit=credit,
                 created_by=user,
                 updated_by=user,
             )
+            return
+        entry.debit = debit
+        entry.credit = credit
+        entry.updated_by = user
+        entry.save(update_fields=['debit', 'credit', 'updated_by', 'updated_at'])
+
+    @transaction.atomic
+    def create(self, validated_data):
+        opening_balance = validated_data.pop('opening_balance', Decimal('0.00')) or Decimal('0.00')
+        opening_balance_direction = validated_data.pop('opening_balance_direction', 'receivable')
+        customer = super().create(validated_data)
+        self._sync_opening_balance(customer=customer, amount=opening_balance, direction=opening_balance_direction)
         return customer
 
+    @transaction.atomic
     def update(self, instance, validated_data):
-        validated_data.pop('opening_balance', None)
-        validated_data.pop('opening_balance_direction', None)
-        return super().update(instance, validated_data)
+        opening_balance_provided = 'opening_balance' in validated_data
+        opening_balance = validated_data.pop('opening_balance', None)
+        opening_balance_direction = validated_data.pop('opening_balance_direction', None)
+        instance = super().update(instance, validated_data)
+        if opening_balance_provided:
+            current_amount, current_direction = self._opening_balance_state(instance)
+            self._sync_opening_balance(
+                customer=instance,
+                amount=opening_balance if opening_balance is not None else current_amount,
+                direction=opening_balance_direction or current_direction,
+            )
+        return instance
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        amount, direction = self._opening_balance_state(instance)
+        data['opening_balance'] = f'{amount:.2f}'
+        data['opening_balance_direction'] = direction
+        return data
 
     def get_balance(self, obj):
         if hasattr(obj, 'ledger_debit') and hasattr(obj, 'ledger_credit'):

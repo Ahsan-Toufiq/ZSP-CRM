@@ -1,3 +1,4 @@
+from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from operations.views import (
@@ -7,6 +8,7 @@ from operations.views import (
     CustomerViewSet,
     GatePassViewSet,
     InventoryBatchViewSet,
+    inventory_report,
     PartInventoryViewSet,
 )
 
@@ -19,4 +21,7 @@ router.register('inventory-batches', InventoryBatchViewSet, basename='inventory-
 router.register('auction-sales', AuctionSaleViewSet, basename='auction-sale')
 router.register('gate-passes', GatePassViewSet, basename='gate-pass')
 
-urlpatterns = router.urls
+urlpatterns = [
+    *router.urls,
+    path('inventory-report/', inventory_report, name='inventory-report'),
+]

@@ -45,6 +45,7 @@ import type {
   ManagedUser,
   Paginated,
   PartInventory,
+  SalesAnalytics,
   User,
   UUID,
 } from '@/lib/types';
@@ -62,6 +63,7 @@ type ModalState =
   | { type: 'cheque-status' }
   | { type: 'dropdown-option'; group?: DropdownOption['group'] }
   | { type: 'user'; user?: ManagedUser }
+  | { type: 'inventory-export' }
   | { type: 'change-password' }
   | null;
 
@@ -250,6 +252,7 @@ export default function Home() {
   const [creditReport, setCreditReport] = useState<CreditReport | null>(null);
   const [dropdownOptions, setDropdownOptions] = useState<DropdownOption[]>([]);
   const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([]);
+  const [salesAnalytics, setSalesAnalytics] = useState<SalesAnalytics | null>(null);
 
   const availableBatches = useMemo<BatchWithPart[]>(() => parts.flatMap((part) => (part.batches ?? []).map((batch) => ({ ...batch, item_detail: part }))).filter((batch) => batch.available_quantity > 0), [parts]);
   const visibleTabs = useMemo(() => {
@@ -315,17 +318,19 @@ export default function Home() {
       }
 
       if (tab === 'sales') {
-        const [salesData, customerData, partData, optionData] = await Promise.allSettled([
+        const [salesData, customerData, partData, optionData, analyticsData] = await Promise.allSettled([
           list<AuctionSale>('/operations/auction-sales/?page_size=100'),
           list<Customer>('/operations/customers/?page_size=200'),
           list<PartInventory>('/operations/parts/?page_size=200'),
           list<DropdownOption>('/catalog/dropdown-options/?page_size=200'),
+          get<SalesAnalytics>('/operations/auction-sales/analytics/'),
         ]);
         if (loadToken.current === token) {
           setSales(valueOf(salesData, emptyPage<AuctionSale>()).results);
           setCustomers(valueOf(customerData, emptyPage<Customer>()).results);
           setParts(valueOf(partData, emptyPage<PartInventory>()).results);
           setDropdownOptions(valueOf(optionData, emptyPage<DropdownOption>()).results);
+          setSalesAnalytics(valueOf(analyticsData, null));
         }
       }
 
@@ -546,26 +551,72 @@ export default function Home() {
     }
   }
 
-  async function downloadCreditReport(format: 'csv' | 'pdf') {
+  async function downloadBlob(url: string, filename: string, errorMessage: string) {
     setMessage('');
     try {
-      const response = await fetch(`/api/finance/credit-report/?export=${format}`, {
+      const response = await fetch(url, {
         credentials: 'include',
         cache: 'no-store',
       });
-      if (!response.ok) throw new Error(`Unable to download ${format.toUpperCase()} report.`);
+      if (!response.ok) throw new Error(errorMessage);
       const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
+      const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = `zsp-credit-aging-report.${format}`;
+      anchor.href = objectUrl;
+      anchor.download = filename;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
-      URL.revokeObjectURL(url);
+      URL.revokeObjectURL(objectUrl);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Unable to download report.');
+      setMessage(error instanceof Error ? error.message : errorMessage);
     }
+  }
+
+  async function loadSalesAnalytics(params?: { start?: string; end?: string; granularity?: 'day' | 'month' | 'year' }) {
+    setMessage('');
+    try {
+      const query = new URLSearchParams();
+      if (params?.start) query.set('start', params.start);
+      if (params?.end) query.set('end', params.end);
+      if (params?.granularity) query.set('granularity', params.granularity);
+      const suffix = query.toString() ? `?${query.toString()}` : '';
+      const analyticsData = await get<SalesAnalytics>(`/operations/auction-sales/analytics/${suffix}`);
+      setSalesAnalytics(analyticsData);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to load sales analytics.');
+    }
+  }
+
+  async function downloadCreditReport(format: 'csv' | 'pdf') {
+    await downloadBlob(
+      `/api/finance/credit-report/?export=${format}`,
+      `zsp-credit-aging-report.${format}`,
+      format === 'csv' ? 'Unable to download Spreadsheet report.' : 'Unable to download PDF report.',
+    );
+  }
+
+  async function downloadInventoryReport(format: 'csv' | 'pdf', containerId?: UUID) {
+    const params = new URLSearchParams({ export: format });
+    if (containerId) params.set('container', containerId);
+    await downloadBlob(
+      `/api/operations/inventory-report/?${params.toString()}`,
+      `zsp-available-inventory${containerId ? '-container' : ''}.${format}`,
+      format === 'csv' ? 'Unable to download inventory Spreadsheet.' : 'Unable to download inventory PDF.',
+    );
+  }
+
+  async function downloadSaleInvoice(sale: AuctionSale) {
+    await downloadBlob(
+      `/api/operations/auction-sales/${sale.id}/invoice/`,
+      `zsp-invoice-${sale.sale_number}.pdf`,
+      'Unable to download invoice.',
+    );
+  }
+
+  function printSaleInvoice(sale: AuctionSale) {
+    const printWindow = window.open(`/api/operations/auction-sales/${sale.id}/invoice/?disposition=inline`, '_blank', 'noopener,noreferrer,width=980,height=760');
+    if (!printWindow) setMessage('Browser blocked the invoice window. Allow popups for this site and try again.');
   }
 
   async function markChequeStatus(cheque: Cheque, statusId: UUID) {
@@ -652,8 +703,8 @@ export default function Home() {
         {loading ? <LoadingState label={`Loading ${currentTitle.toLowerCase()}...`} /> : null}
         {!loading && activeTab === 'dashboard' ? <Dashboard summary={summary} /> : null}
         {!loading && activeTab === 'customers' ? <CustomersPanel canWrite={canWrite('customers')} customers={customers} ledgerByCustomer={ledgerByCustomer} creditReport={creditReport} expanded={expandedCustomers} onToggle={(id) => toggleSet(setExpandedCustomers, id)} onAdd={() => setModal({ type: 'customer' })} onEdit={(customer) => setModal({ type: 'customer', customer })} onDelete={(customer) => remove(`/operations/customers/${customer.id}/`)} onStatus={(customer) => quickPatch(`/operations/customers/${customer.id}/`, { is_active: !customer.is_active })} onDownloadReport={downloadCreditReport} /> : null}
-        {!loading && activeTab === 'containers' ? <ContainersPanel canWrite={canWrite('containers')} containers={containers} items={items} itemsByContainer={itemsByContainer} parts={parts} expandedContainers={expandedContainers} expandedParts={expandedParts} inventoryPane={inventoryPane} onInventoryPaneChange={setInventoryPane} onToggleContainer={(id) => toggleSet(setExpandedContainers, id)} onTogglePart={(id) => toggleSet(setExpandedParts, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onDelete={(container) => remove(`/operations/containers/${container.id}/`)} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddSubparts={(item) => setModal({ type: 'subparts', parentItem: item })} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} /> : null}
-        {!loading && activeTab === 'sales' ? <SalesPanel canWrite={canWrite('sales')} sales={sales} onAdd={() => { setNewSaleCustomer(null); setModal({ type: 'sale' }); }} onEdit={(sale) => { setNewSaleCustomer(null); setModal({ type: 'sale', sale }); }} onPrint={printSaleGatePass} /> : null}
+        {!loading && activeTab === 'containers' ? <ContainersPanel canWrite={canWrite('containers')} containers={containers} items={items} itemsByContainer={itemsByContainer} parts={parts} expandedContainers={expandedContainers} expandedParts={expandedParts} inventoryPane={inventoryPane} onInventoryPaneChange={setInventoryPane} onToggleContainer={(id) => toggleSet(setExpandedContainers, id)} onTogglePart={(id) => toggleSet(setExpandedParts, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onDelete={(container) => remove(`/operations/containers/${container.id}/`)} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddSubparts={(item) => setModal({ type: 'subparts', parentItem: item })} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} onExport={() => setModal({ type: 'inventory-export' })} /> : null}
+        {!loading && activeTab === 'sales' ? <SalesPanel canWrite={canWrite('sales')} sales={sales} analytics={salesAnalytics} onLoadAnalytics={loadSalesAnalytics} onAdd={() => { setNewSaleCustomer(null); setModal({ type: 'sale' }); }} onEdit={(sale) => { setNewSaleCustomer(null); setModal({ type: 'sale', sale }); }} onPrint={printSaleGatePass} onDownloadInvoice={downloadSaleInvoice} onPrintInvoice={printSaleInvoice} /> : null}
         {!loading && activeTab === 'cheques' ? <ChequesPanel canWrite={canWrite('cheques')} cheques={cheques} statuses={chequeStatuses} onAdd={() => setModal({ type: 'cheque' })} onEdit={(cheque) => setModal({ type: 'cheque', cheque })} onStatus={markChequeStatus} onAddStatus={() => setModal({ type: 'cheque-status' })} /> : null}
         {!loading && activeTab === 'settings' ? <SettingsPanel canWrite={canWrite('settings')} options={dropdownOptions} chequeStatuses={chequeStatuses} onAdd={(group) => setModal({ type: 'dropdown-option', group })} onAddChequeStatus={() => setModal({ type: 'cheque-status' })} /> : null}
         {!loading && activeTab === 'users' ? <UsersPanel canWrite={canWrite('users')} users={managedUsers} currentUserId={currentUser?.id} deletingPath={deletingPath} onAdd={() => setModal({ type: 'user' })} onEdit={(user) => setModal({ type: 'user', user })} onDelete={(user) => remove(`/auth/users/${user.id}/`)} /> : null}
@@ -669,6 +720,7 @@ export default function Home() {
         {modal?.type === 'cheque-status' ? <ChequeStatusForm onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'dropdown-option' ? <DropdownOptionForm group={modal.group} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'user' ? <UserForm user={modal.user} onSave={save} isSaving={saving} /> : null}
+        {modal?.type === 'inventory-export' ? <InventoryExportDialog containers={containers} parts={parts} onDownload={downloadInventoryReport} /> : null}
         {modal?.type === 'change-password' ? <ChangePasswordForm onSave={changePassword} isSaving={saving} /> : null}
       </ModalShell>
       {saleCustomerOverlayOpen ? <ModalShell modal={{ type: 'customer' }} onClose={() => setSaleCustomerOverlayOpen(false)}><CustomerForm onSave={saveSaleCustomer} isSaving={saving} /></ModalShell> : null}
@@ -789,7 +841,7 @@ function CustomersPanel({ customers, ledgerByCustomer, creditReport, expanded, c
           <p className="muted">Total credit report, aging, and per-customer balances in one place.</p>
         </div>
         <div className="head-actions">
-          <button className="btn" onClick={() => onDownloadReport('csv')}><FileDown size={18} /> CSV</button>
+          <button className="btn" onClick={() => onDownloadReport('csv')}><FileDown size={18} /> Spreadsheet</button>
           <button className="btn" onClick={() => onDownloadReport('pdf')}><FileDown size={18} /> PDF</button>
           {canWrite ? <button className="btn primary" onClick={onAdd}><Plus size={18} /> Customer</button> : null}
         </div>
@@ -895,6 +947,7 @@ function ContainersPanel({
   onAddPart,
   onEditPart,
   onDeletePart,
+  onExport,
 }: {
   containers: Container[];
   items: ContainerItem[];
@@ -917,6 +970,7 @@ function ContainersPanel({
   onAddPart: () => void;
   onEditPart: (part: PartInventory) => void;
   onDeletePart: (part: PartInventory) => void;
+  onExport: () => void;
 }) {
   const [partSearch, setPartSearch] = useState('');
   const [containerSearch, setContainerSearch] = useState('');
@@ -939,25 +993,28 @@ function ContainersPanel({
         <div>
           <h2>Containers & Inventory</h2>
         </div>
-        <div className="segmented-control" role="tablist" aria-label="Inventory views">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={inventoryPane === 'parts'}
-            className={inventoryPane === 'parts' ? 'active' : ''}
-            onClick={() => onInventoryPaneChange('parts')}
-          >
-            <Boxes size={16} /> Parts Inventory
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={inventoryPane === 'containers'}
-            className={inventoryPane === 'containers' ? 'active' : ''}
-            onClick={() => onInventoryPaneChange('containers')}
-          >
-            <ContainerIcon size={16} /> Container Inventory
-          </button>
+        <div className="head-actions">
+          <button className="btn" onClick={onExport}><FileDown size={18} /> Download inventory</button>
+          <div className="segmented-control" role="tablist" aria-label="Inventory views">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={inventoryPane === 'parts'}
+              className={inventoryPane === 'parts' ? 'active' : ''}
+              onClick={() => onInventoryPaneChange('parts')}
+            >
+              <Boxes size={16} /> Parts Inventory
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={inventoryPane === 'containers'}
+              className={inventoryPane === 'containers' ? 'active' : ''}
+              onClick={() => onInventoryPaneChange('containers')}
+            >
+              <ContainerIcon size={16} /> Container Inventory
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1127,7 +1184,49 @@ function ContainersPanel({
   );
 }
 
-function SalesPanel({ sales, canWrite, onAdd, onEdit, onPrint }: { sales: AuctionSale[]; canWrite: boolean; onAdd: () => void; onEdit: (sale: AuctionSale) => void; onPrint: (sale: AuctionSale) => void }) {
+function InventoryExportDialog({ containers, parts, onDownload }: { containers: Container[]; parts: PartInventory[]; onDownload: (format: 'csv' | 'pdf', containerId?: UUID) => void }) {
+  const [scope, setScope] = useState<'all' | 'container'>('all');
+  const [containerId, setContainerId] = useState('');
+  const containersWithStock = useMemo(() => {
+    const stockContainerIds = new Set(parts.flatMap((part) => (part.batches ?? []).filter((batch) => batch.available_quantity > 0 && batch.container).map((batch) => batch.container as UUID)));
+    return containers.filter((container) => stockContainerIds.has(container.id));
+  }, [containers, parts]);
+  const selectedContainer = scope === 'container' ? containerId : undefined;
+  const canDownload = scope === 'all' || Boolean(selectedContainer);
+  return (
+    <div className="modal-form">
+      <h2>Download available inventory</h2>
+      <div className="export-choice-grid">
+        <button type="button" className={scope === 'all' ? 'export-choice active' : 'export-choice'} onClick={() => setScope('all')}>
+          <strong>All available inventory</strong>
+          <span>Every in-stock part source with raw cost, added-cost share, net cost, and source container.</span>
+        </button>
+        <button type="button" className={scope === 'container' ? 'export-choice active' : 'export-choice'} onClick={() => setScope('container')}>
+          <strong>Specific container inventory</strong>
+          <span>Only available stock from one selected source container.</span>
+        </button>
+      </div>
+      {scope === 'container' ? (
+        <Select
+          name="export_container"
+          label="Container with available stock"
+          value={containerId}
+          onChange={setContainerId}
+          options={containersWithStock.map((container) => [container.id, `${container.reference} - ${statusLabel(container.status)}`])}
+          required
+        />
+      ) : null}
+      <div className="download-format-grid">
+        <button type="button" className="btn primary" disabled={!canDownload} onClick={() => onDownload('pdf', selectedContainer)}><FileDown size={18} /> PDF</button>
+        <button type="button" className="btn" disabled={!canDownload} onClick={() => onDownload('csv', selectedContainer)}><FileDown size={18} /> Spreadsheet</button>
+      </div>
+      {scope === 'container' && containersWithStock.length === 0 ? <div className="empty-state"><Boxes size={22} /> No containers currently have available stock.</div> : null}
+    </div>
+  );
+}
+
+function SalesPanel({ sales, analytics, canWrite, onLoadAnalytics, onAdd, onEdit, onPrint, onDownloadInvoice, onPrintInvoice }: { sales: AuctionSale[]; analytics: SalesAnalytics | null; canWrite: boolean; onLoadAnalytics: (params?: { start?: string; end?: string; granularity?: 'day' | 'month' | 'year' }) => Promise<void>; onAdd: () => void; onEdit: (sale: AuctionSale) => void; onPrint: (sale: AuctionSale) => void; onDownloadInvoice: (sale: AuctionSale) => void; onPrintInvoice: (sale: AuctionSale) => void }) {
+  const [pane, setPane] = useState<'ledger' | 'analytics'>('ledger');
   return (
     <section className="panel">
       <div className="section-head">
@@ -1135,32 +1234,146 @@ function SalesPanel({ sales, canWrite, onAdd, onEdit, onPrint }: { sales: Auctio
           <h2>Auction sale ledger</h2>
           <p className="muted">Each sale can contain multiple items, creates the gate pass automatically, and prints from this row.</p>
         </div>
-        {canWrite ? <button className="btn primary" onClick={onAdd}><Gavel size={18} /> Record sale</button> : null}
+        <div className="head-actions">
+          <div className="segmented-control sales-segment" role="tablist" aria-label="Sales views">
+            <button type="button" role="tab" aria-selected={pane === 'ledger'} className={pane === 'ledger' ? 'active' : ''} onClick={() => setPane('ledger')}>Ledger</button>
+            <button type="button" role="tab" aria-selected={pane === 'analytics'} className={pane === 'analytics' ? 'active' : ''} onClick={() => setPane('analytics')}>Analytics</button>
+          </div>
+          {canWrite ? <button className="btn primary" onClick={onAdd}><Gavel size={18} /> Record sale</button> : null}
+        </div>
       </div>
-      <DataTable
-        headers={['Sale', 'Date', 'Customer', 'Payment', 'Total', 'Items', 'Gate pass', 'Actions']}
-        rows={sales.map((sale) => [
-          sale.sale_number,
-          sale.sale_date,
-          sale.customer_name || 'Cash sale',
-          sale.payment_type,
-          money(sale.total_amount),
-          <div className="line-stack" key="items">
-            {sale.lines.map((line) => (
-              <span key={line.id}>
-                {line.quantity} x {line.item.part_name}
-                <small>{line.inventory_batch_label || 'Legacy batch'} · audit net {money(line.net_unit_cost_snapshot)} · current net {money(line.current_net_unit_cost)} · sold {money(line.sold_price)}</small>
-              </span>
-            ))}
-          </div>,
-          sale.gate_pass ? <span key="print" className={statusClass(sale.gate_pass.print_status)}>{statusLabel(sale.gate_pass.print_status)}</span> : <span key="missing" className="badge bad">missing</span>,
-          <div className="table-actions" key="actions">
-            {canWrite ? <button className="icon-btn" onClick={() => onEdit(sale)} aria-label={`Edit ${sale.sale_number}`}><Pencil size={16} /></button> : null}
-            {canWrite ? <button className="icon-btn" onClick={() => onPrint(sale)} aria-label={`Print gate pass for ${sale.sale_number}`} disabled={!sale.gate_pass}><Printer size={16} /></button> : <span className="muted">View only</span>}
-          </div>,
-        ])}
-      />
+      {pane === 'analytics' ? <SalesAnalyticsPanel analytics={analytics} onLoadAnalytics={onLoadAnalytics} /> : (
+        <DataTable
+          headers={['Sale', 'Date', 'Customer', 'Payment', 'Total', 'Items', 'Gate pass', 'Invoice', 'Actions']}
+          rows={sales.map((sale) => [
+            sale.sale_number,
+            sale.sale_date,
+            sale.customer_name || 'Cash sale',
+            statusLabel(sale.payment_type),
+            money(sale.total_amount),
+            <div className="line-stack" key="items">
+              {sale.lines.map((line) => (
+                <span key={line.id}>
+                  {line.quantity} x {line.item.part_name}
+                  <small>{line.inventory_batch_label || 'Legacy batch'} · audit net {money(line.net_unit_cost_snapshot)} · current net {money(line.current_net_unit_cost)} · sold {money(line.sold_price)}</small>
+                </span>
+              ))}
+            </div>,
+            <div className="table-actions" key="gate-pass">
+              {sale.gate_pass ? <span className={statusClass(sale.gate_pass.print_status)}>{statusLabel(sale.gate_pass.print_status)}</span> : <span className="badge bad">missing</span>}
+              {canWrite ? <button className="icon-btn" onClick={() => onPrint(sale)} aria-label={`Print gate pass for ${sale.sale_number}`} disabled={!sale.gate_pass}><Printer size={16} /></button> : null}
+            </div>,
+            <div className="table-actions" key="invoice">
+              <button className="icon-btn" onClick={() => onDownloadInvoice(sale)} aria-label={`Download invoice for ${sale.sale_number}`}><FileDown size={16} /></button>
+              <button className="icon-btn" onClick={() => onPrintInvoice(sale)} aria-label={`Print invoice for ${sale.sale_number}`}><Printer size={16} /></button>
+            </div>,
+            <div className="table-actions" key="actions">
+              {canWrite ? <button className="icon-btn" onClick={() => onEdit(sale)} aria-label={`Edit ${sale.sale_number}`}><Pencil size={16} /></button> : null}
+              {!canWrite ? <span className="muted">View only</span> : null}
+            </div>,
+          ])}
+        />
+      )}
     </section>
+  );
+}
+
+function SalesAnalyticsPanel({ analytics, onLoadAnalytics }: { analytics: SalesAnalytics | null; onLoadAnalytics: (params?: { start?: string; end?: string; granularity?: 'day' | 'month' | 'year' }) => Promise<void> }) {
+  if (!analytics) return <LoadingState label="Loading sales analytics..." />;
+  const key = `${analytics.date_bounds.start || ''}-${analytics.date_bounds.end || ''}-${analytics.date_bounds.granularity}`;
+  return <SalesAnalyticsContent key={key} analytics={analytics} onLoadAnalytics={onLoadAnalytics} />;
+}
+
+function SalesAnalyticsContent({ analytics, onLoadAnalytics }: { analytics: SalesAnalytics; onLoadAnalytics: (params?: { start?: string; end?: string; granularity?: 'day' | 'month' | 'year' }) => Promise<void> }) {
+  const bounds = analytics.date_bounds;
+  const oldest = bounds.oldest_sale_date || '';
+  const latest = bounds.latest_sale_date || '';
+  const [start, setStart] = useState(bounds.start || oldest);
+  const [end, setEnd] = useState(bounds.end || latest);
+  const [granularity, setGranularity] = useState<'day' | 'month' | 'year'>(bounds.granularity || 'month');
+  const rangeLabel = start && end ? `${shortDate(start)} to ${shortDate(end)}` : 'No sales dates available';
+  const selectedTitle = granularity === 'day' ? 'Selected daily sales' : granularity === 'month' ? 'Selected monthly sales' : 'Selected yearly sales';
+  const selectedFormatter = (value: string) => {
+    if (granularity === 'day') return shortDate(value);
+    if (granularity === 'month') return new Intl.DateTimeFormat('en-PK', { month: 'short', year: 'numeric' }).format(new Date(value));
+    return new Intl.DateTimeFormat('en-PK', { year: 'numeric' }).format(new Date(value));
+  };
+  return (
+    <div className="sales-analytics">
+      <div className="analytics-hero">
+        <div>
+          <p className="eyebrow">Sales performance</p>
+          <h3>{money(analytics.totals.total_amount)}</h3>
+          <span>{analytics.totals.sale_count} completed sale{analytics.totals.sale_count === 1 ? '' : 's'} tracked across daily, monthly, and yearly periods.</span>
+        </div>
+        <div className="analytics-split">
+          <Metric compact label="Cash" value={money(analytics.totals.cash_amount)} tone="success" />
+          <Metric compact label="Credit" value={money(analytics.totals.credit_amount)} tone="warning" />
+        </div>
+      </div>
+      <div className="analytics-controls">
+        <div className="field">
+          <label htmlFor="analytics_start">Start date</label>
+          <input id="analytics_start" type="date" value={start} min={oldest} max={end || latest} onChange={(event) => setStart(event.currentTarget.value)} />
+        </div>
+        <div className="field">
+          <label htmlFor="analytics_end">End date</label>
+          <input id="analytics_end" type="date" value={end} min={start || oldest} max={latest} onChange={(event) => setEnd(event.currentTarget.value)} />
+        </div>
+        <Select name="analytics_granularity" label="View by" value={granularity} onChange={(value) => setGranularity(value as 'day' | 'month' | 'year')} options={[['day', 'Daily'], ['month', 'Monthly'], ['year', 'Yearly']]} />
+        <button
+          className="btn primary analytics-apply"
+          onClick={(event) => {
+            event.preventDefault();
+            void onLoadAnalytics({ start, end, granularity });
+          }}
+          disabled={!oldest || !latest}
+        >
+          Apply range
+        </button>
+      </div>
+      <article className="analytics-card featured-chart">
+        <div className="section-head slim">
+          <div>
+            <h3>{selectedTitle}</h3>
+            <p className="muted">{rangeLabel}</p>
+          </div>
+          <span className="badge">{analytics.selected.length} periods</span>
+        </div>
+        <SalesBarChart title="" buckets={analytics.selected} periodFormatter={selectedFormatter} compact />
+      </article>
+      <div className="analytics-grid">
+        <SalesBarChart title="Daily sales" buckets={analytics.daily} periodFormatter={(value) => shortDate(value)} />
+        <SalesBarChart title="Monthly sales" buckets={analytics.monthly} periodFormatter={(value) => new Intl.DateTimeFormat('en-PK', { month: 'short', year: 'numeric' }).format(new Date(value))} />
+        <SalesBarChart title="Yearly sales" buckets={analytics.yearly} periodFormatter={(value) => new Intl.DateTimeFormat('en-PK', { year: 'numeric' }).format(new Date(value))} />
+      </div>
+    </div>
+  );
+}
+
+function SalesBarChart({ title, buckets, periodFormatter, compact = false }: { title: string; buckets: SalesAnalytics['daily']; periodFormatter: (value: string) => string; compact?: boolean }) {
+  const max = Math.max(...buckets.map((bucket) => Number(bucket.total_amount)), 1);
+  return (
+    <article className={compact ? 'analytics-card chart-only' : 'analytics-card'}>
+      {title ? <div className="section-head slim">
+        <h3>{title}</h3>
+        <span className="badge">{buckets.length} periods</span>
+      </div> : null}
+      <div className="bar-list">
+        {buckets.length === 0 ? <div className="empty-state"><Search size={22} /> No sales in this range.</div> : null}
+        {buckets.map((bucket) => {
+          const width = Math.max((Number(bucket.total_amount) / max) * 100, 4);
+          return (
+            <div className="bar-row" key={bucket.period}>
+              <span>{periodFormatter(bucket.period)}</span>
+              <div className="bar-track"><i style={{ width: `${width}%` }} /></div>
+              <strong>{money(bucket.total_amount)}</strong>
+              <small>{bucket.count} sale{bucket.count === 1 ? '' : 's'}</small>
+            </div>
+          );
+        })}
+      </div>
+    </article>
   );
 }
 
@@ -1193,12 +1406,8 @@ function CustomerForm({ customer, onSave, isSaving }: { customer?: Customer; onS
       <Field name="name" label="Customer name" defaultValue={customer?.name} required />
       <PhoneField value={phone} onChange={(value) => setPhone(value || '')} />
       <Select name="customer_type" label="Customer type" defaultValue={customer?.customer_type || 'individual'} options={[['individual', 'Individual'], ['business', 'Business']]} />
-      {!customer ? (
-        <>
-          <Field name="opening_balance" label="Opening balance" type="number" defaultValue="0.00" min="0" step="0.01" />
-          <Select name="opening_balance_direction" label="Opening balance direction" defaultValue="receivable" options={[['receivable', 'Customer owes ZSP'], ['credit', 'Customer has advance/credit']]} />
-        </>
-      ) : null}
+      <Field name="opening_balance" label="Opening balance" type="number" defaultValue={customer?.opening_balance ?? '0.00'} min="0" step="0.01" />
+      <Select name="opening_balance_direction" label="Opening balance direction" defaultValue={customer?.opening_balance_direction || 'receivable'} options={[['receivable', 'Customer owes ZSP'], ['credit', 'Customer has advance/credit']]} />
       <Field name="email" label="Email" type="email" defaultValue={customer?.email} />
       <Field name="cnic_or_tax_id" label="CNIC / tax ID" defaultValue={customer?.cnic_or_tax_id} />
       <Select name="is_active" label="Status" defaultValue={String(customer?.is_active ?? true)} options={[['true', 'Active'], ['false', 'Inactive']]} required />
