@@ -10,8 +10,15 @@ from django.utils import timezone
 from accounts.models import UserProfile
 from accounts.permissions import AccessLevel, full_tab_permissions
 from catalog.models import DropdownOption
-from finance.models import Cheque, ChequeStatus
-from finance.services import change_cheque_status, create_cheque
+from finance.models import (
+    Cheque,
+    ChequeStatus,
+    Currency,
+    CurrencyPurchase,
+    CustomerPayment,
+    CustomerPaymentComponent,
+)
+from finance.services import change_cheque_status, create_cheque, record_customer_payment
 from operations.models import AuctionSale, Container, ContainerItem, Customer, PartInventory
 from operations.services import apply_container_inventory_delta, create_auction_sale, create_subparts, is_container_cost_locked, recalculate_container_net_costs
 
@@ -61,6 +68,9 @@ class Command(BaseCommand):
         self._seed_dropdown_options(admin)
 
         self._seed_operational_demo(admin)
+
+        self._seed_customer_payments(admin)
+        self._seed_currency_portfolio(admin)
 
         self.stdout.write(self.style.SUCCESS('Seeded Digi7 ZSP demo data. Login: admin / Admin@12345'))
 
@@ -523,3 +533,103 @@ class Command(BaseCommand):
                     label=label,
                     defaults={'is_system': True, 'sort_order': index, 'created_by': admin, 'updated_by': admin},
                 )
+
+    def _seed_customer_payments(self, admin):
+        today = timezone.localdate()
+        customers = {
+            customer.name: customer
+            for customer in Customer.objects.filter(
+                name__in=['Ahsan Toufiq', 'Lahore Spare Traders', 'Rawalpindi Autos'],
+            )
+        }
+        payment_specs = [
+            {
+                'reference': 'DEMO-PAY-CASH-001',
+                'customer': customers.get('Ahsan Toufiq'),
+                'payment_date': today - timedelta(days=7),
+                'notes': 'Demo cash receipt allocated to the oldest outstanding sale.',
+                'components': [
+                    {'method': CustomerPaymentComponent.Method.CASH, 'amount': Decimal('5000.00')},
+                ],
+            },
+            {
+                'reference': 'DEMO-PAY-SPLIT-001',
+                'customer': customers.get('Lahore Spare Traders'),
+                'payment_date': today - timedelta(days=2),
+                'notes': 'Demo split receipt with cash, bank transfer, and a pending cheque.',
+                'components': [
+                    {'method': CustomerPaymentComponent.Method.CASH, 'amount': Decimal('25000.00')},
+                    {
+                        'method': CustomerPaymentComponent.Method.BANK_TRANSFER,
+                        'amount': Decimal('15000.00'),
+                        'bank_name': 'Meezan Bank Limited',
+                        'reference': 'IBFT-DEMO-1001',
+                    },
+                    {
+                        'method': CustomerPaymentComponent.Method.CHEQUE,
+                        'amount': Decimal('20000.00'),
+                        'cheque': {
+                            'cheque_number': 'ZSP-PAY-CHQ-001',
+                            'name_on_cheque': 'Lahore Spare Traders',
+                            'bank_name': 'Habib Bank Limited',
+                            'branch_name': 'Gulberg',
+                            'account_title': 'Lahore Spare Traders',
+                            'cheque_date': today + timedelta(days=2),
+                            'expiry_date': today + timedelta(days=45),
+                            'received_date': today - timedelta(days=2),
+                            'notes': 'Pending cheque component from a demo split payment.',
+                        },
+                    },
+                ],
+            },
+            {
+                'reference': 'DEMO-PAY-WRITEOFF-001',
+                'customer': customers.get('Rawalpindi Autos'),
+                'payment_date': today - timedelta(days=1),
+                'notes': 'Demo approved balance adjustment; this is not money received.',
+                'components': [
+                    {
+                        'method': CustomerPaymentComponent.Method.WRITE_OFF,
+                        'amount': Decimal('1000.00'),
+                        'notes': 'Approved small-balance write-off.',
+                    },
+                ],
+            },
+        ]
+        for spec in payment_specs:
+            if spec['customer'] is None or CustomerPayment.objects.filter(reference=spec['reference']).exists():
+                continue
+            record_customer_payment(user=admin, **spec)
+
+    def _seed_currency_portfolio(self, admin):
+        today = timezone.localdate()
+        purchase_specs = [
+            ('USD', 'DEMO-FX-USD-001', 24, '5000.0000', '278.250000', 'Dollar East'),
+            ('USD', 'DEMO-FX-USD-002', 14, '3500.0000', '281.100000', 'Bank transfer desk'),
+            ('USD', 'DEMO-FX-USD-003', 4, '2000.0000', '279.750000', 'Open market dealer'),
+            ('AED', 'DEMO-FX-AED-001', 20, '12000.0000', '75.800000', 'Exchange company'),
+            ('AED', 'DEMO-FX-AED-002', 6, '8000.0000', '76.150000', 'Bank transfer desk'),
+            ('EUR', 'DEMO-FX-EUR-001', 11, '1800.0000', '304.500000', 'Exchange company'),
+            ('GBP', 'DEMO-FX-GBP-001', 8, '1250.0000', '356.200000', 'Open market dealer'),
+        ]
+        currencies = Currency.objects.in_bulk(field_name='code')
+        for code, reference, days_ago, amount, rate, source in purchase_specs:
+            currency = currencies.get(code)
+            if currency is None:
+                continue
+            amount_value = Decimal(amount)
+            rate_value = Decimal(rate)
+            CurrencyPurchase.objects.get_or_create(
+                reference=reference,
+                defaults={
+                    'currency': currency,
+                    'purchase_date': today - timedelta(days=days_ago),
+                    'amount': amount_value,
+                    'acquisition_rate': rate_value,
+                    'total_cost': (amount_value * rate_value).quantize(Decimal('0.01')),
+                    'source': source,
+                    'notes': 'Seeded local currency acquisition lot.',
+                    'created_by': admin,
+                    'updated_by': admin,
+                },
+            )

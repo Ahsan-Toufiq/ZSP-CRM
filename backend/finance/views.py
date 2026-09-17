@@ -9,7 +9,16 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
 from accounts.permissions import DashboardPermission, FinancePermission, has_tab_access
-from finance.models import Cheque, ChequeSettlementAllocation, ChequeStatus, Currency, CurrencyPurchase, CustomerLedgerEntry, CustomerPayment
+from finance.models import (
+    Cheque,
+    ChequeSettlementAllocation,
+    ChequeStatus,
+    Currency,
+    CurrencyPurchase,
+    CustomerLedgerEntry,
+    CustomerPayment,
+    CustomerPaymentAllocation,
+)
 from finance.reporting import (
     build_credit_report,
     build_customer_statement,
@@ -118,12 +127,14 @@ class CustomerBalanceViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         sale_lines = AuctionSaleLine.objects.select_related('item', 'inventory_batch', 'inventory_batch__container')
         allocations = ChequeSettlementAllocation.objects.select_related('cheque', 'sale')
+        payment_allocations = CustomerPaymentAllocation.objects.select_related('component__payment', 'sale')
         sales = (
             AuctionSale.objects
             .filter(is_cancelled=False)
             .prefetch_related(
                 Prefetch('lines', queryset=sale_lines),
                 Prefetch('cheque_allocations', queryset=allocations),
+                Prefetch('payment_allocations', queryset=payment_allocations),
             )
             .order_by('sale_date', 'created_at')
         )
