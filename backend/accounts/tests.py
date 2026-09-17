@@ -1,4 +1,7 @@
+from importlib import import_module
+
 import pytest
+from django.apps import apps as django_apps
 from django.contrib.auth.models import User
 from django.core.management import call_command
 from rest_framework.test import APIClient
@@ -302,3 +305,26 @@ def test_reset_zsp_production_data_keeps_only_handover_users_and_configuration(m
     assert DropdownOption.objects.filter(group=DropdownOption.Group.PART_NAME).count() == 0
     assert DropdownOption.objects.filter(group=DropdownOption.Group.BANK, label='Demo Bank', created_by=admin, updated_by=admin).exists()
     assert ChequeStatus.objects.filter(name='Pending', balance_effect=ChequeStatus.BalanceEffect.NONE, created_by=admin).exists()
+
+
+@pytest.mark.django_db
+def test_currency_permission_backfill_only_updates_handover_accounts():
+    client_user = User.objects.create_user(username='syed.zulfiqar', password='StrongPass123!')
+    client_profile = UserProfile.objects.create(
+        user=client_user,
+        tab_permissions={'dashboard': AccessLevel.FULL, 'users': AccessLevel.NONE},
+    )
+    restricted_user = User.objects.create_user(username='restricted-user', password='StrongPass123!')
+    restricted_profile = UserProfile.objects.create(
+        user=restricted_user,
+        tab_permissions={'dashboard': AccessLevel.VIEW},
+    )
+
+    migration = import_module('accounts.migrations.0003_grant_currency_access_to_handover_users')
+    migration.grant_currency_access(django_apps, None)
+
+    client_profile.refresh_from_db()
+    restricted_profile.refresh_from_db()
+    assert client_profile.tab_permissions['currency'] == AccessLevel.FULL
+    assert client_profile.tab_permissions['users'] == AccessLevel.NONE
+    assert 'currency' not in restricted_profile.tab_permissions

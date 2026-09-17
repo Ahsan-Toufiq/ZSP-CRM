@@ -144,6 +144,25 @@ def test_customer_cheque_payment_creates_pending_cheque_without_ledger_credit(ap
 
 
 @pytest.mark.django_db
+def test_customer_write_off_requires_an_explicit_reason(api_client):
+    customer = Customer.objects.create(name='Adjustment Customer', phone='+923001113334')
+
+    response = api_client.post(
+        '/api/finance/customer-payments/',
+        {
+            'customer': str(customer.id),
+            'payment_date': str(timezone.localdate()),
+            'components': [{'method': 'write_off', 'amount': '500.00', 'notes': ''}],
+        },
+        format='json',
+    )
+
+    assert response.status_code == 400
+    assert 'notes' in response.data['components'][0]
+    assert not CustomerPayment.objects.filter(customer=customer).exists()
+
+
+@pytest.mark.django_db
 def test_customer_statement_pdf_exports_customer_history(api_client):
     customer = Customer.objects.create(name='Statement Customer', phone='+923001114444')
     CustomerLedgerEntry.objects.create(

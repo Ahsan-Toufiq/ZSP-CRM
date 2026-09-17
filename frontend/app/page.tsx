@@ -1804,9 +1804,16 @@ function CustomerPaymentForm({ customer, customers, banks, onSave, isSaving }: {
   const [customerId, setCustomerId] = useState(customer?.id || '');
   const [components, setComponents] = useState<PaymentComponentDraft[]>([{ key: crypto.randomUUID(), method: 'cash', amount: '' }]);
   const total = components.reduce((sum, component) => sum + Number(component.amount || 0), 0);
+  const selectedCustomerName = customers.find((item) => item.id === customerId)?.name || '';
   const updateComponent = (key: string, updates: Partial<PaymentComponentDraft>) => setComponents((rows) => rows.map((row) => row.key === key ? { ...row, ...updates } : row));
   const addComponent = () => setComponents((rows) => [...rows, { key: crypto.randomUUID(), method: 'cash', amount: '' }]);
   const removeComponent = (key: string) => setComponents((rows) => rows.length === 1 ? rows : rows.filter((row) => row.key !== key));
+  const methodLabels: Record<PaymentComponentDraft['method'], string> = {
+    cash: 'Cash',
+    bank_transfer: 'Bank transfer',
+    cheque: 'Cheque',
+    write_off: 'Write-off / adjustment',
+  };
   return (
     <FormFrame
       title={customer ? `Record payment - ${customer.name}` : 'Record customer payment'}
@@ -1848,18 +1855,28 @@ function CustomerPaymentForm({ customer, customers, banks, onSave, isSaving }: {
       <Select name="customer" label="Customer" value={customerId} onChange={setCustomerId} options={customers.map((item) => [item.id, item.name])} required />
       <Field name="payment_date" label="Payment date" type="date" defaultValue={pakistanLocalDate()} required />
       <Field name="reference" label="Overall reference" />
-      <div className="subform full-span">
-        <div className="inline-between"><h3>Payment split</h3><button type="button" className="btn small" onClick={addComponent}><Plus size={16} /> Method</button></div>
-        {components.map((component) => (
-          <div className="payment-component-grid" key={component.key}>
+      <section className="payment-builder full-span" aria-label="Payment methods">
+        <div className="payment-builder-head">
+          <div><h3>Payment details</h3><p>Use one method or combine several for a split payment.</p></div>
+          <button type="button" className="btn small" onClick={addComponent}><Plus size={16} /> Add method</button>
+        </div>
+        <div className="payment-method-list">
+        {components.map((component, index) => (
+          <article className="payment-method-card" key={component.key}>
+            <header className="payment-method-header">
+              <div className="payment-method-title"><span>{index + 1}</span><div><strong>{methodLabels[component.method]}</strong><small>{components.length > 1 ? `Split component ${index + 1}` : 'Primary payment method'}</small></div></div>
+              {components.length > 1 ? <button type="button" className="icon-btn danger" onClick={() => removeComponent(component.key)} aria-label={`Remove ${methodLabels[component.method]} method`}><Trash2 size={16} /></button> : null}
+            </header>
+            <div className={`payment-method-fields ${component.method}`}>
             <Select name={`method_${component.key}`} label="Method" value={component.method} onChange={(value) => updateComponent(component.key, { method: value as PaymentComponentDraft['method'] })} options={[['cash', 'Cash'], ['bank_transfer', 'Bank transfer'], ['cheque', 'Cheque'], ['write_off', 'Write-off / adjustment']]} required />
             <Field name={`amount_${component.key}`} label="Amount" type="number" value={component.amount} onChange={(value) => updateComponent(component.key, { amount: value })} min="0.01" step="0.01" required />
-            {component.method === 'bank_transfer' || component.method === 'cheque' ? <OptionText name={`bank_name_${component.key}`} label="Bank" options={banks} required /> : <Field name={`bank_name_${component.key}`} label="Bank" disabled />}
-            {component.method !== 'cheque' ? <Field name={`reference_${component.key}`} label="Reference" /> : null}
+            {component.method === 'bank_transfer' || component.method === 'cheque' ? <OptionText name={`bank_name_${component.key}`} label="Bank" options={banks} required showHelper={false} /> : null}
+            {component.method === 'cash' || component.method === 'bank_transfer' ? <Field name={`reference_${component.key}`} label={component.method === 'cash' ? 'Receipt / reference' : 'Transfer reference'} /> : null}
+            </div>
             {component.method === 'cheque' ? (
-              <div className="subform full-span compact-subform">
+              <div className="payment-cheque-fields">
                 <Field name={`cheque_number_${component.key}`} label="Cheque number" required />
-                <Field name={`name_on_cheque_${component.key}`} label="Name on cheque" defaultValue={customers.find((item) => item.id === customerId)?.name || ''} required />
+                <Field name={`name_on_cheque_${component.key}`} label="Name on cheque" defaultValue={selectedCustomerName} required />
                 <Field name={`branch_name_${component.key}`} label="Branch" />
                 <Field name={`account_title_${component.key}`} label="Account title" />
                 <Field name={`cheque_date_${component.key}`} label="Cheque date" type="date" required />
@@ -1867,12 +1884,12 @@ function CustomerPaymentForm({ customer, customers, banks, onSave, isSaving }: {
                 <Field name={`received_date_${component.key}`} label="Received date" type="date" />
               </div>
             ) : null}
-            <Field name={`notes_${component.key}`} label={component.method === 'write_off' ? 'Adjustment reason' : 'Notes'} />
-            <button type="button" className="icon-btn danger" onClick={() => removeComponent(component.key)} aria-label="Remove payment method"><Trash2 size={16} /></button>
-          </div>
+            {component.method === 'write_off' ? <Field name={`notes_${component.key}`} label="Adjustment reason" textarea required /> : <Field name={`notes_${component.key}`} label={component.method === 'cheque' ? 'Cheque notes' : 'Notes'} />}
+          </article>
         ))}
-        <div className="total-bar"><span>Total recorded</span><strong>{money(total)}</strong></div>
-      </div>
+        </div>
+        <div className="total-bar" aria-live="polite"><span>Total recorded</span><strong>{money(total)}</strong></div>
+      </section>
       <Field name="notes" label="Overall notes" textarea />
     </FormFrame>
   );
@@ -1996,7 +2013,7 @@ function PermissionMatrix({ defaults }: { defaults: Record<string, AccessLevel |
   return <fieldset className="permission-grid"><legend>Module permissions</legend>{tabOptions.map((tab) => <div className="permission-row" key={tab.id}><span>{tab.label}</span><div className="permission-options">{accessOptions.map((option) => <label key={option.id} className={defaults[tab.id] === option.id ? 'selected' : ''}><input type="radio" name={`tab_permission_${tab.id}`} value={option.id} defaultChecked={(defaults[tab.id] || 'none') === option.id} />{option.label}</label>)}</div></div>)}</fieldset>;
 }
 
-function OptionText({ name, label, options, required = false, defaultValue = '', value, onChange, disabled = false, featuredOptions = [], relatedOptions = [] }: { name: string; label: string; options: string[]; required?: boolean; defaultValue?: string | null; value?: string; onChange?: (value: string) => void; disabled?: boolean; featuredOptions?: string[]; relatedOptions?: string[] }) {
+function OptionText({ name, label, options, required = false, defaultValue = '', value, onChange, disabled = false, featuredOptions = [], relatedOptions = [], showHelper = true }: { name: string; label: string; options: string[]; required?: boolean; defaultValue?: string | null; value?: string; onChange?: (value: string) => void; disabled?: boolean; featuredOptions?: string[]; relatedOptions?: string[]; showHelper?: boolean }) {
   const featured = new Set(featuredOptions.map((option) => option.toLowerCase()));
   const related = new Set(relatedOptions.map((option) => option.toLowerCase()));
   const comboOptions = options.map((option) => {
@@ -2014,7 +2031,7 @@ function OptionText({ name, label, options, required = false, defaultValue = '',
     if (firstRelated !== secondRelated) return firstRelated ? -1 : 1;
     return first.label.localeCompare(second.label);
   });
-  return <ComboBox name={name} label={label} options={comboOptions} required={required} defaultValue={defaultValue} value={value} onChange={onChange} allowCustom disabled={disabled} helper="Type a new value here and it will be saved for future entries." />;
+  return <ComboBox name={name} label={label} options={comboOptions} required={required} defaultValue={defaultValue} value={value} onChange={onChange} allowCustom disabled={disabled} helper={showHelper ? 'Type a new value here and it will be saved for future entries.' : undefined} />;
 }
 
 function ComboBox({

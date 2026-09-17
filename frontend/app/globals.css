@@ -1637,20 +1637,112 @@ td select {
   gap: 12px;
 }
 
-.payment-component-grid {
+.payment-builder {
   display: grid;
-  grid-template-columns: minmax(150px, 0.9fr) minmax(130px, 0.7fr) minmax(160px, 1fr) minmax(160px, 1fr) auto;
-  gap: 12px;
-  align-items: end;
-  padding: 12px;
+  gap: 16px;
+  padding: 16px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #fbfdfc;
+  background: #f4f9f7;
 }
 
-.compact-subform {
-  grid-column: 1 / -1;
+.payment-builder-head,
+.payment-method-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.payment-builder-head h3,
+.payment-builder-head p {
+  margin: 0;
+}
+
+.payment-builder-head p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.payment-method-list {
+  display: grid;
+  gap: 14px;
+}
+
+.payment-method-card {
+  position: relative;
+  z-index: 0;
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid #d8e3df;
+  border-radius: 8px;
   background: #ffffff;
+  box-shadow: 0 8px 22px rgba(16, 36, 34, 0.06);
+}
+
+.payment-method-card:focus-within {
+  z-index: 4;
+  border-color: rgba(19, 127, 116, 0.48);
+  box-shadow: 0 0 0 3px rgba(19, 127, 116, 0.08), 0 12px 28px rgba(16, 36, 34, 0.08);
+}
+
+.payment-method-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.payment-method-title > span {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  place-items: center;
+  border-radius: 50%;
+  background: #dff3ee;
+  color: var(--brand-dark);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.payment-method-title div {
+  display: grid;
+  gap: 2px;
+}
+
+.payment-method-title small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.payment-method-fields,
+.payment-cheque-fields {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.payment-method-fields.cash {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.payment-method-fields.cheque {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.payment-method-fields.write_off {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.payment-cheque-fields {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 14px;
+  border: 1px solid #e1e9e6;
+  border-radius: 8px;
+  background: #f8fbfa;
 }
 
 @media (max-width: 980px) {
@@ -1679,7 +1771,8 @@ td select {
   .analytics-grid,
   .analytics-split,
   .analytics-controls,
-  .payment-component-grid,
+  .payment-method-fields,
+  .payment-cheque-fields,
   .export-choice-grid,
   .download-format-grid,
   .login-card {
@@ -1715,8 +1808,19 @@ td select {
   .source-line-grid,
   .subpart-line-grid,
   .identity-picker,
+  .payment-method-fields,
+  .payment-cheque-fields,
   .check-group {
     grid-template-columns: 1fr;
+  }
+
+  .payment-builder-head,
+  .payment-method-header {
+    align-items: stretch;
+  }
+
+  .payment-builder-head {
+    display: grid;
   }
 
   .record-main {

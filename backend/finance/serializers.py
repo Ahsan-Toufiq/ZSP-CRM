@@ -180,6 +180,8 @@ class CustomerPaymentComponentWriteSerializer(serializers.Serializer):
             raise serializers.ValidationError({'bank_name': 'Bank name is required for bank transfers.'})
         if method == CustomerPaymentComponent.Method.CHEQUE and not attrs.get('cheque'):
             raise serializers.ValidationError({'cheque': 'Cheque details are required for cheque payments.'})
+        if method == CustomerPaymentComponent.Method.WRITE_OFF and not attrs.get('notes', '').strip():
+            raise serializers.ValidationError({'notes': 'An adjustment reason is required for write-offs.'})
         return attrs
 
 
