@@ -9,7 +9,17 @@ from accounts.permissions import AccessLevel, ALL_TABS, PERMANENT_ADMIN_USERNAME
 from accounts.serializers import enforce_permanent_admin
 from audit.models import AuditLog
 from catalog.models import DropdownOption
-from finance.models import Cheque, ChequeSettlementAllocation, ChequeStatus, ChequeStatusHistory, CustomerLedgerEntry
+from finance.models import (
+    Cheque,
+    ChequeSettlementAllocation,
+    ChequeStatus,
+    ChequeStatusHistory,
+    CurrencyPurchase,
+    CustomerLedgerEntry,
+    CustomerPayment,
+    CustomerPaymentAllocation,
+    CustomerPaymentComponent,
+)
 from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass, GatePassLine, InventoryBatch, PartInventory
 
 
@@ -80,6 +90,9 @@ class Command(BaseCommand):
         ChequeSettlementAllocation.objects.all().delete()
         ChequeStatusHistory.objects.all().delete()
         CustomerLedgerEntry.objects.all().delete()
+        CustomerPaymentAllocation.objects.all().delete()
+        CustomerPaymentComponent.objects.all().delete()
+        CustomerPayment.objects.all().delete()
         Cheque.objects.all().delete()
         AuctionSaleLine.objects.all().delete()
         AuctionSale.objects.all().delete()
@@ -89,6 +102,7 @@ class Command(BaseCommand):
         PartInventory.objects.all().delete()
         Container.objects.all().delete()
         Customer.objects.all().delete()
+        CurrencyPurchase.objects.all().delete()
         AuditLog.objects.all().delete()
 
     def _upsert_admin(self, password):

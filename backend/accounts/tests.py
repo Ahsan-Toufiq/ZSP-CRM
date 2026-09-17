@@ -7,7 +7,7 @@ from accounts.models import UserProfile
 from accounts.permissions import AccessLevel, full_tab_permissions
 from audit.models import AuditLog
 from catalog.models import DropdownOption
-from finance.models import ChequeStatus
+from finance.models import ChequeStatus, Currency, CurrencyPurchase, CustomerPayment
 from operations.models import Container, ContainerItem, Customer, PartInventory
 
 
@@ -233,6 +233,25 @@ def test_reset_zsp_production_data_keeps_only_handover_users_and_configuration(m
     dummy = User.objects.create_user(username='demo-operator', password='StrongPass123!')
     UserProfile.objects.create(user=dummy, tab_permissions=full_tab_permissions())
     customer = Customer.objects.create(name='Demo Customer', phone='+923001234567', created_by=dummy, updated_by=dummy)
+    CustomerPayment.objects.create(
+        payment_number='PAY-RESET-TEST',
+        customer=customer,
+        payment_date='2026-09-18',
+        kind=CustomerPayment.PaymentKind.CASH,
+        total_amount='100.00',
+        created_by=dummy,
+        updated_by=dummy,
+    )
+    currency = Currency.objects.get(code='USD')
+    CurrencyPurchase.objects.create(
+        currency=currency,
+        purchase_date='2026-09-18',
+        amount='10.0000',
+        acquisition_rate='280.000000',
+        total_cost='2800.00',
+        created_by=dummy,
+        updated_by=dummy,
+    )
     container = Container.objects.create(reference='DEMO-CNTR', created_by=dummy, updated_by=dummy)
     parent = ContainerItem.objects.create(
         container=container,
@@ -278,6 +297,8 @@ def test_reset_zsp_production_data_keeps_only_handover_users_and_configuration(m
     assert Container.objects.count() == 0
     assert ContainerItem.objects.count() == 0
     assert PartInventory.objects.count() == 0
+    assert CustomerPayment.objects.count() == 0
+    assert CurrencyPurchase.objects.count() == 0
     assert DropdownOption.objects.filter(group=DropdownOption.Group.PART_NAME).count() == 0
     assert DropdownOption.objects.filter(group=DropdownOption.Group.BANK, label='Demo Bank', created_by=admin, updated_by=admin).exists()
     assert ChequeStatus.objects.filter(name='Pending', balance_effect=ChequeStatus.BalanceEffect.NONE, created_by=admin).exists()
