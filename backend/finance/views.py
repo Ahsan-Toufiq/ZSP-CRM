@@ -9,15 +9,26 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
 from accounts.permissions import DashboardPermission, FinancePermission, has_tab_access
-from finance.models import Cheque, ChequeSettlementAllocation, ChequeStatus, CustomerLedgerEntry
-from finance.reporting import build_credit_report, credit_report_csv_response, credit_report_payload, credit_report_pdf_response
+from finance.models import Cheque, ChequeSettlementAllocation, ChequeStatus, Currency, CurrencyPurchase, CustomerLedgerEntry, CustomerPayment
+from finance.reporting import (
+    build_credit_report,
+    build_customer_statement,
+    credit_report_csv_response,
+    credit_report_payload,
+    credit_report_pdf_response,
+    customer_statement_pdf_response,
+)
 from finance.serializers import (
     ChequeSerializer,
     ChequeStatusChangeSerializer,
     ChequeStatusHistorySerializer,
     ChequeStatusSerializer,
+    CurrencyPurchaseSerializer,
+    CurrencySerializer,
     CustomerBalanceSerializer,
     CustomerLedgerEntrySerializer,
+    CustomerPaymentCreateSerializer,
+    CustomerPaymentSerializer,
 )
 from operations.models import AuctionSale, AuctionSaleLine, Container, Customer, GatePass, PartInventory
 
@@ -65,8 +76,32 @@ class ChequeViewSet(viewsets.ModelViewSet):
         return Response(ChequeStatusHistorySerializer(history, many=True).data)
 
 
+class CustomerPaymentViewSet(viewsets.ModelViewSet):
+    http_method_names = ['get', 'post', 'head', 'options']
+    permission_classes = [FinancePermission]
+    filterset_fields = ['customer', 'kind', 'payment_date']
+    search_fields = ['payment_number', 'customer__name', 'reference', 'notes', 'components__cheque__cheque_number']
+    ordering_fields = ['payment_date', 'created_at', 'total_amount']
+
+    def get_queryset(self):
+        return (
+            CustomerPayment.objects
+            .select_related('customer')
+            .prefetch_related(
+                'components__cheque__status',
+                'components__allocations__sale',
+            )
+            .order_by('-payment_date', '-created_at')
+        )
+
+    def get_serializer_class(self):
+        if self.action in {'create', 'update', 'partial_update'}:
+            return CustomerPaymentCreateSerializer
+        return CustomerPaymentSerializer
+
+
 class LedgerEntryViewSet(UserStampedMixin, viewsets.ReadOnlyModelViewSet):
-    queryset = CustomerLedgerEntry.objects.select_related('customer', 'sale', 'cheque')
+    queryset = CustomerLedgerEntry.objects.select_related('customer', 'sale', 'cheque', 'payment')
     serializer_class = CustomerLedgerEntrySerializer
     permission_classes = [FinancePermission]
     filterset_fields = ['customer', 'entry_type', 'sale', 'cheque']
@@ -110,6 +145,28 @@ class CustomerBalanceViewSet(viewsets.ReadOnlyModelViewSet):
             .prefetch_related(Prefetch('auction_sales', queryset=sales))
             .order_by('name')
         )
+
+
+class CurrencyViewSet(UserStampedMixin, viewsets.ModelViewSet):
+    serializer_class = CurrencySerializer
+    permission_classes = [FinancePermission]
+    filterset_fields = ['is_active']
+    search_fields = ['code', 'name', 'symbol']
+    ordering_fields = ['code', 'name']
+
+    def get_queryset(self):
+        return Currency.objects.prefetch_related('purchases').order_by('code')
+
+
+class CurrencyPurchaseViewSet(UserStampedMixin, viewsets.ModelViewSet):
+    serializer_class = CurrencyPurchaseSerializer
+    permission_classes = [FinancePermission]
+    filterset_fields = ['currency', 'purchase_date']
+    search_fields = ['currency__code', 'currency__name', 'source', 'reference', 'notes']
+    ordering_fields = ['purchase_date', 'amount', 'total_cost', 'acquisition_rate']
+
+    def get_queryset(self):
+        return CurrencyPurchase.objects.select_related('currency').order_by('-purchase_date', '-created_at')
 
 
 @api_view(['GET'])
@@ -189,3 +246,11 @@ def credit_report(request):
     if export_format == 'pdf':
         return credit_report_pdf_response(report)
     return Response(credit_report_payload(report))
+
+
+@api_view(['GET'])
+def customer_statement(request, customer_id):
+    if not has_tab_access(request.user, 'customers'):
+        raise PermissionDenied('You do not have access to customer statements.')
+    report = build_customer_statement(customer_id=customer_id)
+    return customer_statement_pdf_response(report)

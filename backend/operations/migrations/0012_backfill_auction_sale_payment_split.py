@@ -26,6 +26,7 @@ def clear_payment_split(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
+        ('finance', '0006_chequesettlementallocation'),
         ('operations', '0011_auctionsale_cash_amount_auctionsale_credit_amount'),
     ]
 

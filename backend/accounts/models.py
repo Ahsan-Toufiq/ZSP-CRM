@@ -9,6 +9,7 @@ class UserProfile(models.Model):
         CONTAINERS = 'containers', 'Containers and inventory'
         SALES = 'sales', 'Auction sales'
         CHEQUES = 'cheques', 'Cheques'
+        CURRENCY = 'currency', 'Currency portfolio'
         SETTINGS = 'settings', 'Dropdown settings'
         USERS = 'users', 'Users'
 

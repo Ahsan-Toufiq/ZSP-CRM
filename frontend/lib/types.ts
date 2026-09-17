@@ -227,6 +227,31 @@ export interface ChequeSettlementAllocation {
   created_at: string;
 }
 
+export interface CustomerPaymentComponent {
+  id: UUID;
+  method: 'cash' | 'bank_transfer' | 'cheque' | 'write_off';
+  amount: string;
+  reference: string;
+  bank_name: string;
+  cheque: UUID | null;
+  cheque_number: string;
+  cheque_status: string;
+  notes: string;
+}
+
+export interface CustomerPayment {
+  id: UUID;
+  payment_number: string;
+  customer: UUID;
+  customer_name: string;
+  payment_date: string;
+  kind: string;
+  total_amount: string;
+  reference: string;
+  notes: string;
+  components: CustomerPaymentComponent[];
+}
+
 export interface CreditReportSaleItem {
   part_name: string;
   part_number: string;
@@ -312,7 +337,38 @@ export interface CustomerLedgerEntry {
   sale_number: string | null;
   cheque: UUID | null;
   cheque_number: string | null;
+  payment: UUID | null;
+  payment_number: string | null;
   created_at: string;
+}
+
+export interface Currency {
+  id: UUID;
+  code: string;
+  name: string;
+  symbol: string;
+  is_system: boolean;
+  is_active: boolean;
+  current_amount: string;
+  total_purchased: string;
+  total_spent: string;
+  average_acquisition_rate: string;
+  purchase_count: number;
+}
+
+export interface CurrencyPurchase {
+  id: UUID;
+  currency: UUID;
+  currency_code: string;
+  currency_name: string;
+  currency_symbol: string;
+  purchase_date: string;
+  amount: string;
+  acquisition_rate: string;
+  total_cost: string;
+  source: string;
+  reference: string;
+  notes: string;
 }
 
 export interface DashboardSummary {

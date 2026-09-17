@@ -10,7 +10,7 @@ from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from django.utils import timezone
 
-from finance.models import ChequeSettlementAllocation, CustomerLedgerEntry
+from finance.models import ChequeSettlementAllocation, CustomerLedgerEntry, CustomerPaymentAllocation
 from operations.models import AuctionSale, AuctionSaleLine, Customer
 
 
@@ -26,6 +26,15 @@ AGING_BUCKETS = (
 class CreditReport:
     generated_at: timezone.datetime
     customers: list[dict]
+    totals: dict
+
+
+@dataclass(frozen=True)
+class CustomerStatement:
+    generated_at: timezone.datetime
+    customer: Customer
+    ledger_rows: list[dict]
+    payment_rows: list[dict]
     totals: dict
 
 
@@ -45,12 +54,14 @@ def build_credit_report() -> CreditReport:
     generated_at = timezone.localtime()
     line_queryset = AuctionSaleLine.objects.select_related('item')
     allocation_queryset = ChequeSettlementAllocation.objects.select_related('cheque').filter(is_reversed=False)
+    payment_allocation_queryset = CustomerPaymentAllocation.objects.select_related('component', 'component__payment')
     sales_queryset = (
         AuctionSale.objects
         .filter(is_cancelled=False, customer__isnull=False)
         .prefetch_related(
             Prefetch('lines', queryset=line_queryset),
             Prefetch('cheque_allocations', queryset=allocation_queryset),
+            Prefetch('payment_allocations', queryset=payment_allocation_queryset),
         )
         .order_by('sale_date', 'created_at')
     )
@@ -75,7 +86,9 @@ def build_credit_report() -> CreditReport:
         aging = {key: Decimal('0.00') for key, *_ in AGING_BUCKETS}
         sale_breakdown = []
         for sale in customer.auction_sales.all():
-            allocated = sum((_money(allocation.amount) for allocation in sale.cheque_allocations.all()), Decimal('0.00'))
+            cheque_allocated = sum((_money(allocation.amount) for allocation in sale.cheque_allocations.all()), Decimal('0.00'))
+            payment_allocated = sum((_money(allocation.amount) for allocation in sale.payment_allocations.all()), Decimal('0.00'))
+            allocated = cheque_allocated + payment_allocated
             outstanding = _money(sale.receivable_amount) - allocated
             if outstanding <= 0:
                 continue
@@ -104,10 +117,21 @@ def build_credit_report() -> CreditReport:
                 'settlements': [
                     {
                         'cheque_number': allocation.cheque.cheque_number,
+                        'reference': allocation.cheque.cheque_number,
+                        'method': 'Cheque',
                         'amount': _money(allocation.amount),
                         'created_at': allocation.created_at,
                     }
                     for allocation in sale.cheque_allocations.all()
+                ] + [
+                    {
+                        'cheque_number': '',
+                        'reference': allocation.component.payment.payment_number,
+                        'method': allocation.component.get_method_display(),
+                        'amount': _money(allocation.amount),
+                        'created_at': allocation.created_at,
+                    }
+                    for allocation in sale.payment_allocations.all()
                 ],
             })
 
@@ -141,6 +165,70 @@ def build_credit_report() -> CreditReport:
             'total_outstanding': total_outstanding,
             'customer_credit_balance': total_credit_balance,
             'aging': total_aging,
+        },
+    )
+
+
+def build_customer_statement(*, customer_id) -> CustomerStatement:
+    generated_at = timezone.localtime()
+    customer = Customer.objects.get(id=customer_id)
+    ledger_entries = (
+        CustomerLedgerEntry.objects
+        .filter(customer=customer)
+        .select_related('sale', 'cheque', 'payment')
+        .order_by('entry_date', 'created_at')
+    )
+    running_balance = Decimal('0.00')
+    ledger_rows = []
+    for entry in ledger_entries:
+        running_balance += _money(entry.debit) - _money(entry.credit)
+        ledger_rows.append({
+            'date': entry.entry_date,
+            'type': entry.get_entry_type_display(),
+            'description': entry.description,
+            'debit': _money(entry.debit),
+            'credit': _money(entry.credit),
+            'balance': running_balance,
+            'reference': (
+                entry.sale.sale_number if entry.sale_id else
+                entry.cheque.cheque_number if entry.cheque_id else
+                entry.payment.payment_number if entry.payment_id else
+                '-'
+            ),
+        })
+
+    payments = (
+        customer.payments
+        .prefetch_related('components__cheque__status', 'components__allocations__sale')
+        .order_by('payment_date', 'created_at')
+    )
+    payment_rows = []
+    for payment in payments:
+        for component in payment.components.all():
+            payment_rows.append({
+                'date': payment.payment_date,
+                'payment_number': payment.payment_number,
+                'method': component.get_method_display(),
+                'amount': _money(component.amount),
+                'reference': component.reference or payment.reference or '-',
+                'bank_name': component.bank_name or '-',
+                'cheque_number': component.cheque.cheque_number if component.cheque_id else '-',
+                'cheque_status': component.cheque.status.name if component.cheque_id else '-',
+                'notes': component.notes or payment.notes or '',
+            })
+
+    totals = ledger_entries.aggregate(debit=Sum('debit'), credit=Sum('credit'))
+    debit = _money(totals['debit'])
+    credit = _money(totals['credit'])
+    return CustomerStatement(
+        generated_at=generated_at,
+        customer=customer,
+        ledger_rows=ledger_rows,
+        payment_rows=payment_rows,
+        totals={
+            'debit': debit,
+            'credit': credit,
+            'balance': debit - credit,
         },
     )
 
@@ -292,4 +380,123 @@ def credit_report_pdf_response(report: CreditReport) -> HttpResponse:
 
     response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
     response['Content-Disposition'] = 'attachment; filename="zsp-credit-aging-report.pdf"'
+    return response
+
+
+def customer_statement_pdf_response(statement: CustomerStatement) -> HttpResponse:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=26, bottomMargin=26)
+    styles = getSampleStyleSheet()
+    story = []
+    logo_path = Path(settings.BASE_DIR) / 'static' / 'branding' / 'digi7-logo.png'
+
+    header_data = []
+    if logo_path.exists():
+        header_data.append(Image(str(logo_path), width=0.62 * inch, height=0.62 * inch))
+    else:
+        header_data.append(Paragraph('ZSP', styles['Title']))
+    header_data.append(Paragraph(f'<b>Customer Statement</b><br/>{statement.customer.name}', styles['Title']))
+    header_data.append(Paragraph(f"Statement date<br/><b>{statement.generated_at.strftime('%Y-%m-%d %H:%M:%S %Z')}</b>", styles['Normal']))
+    header = Table([header_data], colWidths=[0.8 * inch, 4.0 * inch, 2.3 * inch])
+    header.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f3faf7')),
+        ('BOX', (0, 0), (-1, -1), 0.8, colors.HexColor('#0f766e')),
+        ('INNERPADDING', (0, 0), (-1, -1), 8),
+    ]))
+    story.extend([header, Spacer(1, 12)])
+
+    customer_info = Table([
+        ['Customer', statement.customer.name, 'Phone', statement.customer.phone],
+        ['Status', 'Active' if statement.customer.is_active else 'Inactive', 'Type', statement.customer.get_customer_type_display()],
+        ['Address', statement.customer.address or '-', 'Notes', statement.customer.notes or '-'],
+    ], colWidths=[0.9 * inch, 2.5 * inch, 0.8 * inch, 2.5 * inch])
+    customer_info.setStyle(TableStyle([
+        ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#d1d5db')),
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f3faf7')),
+        ('BACKGROUND', (2, 0), (2, -1), colors.HexColor('#f3faf7')),
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTNAME', (2, 0), (2, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('INNERPADDING', (0, 0), (-1, -1), 7),
+    ]))
+    story.extend([customer_info, Spacer(1, 10)])
+
+    summary = Table([[
+        'Total debit', f"PKR {statement.totals['debit']:,.2f}",
+        'Total credit', f"PKR {statement.totals['credit']:,.2f}",
+        'Current balance', f"PKR {statement.totals['balance']:,.2f}",
+    ]])
+    summary.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#0f766e')),
+        ('TEXTCOLOR', (0, 0), (-1, -1), colors.white),
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('INNERPADDING', (0, 0), (-1, -1), 7),
+    ]))
+    story.extend([summary, Spacer(1, 12)])
+
+    ledger_rows = [['Date', 'Type', 'Description', 'Reference', 'Debit', 'Credit', 'Balance']]
+    for row in statement.ledger_rows:
+        ledger_rows.append([
+            str(row['date']),
+            row['type'],
+            Paragraph(row['description'], styles['BodyText']),
+            row['reference'],
+            f"PKR {row['debit']:,.2f}",
+            f"PKR {row['credit']:,.2f}",
+            f"PKR {row['balance']:,.2f}",
+        ])
+    if len(ledger_rows) == 1:
+        ledger_rows.append(['No financial activity recorded', '', '', '', '', '', ''])
+    ledger_table = Table(ledger_rows, repeatRows=1, colWidths=[0.78 * inch, 0.9 * inch, 1.75 * inch, 0.9 * inch, 0.85 * inch, 0.85 * inch, 0.95 * inch])
+    ledger_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#111827')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#d1d5db')),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 6.8),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
+    ]))
+    story.extend([Paragraph('<b>Balance Activity</b>', styles['Heading2']), ledger_table, Spacer(1, 12)])
+
+    payment_rows = [['Date', 'Payment', 'Method', 'Amount', 'Bank', 'Cheque / Ref', 'Status']]
+    for row in statement.payment_rows:
+        payment_rows.append([
+            str(row['date']),
+            row['payment_number'],
+            row['method'],
+            f"PKR {row['amount']:,.2f}",
+            row['bank_name'],
+            row['cheque_number'] if row['cheque_number'] != '-' else row['reference'],
+            row['cheque_status'],
+        ])
+    if len(payment_rows) == 1:
+        payment_rows.append(['No direct payments recorded', '', '', '', '', '', ''])
+    payment_table = Table(payment_rows, repeatRows=1, colWidths=[0.8 * inch, 1.12 * inch, 1.1 * inch, 0.95 * inch, 1.0 * inch, 1.05 * inch, 0.9 * inch])
+    payment_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#111827')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#d1d5db')),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 6.8),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
+    ]))
+    story.extend([Paragraph('<b>Payment Details</b>', styles['Heading2']), payment_table])
+    story.append(Spacer(1, 12))
+    story.append(Paragraph('Positive balance means the customer still owes ZSP. Negative balance means the customer has an advance or credit with ZSP.', styles['BodyText']))
+    doc.build(story)
+
+    response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
+    safe_name = ''.join(ch if ch.isalnum() else '-' for ch in statement.customer.name.lower()).strip('-') or 'customer'
+    response['Content-Disposition'] = f'attachment; filename="zsp-customer-statement-{safe_name}.pdf"'
     return response

@@ -14,7 +14,7 @@ class AccessLevel:
     FULL = 'full'
 
 
-ALL_TABS = {'dashboard', 'customers', 'containers', 'sales', 'cheques', 'settings', 'users'}
+ALL_TABS = {'dashboard', 'customers', 'containers', 'sales', 'cheques', 'currency', 'settings', 'users'}
 PERMANENT_ADMIN_USERNAME = 'admin'
 
 VIEW_TAB_MAP = {
@@ -25,8 +25,11 @@ VIEW_TAB_MAP = {
     'AuctionSaleViewSet': 'sales',
     'GatePassViewSet': 'sales',
     'ChequeViewSet': 'cheques',
+    'CustomerPaymentViewSet': 'customers',
     'LedgerEntryViewSet': 'customers',
     'CustomerBalanceViewSet': 'customers',
+    'CurrencyViewSet': 'currency',
+    'CurrencyPurchaseViewSet': 'currency',
     'DropdownOptionViewSet': 'settings',
 }
 

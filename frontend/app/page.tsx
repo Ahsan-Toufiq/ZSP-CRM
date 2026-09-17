@@ -9,6 +9,7 @@ import {
   Container as ContainerIcon,
   FileDown,
   Gavel,
+  Globe2,
   KeyRound,
   LayoutDashboard,
   LogIn,
@@ -36,8 +37,11 @@ import type {
   Container,
   ContainerItem,
   CreditReport,
+  Currency,
+  CurrencyPurchase,
   Customer,
   CustomerLedgerEntry,
+  CustomerPayment,
   DashboardSummary,
   DropdownOption,
   GatePass,
@@ -50,7 +54,7 @@ import type {
   UUID,
 } from '@/lib/types';
 
-type Tab = 'dashboard' | 'customers' | 'containers' | 'sales' | 'cheques' | 'settings' | 'users';
+type Tab = 'dashboard' | 'customers' | 'containers' | 'sales' | 'cheques' | 'currency' | 'settings' | 'users';
 type AccessLevel = 'none' | 'view' | 'full';
 type ModalState =
   | { type: 'customer'; customer?: Customer }
@@ -60,6 +64,9 @@ type ModalState =
   | { type: 'subparts'; parentItem: ContainerItem }
   | { type: 'sale'; sale?: AuctionSale }
   | { type: 'cheque'; cheque?: Cheque }
+  | { type: 'customer-payment'; customer?: Customer }
+  | { type: 'currency'; currency?: Currency }
+  | { type: 'currency-purchase'; purchase?: CurrencyPurchase }
   | { type: 'cheque-status' }
   | { type: 'dropdown-option'; group?: DropdownOption['group'] }
   | { type: 'user'; user?: ManagedUser }
@@ -94,6 +101,11 @@ type SubpartDraft = {
   raw_unit_cost: string;
   description: string;
 };
+type PaymentComponentDraft = {
+  key: string;
+  method: 'cash' | 'bank_transfer' | 'cheque' | 'write_off';
+  amount: string;
+};
 type ComboOption = {
   value: string;
   label: string;
@@ -109,6 +121,7 @@ const tabs: { id: Tab; label: string; icon: ReactNode }[] = [
   { id: 'containers', label: 'Containers & Inventory', icon: <ContainerIcon size={18} /> },
   { id: 'sales', label: 'Auction Sales', icon: <Gavel size={18} /> },
   { id: 'cheques', label: 'Cheques', icon: <WalletCards size={18} /> },
+  { id: 'currency', label: 'Currency Portfolio', icon: <Globe2 size={18} /> },
   { id: 'settings', label: 'Dropdown Settings', icon: <Boxes size={18} /> },
   { id: 'users', label: 'Users', icon: <ShieldCheck size={18} /> },
 ];
@@ -120,6 +133,7 @@ const tabRoutes: Record<Tab, string> = {
   containers: '/containers',
   sales: '/sales',
   cheques: '/cheques',
+  currency: '/currency',
   settings: '/settings',
   users: '/users',
 };
@@ -249,10 +263,13 @@ export default function Home() {
   const [cheques, setCheques] = useState<Cheque[]>([]);
   const [chequeStatuses, setChequeStatuses] = useState<ChequeStatus[]>([]);
   const [ledgerEntries, setLedgerEntries] = useState<CustomerLedgerEntry[]>([]);
+  const [customerPayments, setCustomerPayments] = useState<CustomerPayment[]>([]);
   const [creditReport, setCreditReport] = useState<CreditReport | null>(null);
   const [dropdownOptions, setDropdownOptions] = useState<DropdownOption[]>([]);
   const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([]);
   const [salesAnalytics, setSalesAnalytics] = useState<SalesAnalytics | null>(null);
+  const [currencies, setCurrencies] = useState<Currency[]>([]);
+  const [currencyPurchases, setCurrencyPurchases] = useState<CurrencyPurchase[]>([]);
 
   const availableBatches = useMemo<BatchWithPart[]>(() => parts.flatMap((part) => (part.batches ?? []).map((batch) => ({ ...batch, item_detail: part }))).filter((batch) => batch.available_quantity > 0), [parts]);
   const visibleTabs = useMemo(() => {
@@ -290,15 +307,19 @@ export default function Home() {
       }
 
       if (tab === 'customers') {
-        const [customerData, ledgerData, reportData] = await Promise.allSettled([
+        const [customerData, ledgerData, reportData, paymentData, optionData] = await Promise.allSettled([
           list<Customer>('/operations/customers/?page_size=200'),
           list<CustomerLedgerEntry>('/finance/ledger/?page_size=200'),
           get<CreditReport>('/finance/credit-report/'),
+          list<CustomerPayment>('/finance/customer-payments/?page_size=200'),
+          list<DropdownOption>('/catalog/dropdown-options/?page_size=200'),
         ]);
         if (loadToken.current === token) {
           setCustomers(valueOf(customerData, emptyPage<Customer>()).results);
           setLedgerEntries(valueOf(ledgerData, emptyPage<CustomerLedgerEntry>()).results);
           setCreditReport(valueOf(reportData, null));
+          setCustomerPayments(valueOf(paymentData, emptyPage<CustomerPayment>()).results);
+          setDropdownOptions(valueOf(optionData, emptyPage<DropdownOption>()).results);
         }
       }
 
@@ -346,6 +367,17 @@ export default function Home() {
           setCustomers(valueOf(customerData, emptyPage<Customer>()).results);
           setChequeStatuses(valueOf(statusData, emptyPage<ChequeStatus>()).results);
           setDropdownOptions(valueOf(optionData, emptyPage<DropdownOption>()).results);
+        }
+      }
+
+      if (tab === 'currency') {
+        const [currencyData, purchaseData] = await Promise.allSettled([
+          list<Currency>('/finance/currencies/?page_size=250'),
+          list<CurrencyPurchase>('/finance/currency-purchases/?page_size=250'),
+        ]);
+        if (loadToken.current === token) {
+          setCurrencies(valueOf(currencyData, emptyPage<Currency>()).results);
+          setCurrencyPurchases(valueOf(purchaseData, emptyPage<CurrencyPurchase>()).results);
         }
       }
 
@@ -596,6 +628,14 @@ export default function Home() {
     );
   }
 
+  async function downloadCustomerStatement(customer: Customer) {
+    await downloadBlob(
+      `/api/finance/customers/${customer.id}/statement/`,
+      `zsp-customer-statement-${customer.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.pdf`,
+      'Unable to download customer statement.',
+    );
+  }
+
   async function downloadInventoryReport(format: 'csv' | 'pdf', containerId?: UUID) {
     const params = new URLSearchParams({ export: format });
     if (containerId) params.set('container', containerId);
@@ -702,10 +742,11 @@ export default function Home() {
         {visibleTabs.length === 0 ? <div className="empty-state"><ShieldCheck size={22} /> No product tabs are enabled for this account.</div> : null}
         {loading ? <LoadingState label={`Loading ${currentTitle.toLowerCase()}...`} /> : null}
         {!loading && activeTab === 'dashboard' ? <Dashboard summary={summary} /> : null}
-        {!loading && activeTab === 'customers' ? <CustomersPanel canWrite={canWrite('customers')} customers={customers} ledgerByCustomer={ledgerByCustomer} creditReport={creditReport} expanded={expandedCustomers} onToggle={(id) => toggleSet(setExpandedCustomers, id)} onAdd={() => setModal({ type: 'customer' })} onEdit={(customer) => setModal({ type: 'customer', customer })} onDelete={(customer) => remove(`/operations/customers/${customer.id}/`)} onStatus={(customer) => quickPatch(`/operations/customers/${customer.id}/`, { is_active: !customer.is_active })} onDownloadReport={downloadCreditReport} /> : null}
+        {!loading && activeTab === 'customers' ? <CustomersPanel canWrite={canWrite('customers')} customers={customers} ledgerByCustomer={ledgerByCustomer} payments={customerPayments} creditReport={creditReport} expanded={expandedCustomers} onToggle={(id) => toggleSet(setExpandedCustomers, id)} onAdd={() => setModal({ type: 'customer' })} onEdit={(customer) => setModal({ type: 'customer', customer })} onDelete={(customer) => remove(`/operations/customers/${customer.id}/`)} onStatus={(customer) => quickPatch(`/operations/customers/${customer.id}/`, { is_active: !customer.is_active })} onDownloadReport={downloadCreditReport} onDownloadStatement={downloadCustomerStatement} onRecordPayment={(customer) => setModal({ type: 'customer-payment', customer })} onRecordPagePayment={() => setModal({ type: 'customer-payment' })} /> : null}
         {!loading && activeTab === 'containers' ? <ContainersPanel canWrite={canWrite('containers')} containers={containers} items={items} itemsByContainer={itemsByContainer} parts={parts} expandedContainers={expandedContainers} expandedParts={expandedParts} inventoryPane={inventoryPane} onInventoryPaneChange={setInventoryPane} onToggleContainer={(id) => toggleSet(setExpandedContainers, id)} onTogglePart={(id) => toggleSet(setExpandedParts, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onDelete={(container) => remove(`/operations/containers/${container.id}/`)} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddSubparts={(item) => setModal({ type: 'subparts', parentItem: item })} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} onExport={() => setModal({ type: 'inventory-export' })} /> : null}
         {!loading && activeTab === 'sales' ? <SalesPanel canWrite={canWrite('sales')} sales={sales} analytics={salesAnalytics} onLoadAnalytics={loadSalesAnalytics} onAdd={() => { setNewSaleCustomer(null); setModal({ type: 'sale' }); }} onEdit={(sale) => { setNewSaleCustomer(null); setModal({ type: 'sale', sale }); }} onPrint={printSaleGatePass} onDownloadInvoice={downloadSaleInvoice} onPrintInvoice={printSaleInvoice} /> : null}
         {!loading && activeTab === 'cheques' ? <ChequesPanel canWrite={canWrite('cheques')} cheques={cheques} statuses={chequeStatuses} onAdd={() => setModal({ type: 'cheque' })} onEdit={(cheque) => setModal({ type: 'cheque', cheque })} onStatus={markChequeStatus} onAddStatus={() => setModal({ type: 'cheque-status' })} /> : null}
+        {!loading && activeTab === 'currency' ? <CurrencyPanel canWrite={canWrite('currency')} currencies={currencies} purchases={currencyPurchases} onAddCurrency={() => setModal({ type: 'currency' })} onEditCurrency={(currency) => setModal({ type: 'currency', currency })} onAddPurchase={() => setModal({ type: 'currency-purchase' })} onEditPurchase={(purchase) => setModal({ type: 'currency-purchase', purchase })} /> : null}
         {!loading && activeTab === 'settings' ? <SettingsPanel canWrite={canWrite('settings')} options={dropdownOptions} chequeStatuses={chequeStatuses} onAdd={(group) => setModal({ type: 'dropdown-option', group })} onAddChequeStatus={() => setModal({ type: 'cheque-status' })} /> : null}
         {!loading && activeTab === 'users' ? <UsersPanel canWrite={canWrite('users')} users={managedUsers} currentUserId={currentUser?.id} deletingPath={deletingPath} onAdd={() => setModal({ type: 'user' })} onEdit={(user) => setModal({ type: 'user', user })} onDelete={(user) => remove(`/auth/users/${user.id}/`)} /> : null}
       </section>
@@ -717,6 +758,9 @@ export default function Home() {
         {modal?.type === 'subparts' ? <SubpartForm parentItem={modal.parentItem} parts={parts} options={dropdownOptions} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'sale' ? <SaleForm sale={modal.sale} customers={customers} availableBatches={availableBatches} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} selectedCustomer={newSaleCustomer} onAddCustomer={() => setSaleCustomerOverlayOpen(true)} /> : null}
         {modal?.type === 'cheque' ? <ChequeForm cheque={modal.cheque} customers={customers} statuses={chequeStatuses} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} /> : null}
+        {modal?.type === 'customer-payment' ? <CustomerPaymentForm customer={modal.customer} customers={customers} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} /> : null}
+        {modal?.type === 'currency' ? <CurrencyForm currency={modal.currency} onSave={save} isSaving={saving} /> : null}
+        {modal?.type === 'currency-purchase' ? <CurrencyPurchaseForm purchase={modal.purchase} currencies={currencies} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'cheque-status' ? <ChequeStatusForm onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'dropdown-option' ? <DropdownOptionForm group={modal.group} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'user' ? <UserForm user={modal.user} onSave={save} isSaving={saving} /> : null}
@@ -829,7 +873,7 @@ function UsersPanel({ users, currentUserId, deletingPath, canWrite, onAdd, onEdi
   return <section className="panel"><div className="section-head"><div><h2>User access control</h2><p className="muted">Create staff accounts and control module access per user.</p></div>{canWrite ? <button className="btn primary" onClick={onAdd}><UserPlus size={18} /> User</button> : null}</div><DataTable headers={['User', 'Module access', 'Status', 'Actions']} rows={users.map((user) => { const permanent = user.is_permanent_admin; return [<div key={user.id}><strong>{user.full_name}</strong><span className="cell-note">{user.username}{permanent ? ' · Permanent Digi7 Admin' : ''}</span></div>, <PermissionSummary key="access" permissions={user.effective_tab_permissions || user.tab_permissions} />, <span key="status" className={user.is_active ? 'badge good' : 'badge bad'}>{user.is_active ? 'Active' : 'Inactive'}</span>, <div className="table-actions" key="actions">{canWrite && !permanent ? <button className="icon-btn" onClick={() => onEdit(user)} aria-label={`Edit ${user.username}`}><Pencil size={16} /></button> : null}{canWrite && !permanent ? <button className="icon-btn danger" onClick={() => onDelete(user)} aria-label={`Delete ${user.username}`} disabled={user.id === currentUserId || deletingPath === `/auth/users/${user.id}/`} title={user.id === currentUserId ? 'You cannot delete your own account.' : `Delete ${user.username}`}>{deletingPath === `/auth/users/${user.id}/` ? <ProcessingLoader /> : <Trash2 size={16} />}</button> : null}{!canWrite || permanent ? <span className="muted">{permanent ? 'Locked' : 'View only'}</span> : null}</div>]; })} /></section>;
 }
 
-function CustomersPanel({ customers, ledgerByCustomer, creditReport, expanded, canWrite, onToggle, onAdd, onEdit, onDelete, onStatus, onDownloadReport }: { customers: Customer[]; ledgerByCustomer: Map<UUID, CustomerLedgerEntry[]>; creditReport: CreditReport | null; expanded: Set<UUID>; canWrite: boolean; onToggle: (id: UUID) => void; onAdd: () => void; onEdit: (customer: Customer) => void; onDelete: (customer: Customer) => void; onStatus: (customer: Customer) => void; onDownloadReport: (format: 'csv' | 'pdf') => void }) {
+function CustomersPanel({ customers, ledgerByCustomer, payments, creditReport, expanded, canWrite, onToggle, onAdd, onEdit, onDelete, onStatus, onDownloadReport, onDownloadStatement, onRecordPayment, onRecordPagePayment }: { customers: Customer[]; ledgerByCustomer: Map<UUID, CustomerLedgerEntry[]>; payments: CustomerPayment[]; creditReport: CreditReport | null; expanded: Set<UUID>; canWrite: boolean; onToggle: (id: UUID) => void; onAdd: () => void; onEdit: (customer: Customer) => void; onDelete: (customer: Customer) => void; onStatus: (customer: Customer) => void; onDownloadReport: (format: 'csv' | 'pdf') => void; onDownloadStatement: (customer: Customer) => void; onRecordPayment: (customer: Customer) => void; onRecordPagePayment: () => void }) {
   const agingBuckets = creditReport?.aging_buckets ?? [];
   const reportCustomers = creditReport?.customers ?? [];
   const reportByCustomer = new Map(reportCustomers.map((customer) => [customer.id, customer]));
@@ -843,6 +887,7 @@ function CustomersPanel({ customers, ledgerByCustomer, creditReport, expanded, c
         <div className="head-actions">
           <button className="btn" onClick={() => onDownloadReport('csv')}><FileDown size={18} /> Spreadsheet</button>
           <button className="btn" onClick={() => onDownloadReport('pdf')}><FileDown size={18} /> PDF</button>
+          {canWrite ? <button className="btn" onClick={onRecordPagePayment}><Banknote size={18} /> Payment</button> : null}
           {canWrite ? <button className="btn primary" onClick={onAdd}><Plus size={18} /> Customer</button> : null}
         </div>
       </div>
@@ -881,6 +926,7 @@ function CustomersPanel({ customers, ledgerByCustomer, creditReport, expanded, c
         {customers.map((customer) => {
           const entries = ledgerByCustomer.get(customer.id) ?? [];
           const reportCustomer = reportByCustomer.get(customer.id);
+          const customerPayments = payments.filter((payment) => payment.customer === customer.id);
           const balance = Number(customer.balance);
           return (
             <article className="record-card" key={customer.id}>
@@ -893,6 +939,8 @@ function CustomersPanel({ customers, ledgerByCustomer, creditReport, expanded, c
               {canWrite ? (
                 <div className="record-actions">
                   <button className="icon-btn" onClick={() => onEdit(customer)} aria-label={`Edit ${customer.name}`}><Pencil size={16} /></button>
+                  <button className="icon-btn" onClick={() => onDownloadStatement(customer)} aria-label={`Download statement for ${customer.name}`}><FileDown size={16} /></button>
+                  <button className="btn small" onClick={() => onRecordPayment(customer)}><Banknote size={16} /> Payment</button>
                   <button className="icon-btn danger" onClick={() => onDelete(customer)} aria-label={`Delete ${customer.name}`} disabled={!customer.can_delete} title={customer.can_delete ? `Delete ${customer.name}` : 'Customers with transactions cannot be deleted.'}><Trash2 size={16} /></button>
                   <button className="btn small" onClick={() => onStatus(customer)}>{customer.is_active ? 'Mark inactive' : 'Mark active'}</button>
                 </div>
@@ -901,7 +949,9 @@ function CustomersPanel({ customers, ledgerByCustomer, creditReport, expanded, c
                 <div className="customer-detail-grid">
                   <div>
                     <h3>Ledger</h3>
-                    <DataTable headers={['Date', 'Type', 'Description', 'Debit', 'Credit', 'Ref']} rows={entries.map((entry) => [entry.entry_date, statusLabel(entry.entry_type), entry.description, <span className="money-bad" key="debit">{money(entry.debit)}</span>, <span className="money-good" key="credit">{money(entry.credit)}</span>, entry.sale_number || entry.cheque_number || '-'])} />
+                    <DataTable headers={['Date', 'Type', 'Description', 'Debit', 'Credit', 'Ref']} rows={entries.map((entry) => [entry.entry_date, statusLabel(entry.entry_type), entry.description, <span className="money-bad" key="debit">{money(entry.debit)}</span>, <span className="money-good" key="credit">{money(entry.credit)}</span>, entry.sale_number || entry.cheque_number || entry.payment_number || '-'])} />
+                    <h3>Direct payments</h3>
+                    <DataTable headers={['Date', 'Payment', 'Type', 'Amount', 'Details']} rows={customerPayments.flatMap((payment) => payment.components.map((component) => [payment.payment_date, payment.payment_number, statusLabel(component.method), <span className={component.method === 'cheque' ? 'money-bad' : 'money-good'} key="amount">{money(component.amount)}</span>, component.method === 'cheque' ? `${component.cheque_number || '-'} · ${component.cheque_status || 'Pending'}` : component.bank_name || component.reference || '-']))} />
                   </div>
                   <div>
                     <h3>Outstanding sales</h3>
@@ -1382,6 +1432,52 @@ function ChequesPanel({ cheques, statuses, canWrite, onAdd, onEdit, onStatus, on
   return <section className="panel"><div className="section-head"><div><h2>Cheque control</h2><p className="muted">Receivables reduce only when a cheque reaches a settlement status.</p></div>{canWrite ? <div className="head-actions"><button className="btn" onClick={onAddStatus}><Plus size={18} /> Status</button><button className="btn primary" onClick={onAdd}><Plus size={18} /> Cheque</button></div> : null}</div><DataTable headers={['Cheque', 'Customer', 'Name on cheque', 'Bank', 'Amount', 'Dates', 'Status', 'Actions']} rows={cheques.map((cheque) => ({ className: chequeRowClass(cheque), cells: [cheque.cheque_number, cheque.customer_name, cheque.name_on_cheque || '-', cheque.bank_name, money(cheque.amount), <div key="dates">Cheque: {cheque.cheque_date}<span className="cell-note">Expiry: {cheque.expiry_date}</span></div>, canWrite ? <Select key="status" compact name={`cheque-status-${cheque.id}`} label="Status" value={cheque.status} onChange={(value) => onStatus(cheque, value)} options={statusOptions} /> : <span key="status" className={statusClass(cheque.status_name)}>{cheque.status_name}</span>, canWrite ? <button className="icon-btn" key="edit" onClick={() => onEdit(cheque)} aria-label={`Edit ${cheque.cheque_number}`}><Pencil size={16} /></button> : <span className="muted" key="view">View only</span>] }))} /></section>;
 }
 
+function CurrencyPanel({ currencies, purchases, canWrite, onAddCurrency, onEditCurrency, onAddPurchase, onEditPurchase }: { currencies: Currency[]; purchases: CurrencyPurchase[]; canWrite: boolean; onAddCurrency: () => void; onEditCurrency: (currency: Currency) => void; onAddPurchase: () => void; onEditPurchase: (purchase: CurrencyPurchase) => void }) {
+  const activeCurrencies = currencies.filter((currency) => currency.is_active);
+  const totalSpent = activeCurrencies.reduce((sum, currency) => sum + Number(currency.total_spent || 0), 0);
+  return (
+    <section className="panel">
+      <div className="section-head">
+        <div>
+          <h2>Currency portfolio</h2>
+          <p className="muted">Track foreign currency purchases as historical lots with calculated average acquisition rates.</p>
+        </div>
+        {canWrite ? <div className="head-actions"><button className="btn" onClick={onAddCurrency}><Plus size={18} /> Currency</button><button className="btn primary" onClick={onAddPurchase}><Plus size={18} /> Purchase</button></div> : null}
+      </div>
+      <div className="report-summary">
+        <Metric compact label="Currencies held" value={activeCurrencies.filter((currency) => Number(currency.current_amount) > 0).length} tone="success" />
+        <Metric compact label="Total acquisition cost" value={money(totalSpent)} tone="cash" />
+        <Metric compact label="Purchase records" value={purchases.length} tone="warning" />
+      </div>
+      <div className="currency-grid">
+        {activeCurrencies.map((currency) => (
+          <article className="currency-card" key={currency.id}>
+            <div className="inline-between">
+              <div><h3>{currency.code}</h3><span>{currency.name}</span></div>
+              {canWrite ? <button className="icon-btn" onClick={() => onEditCurrency(currency)} aria-label={`Edit ${currency.code}`}><Pencil size={16} /></button> : null}
+            </div>
+            <strong>{Number(currency.current_amount).toLocaleString('en-PK', { maximumFractionDigits: 4 })} {currency.code}</strong>
+            <div className="currency-stats">
+              <span>Spent <b>{money(currency.total_spent)}</b></span>
+              <span>Avg rate <b>{Number(currency.average_acquisition_rate).toLocaleString('en-PK', { maximumFractionDigits: 6 })}</b></span>
+              <span>Lots <b>{currency.purchase_count}</b></span>
+            </div>
+          </article>
+        ))}
+      </div>
+      <DataTable headers={['Date', 'Currency', 'Amount', 'Rate', 'Total cost', 'Source', 'Actions']} rows={purchases.map((purchase) => [
+        shortDate(purchase.purchase_date),
+        <strong key="currency">{purchase.currency_code}<span className="cell-note">{purchase.currency_name}</span></strong>,
+        Number(purchase.amount).toLocaleString('en-PK', { maximumFractionDigits: 4 }),
+        Number(purchase.acquisition_rate).toLocaleString('en-PK', { maximumFractionDigits: 6 }),
+        money(purchase.total_cost),
+        purchase.source || purchase.reference || '-',
+        canWrite ? <button className="icon-btn" key="edit" onClick={() => onEditPurchase(purchase)} aria-label={`Edit ${purchase.currency_code} purchase`}><Pencil size={16} /></button> : <span className="muted" key="view">View only</span>,
+      ])} />
+    </section>
+  );
+}
+
 function SettingsPanel({ options, chequeStatuses, canWrite, onAdd, onAddChequeStatus }: { options: DropdownOption[]; chequeStatuses: ChequeStatus[]; canWrite: boolean; onAdd: (group?: DropdownOption['group']) => void; onAddChequeStatus: () => void }) {
   const groups: DropdownOption['group'][] = ['bank', 'part_name', 'item_category', 'item_unit'];
   return <section className="panel"><div className="section-head"><div><h2>Dropdown settings</h2><p className="muted">Persisted values here appear in future entry dialogs for all users.</p></div>{canWrite ? <button className="btn primary" onClick={() => onAdd()}><Plus size={18} /> Dropdown value</button> : null}</div><div className="settings-grid">{groups.map((group) => <article className="option-card" key={group}><div className="section-head slim"><h3>{group.replace('_', ' ')}</h3>{canWrite ? <button className="icon-btn" onClick={() => onAdd(group)} aria-label={`Add ${group}`}><Plus size={16} /></button> : null}</div><div className="chips">{options.filter((option) => option.group === group && option.is_active).map((option) => <span className="chip" key={option.id}>{option.label}</span>)}</div></article>)}<article className="option-card"><div className="section-head slim"><h3>cheque statuses</h3>{canWrite ? <button className="icon-btn" onClick={onAddChequeStatus} aria-label="Add cheque status"><Plus size={16} /></button> : null}</div><div className="chips">{chequeStatuses.filter((status) => status.is_active).map((status) => <span className="chip" key={status.id}>{status.name}<small>{status.balance_effect.replaceAll('_', ' ')}</small></span>)}</div></article></div></section>;
@@ -1704,6 +1800,107 @@ function ChequeForm({ cheque, customers, statuses, banks, onSave, isSaving }: { 
   return <FormFrame title={cheque ? 'Edit cheque' : 'Add cheque'} isSaving={isSaving} onSubmit={(form) => onSave(cheque ? `/finance/cheques/${cheque.id}/` : '/finance/cheques/', { ...form, received_date: form.received_date || null }, cheque ? 'patch' : 'post')}><Field name="cheque_number" label="Cheque number" defaultValue={cheque?.cheque_number} required /><Select name="customer" label="Customer" defaultValue={cheque?.customer} options={customers.map((customer) => [customer.id, customer.name])} required /><Field name="name_on_cheque" label="Name on cheque" defaultValue={cheque?.name_on_cheque} required /><OptionText name="bank_name" label="Bank" defaultValue={cheque?.bank_name} options={banks} required /><Field name="branch_name" label="Branch" defaultValue={cheque?.branch_name} /><Field name="account_title" label="Account title" defaultValue={cheque?.account_title} /><Field name="amount" label="Amount" type="number" defaultValue={cheque?.amount} required /><Field name="cheque_date" label="Cheque date" type="date" defaultValue={cheque?.cheque_date} required /><Field name="expiry_date" label="Expiry date" type="date" defaultValue={cheque?.expiry_date} required /><Field name="received_date" label="Received date" type="date" defaultValue={cheque?.received_date || ''} />{!cheque ? <Select name="status" label="Status" defaultValue={statuses.find((status) => status.name === 'Pending')?.id} options={statuses.map((status) => [status.id, status.name])} required /> : null}<Field name="notes" label="Notes" defaultValue={cheque?.notes} textarea /></FormFrame>;
 }
 
+function CustomerPaymentForm({ customer, customers, banks, onSave, isSaving }: { customer?: Customer; customers: Customer[]; banks: string[]; onSave: SaveHandler; isSaving: boolean }) {
+  const [customerId, setCustomerId] = useState(customer?.id || '');
+  const [components, setComponents] = useState<PaymentComponentDraft[]>([{ key: crypto.randomUUID(), method: 'cash', amount: '' }]);
+  const total = components.reduce((sum, component) => sum + Number(component.amount || 0), 0);
+  const updateComponent = (key: string, updates: Partial<PaymentComponentDraft>) => setComponents((rows) => rows.map((row) => row.key === key ? { ...row, ...updates } : row));
+  const addComponent = () => setComponents((rows) => [...rows, { key: crypto.randomUUID(), method: 'cash', amount: '' }]);
+  const removeComponent = (key: string) => setComponents((rows) => rows.length === 1 ? rows : rows.filter((row) => row.key !== key));
+  return (
+    <FormFrame
+      title={customer ? `Record payment - ${customer.name}` : 'Record customer payment'}
+      isSaving={isSaving}
+      onSubmit={(form, raw) => {
+        const payload = {
+          customer: customerId,
+          payment_date: form.payment_date || pakistanLocalDate(),
+          reference: form.reference || '',
+          notes: form.notes || '',
+          components: components.map((component) => {
+            const prefix = component.key;
+            const base: Record<string, unknown> = {
+              method: component.method,
+              amount: component.amount,
+              reference: raw.get(`reference_${prefix}`) || '',
+              bank_name: raw.get(`bank_name_${prefix}`) || '',
+              notes: raw.get(`notes_${prefix}`) || '',
+            };
+            if (component.method === 'cheque') {
+              base.cheque = {
+                cheque_number: raw.get(`cheque_number_${prefix}`),
+                name_on_cheque: raw.get(`name_on_cheque_${prefix}`),
+                bank_name: raw.get(`bank_name_${prefix}`),
+                branch_name: raw.get(`branch_name_${prefix}`) || '',
+                account_title: raw.get(`account_title_${prefix}`) || '',
+                cheque_date: raw.get(`cheque_date_${prefix}`),
+                expiry_date: raw.get(`expiry_date_${prefix}`),
+                received_date: raw.get(`received_date_${prefix}`) || null,
+                notes: raw.get(`notes_${prefix}`) || '',
+              };
+            }
+            return base;
+          }),
+        };
+        onSave('/finance/customer-payments/', payload);
+      }}
+    >
+      <Select name="customer" label="Customer" value={customerId} onChange={setCustomerId} options={customers.map((item) => [item.id, item.name])} required />
+      <Field name="payment_date" label="Payment date" type="date" defaultValue={pakistanLocalDate()} required />
+      <Field name="reference" label="Overall reference" />
+      <div className="subform full-span">
+        <div className="inline-between"><h3>Payment split</h3><button type="button" className="btn small" onClick={addComponent}><Plus size={16} /> Method</button></div>
+        {components.map((component) => (
+          <div className="payment-component-grid" key={component.key}>
+            <Select name={`method_${component.key}`} label="Method" value={component.method} onChange={(value) => updateComponent(component.key, { method: value as PaymentComponentDraft['method'] })} options={[['cash', 'Cash'], ['bank_transfer', 'Bank transfer'], ['cheque', 'Cheque'], ['write_off', 'Write-off / adjustment']]} required />
+            <Field name={`amount_${component.key}`} label="Amount" type="number" value={component.amount} onChange={(value) => updateComponent(component.key, { amount: value })} min="0.01" step="0.01" required />
+            {component.method === 'bank_transfer' || component.method === 'cheque' ? <OptionText name={`bank_name_${component.key}`} label="Bank" options={banks} required /> : <Field name={`bank_name_${component.key}`} label="Bank" disabled />}
+            {component.method !== 'cheque' ? <Field name={`reference_${component.key}`} label="Reference" /> : null}
+            {component.method === 'cheque' ? (
+              <div className="subform full-span compact-subform">
+                <Field name={`cheque_number_${component.key}`} label="Cheque number" required />
+                <Field name={`name_on_cheque_${component.key}`} label="Name on cheque" defaultValue={customers.find((item) => item.id === customerId)?.name || ''} required />
+                <Field name={`branch_name_${component.key}`} label="Branch" />
+                <Field name={`account_title_${component.key}`} label="Account title" />
+                <Field name={`cheque_date_${component.key}`} label="Cheque date" type="date" required />
+                <Field name={`expiry_date_${component.key}`} label="Expiry date" type="date" required />
+                <Field name={`received_date_${component.key}`} label="Received date" type="date" />
+              </div>
+            ) : null}
+            <Field name={`notes_${component.key}`} label={component.method === 'write_off' ? 'Adjustment reason' : 'Notes'} />
+            <button type="button" className="icon-btn danger" onClick={() => removeComponent(component.key)} aria-label="Remove payment method"><Trash2 size={16} /></button>
+          </div>
+        ))}
+        <div className="total-bar"><span>Total recorded</span><strong>{money(total)}</strong></div>
+      </div>
+      <Field name="notes" label="Overall notes" textarea />
+    </FormFrame>
+  );
+}
+
+function CurrencyForm({ currency, onSave, isSaving }: { currency?: Currency; onSave: SaveHandler; isSaving: boolean }) {
+  return <FormFrame title={currency ? 'Edit currency' : 'Add currency'} isSaving={isSaving} onSubmit={(form) => onSave(currency ? `/finance/currencies/${currency.id}/` : '/finance/currencies/', { ...form, code: String(form.code || '').toUpperCase(), is_active: form.is_active === 'true' }, currency ? 'patch' : 'post')}><Field name="code" label="Currency code" defaultValue={currency?.code} maxLength={3} required /><Field name="name" label="Currency name" defaultValue={currency?.name} required /><Field name="symbol" label="Symbol" defaultValue={currency?.symbol} /><Select name="is_active" label="Status" defaultValue={String(currency?.is_active ?? true)} options={[['true', 'Active'], ['false', 'Inactive']]} required /></FormFrame>;
+}
+
+function CurrencyPurchaseForm({ purchase, currencies, onSave, isSaving }: { purchase?: CurrencyPurchase; currencies: Currency[]; onSave: SaveHandler; isSaving: boolean }) {
+  const [amount, setAmount] = useState(purchase?.amount || '');
+  const [rate, setRate] = useState(purchase?.acquisition_rate || '');
+  const [total, setTotal] = useState(purchase?.total_cost || '');
+  function updateAmount(value: string) {
+    setAmount(value);
+    if (rate) setTotal((Number(value || 0) * Number(rate || 0)).toFixed(2));
+  }
+  function updateRate(value: string) {
+    setRate(value);
+    if (amount) setTotal((Number(amount || 0) * Number(value || 0)).toFixed(2));
+  }
+  function updateTotal(value: string) {
+    setTotal(value);
+    if (amount && Number(amount) > 0) setRate((Number(value || 0) / Number(amount)).toFixed(6));
+  }
+  return <FormFrame title={purchase ? 'Edit currency purchase' : 'Record currency purchase'} isSaving={isSaving} onSubmit={(form) => onSave(purchase ? `/finance/currency-purchases/${purchase.id}/` : '/finance/currency-purchases/', { ...form, amount, acquisition_rate: rate || null, total_cost: total || null }, purchase ? 'patch' : 'post')}><Select name="currency" label="Currency" defaultValue={purchase?.currency} options={currencies.filter((currency) => currency.is_active || currency.id === purchase?.currency).map((currency) => [currency.id, `${currency.code} - ${currency.name}`])} required /><Field name="purchase_date" label="Purchase date" type="date" defaultValue={purchase?.purchase_date || pakistanLocalDate()} required /><Field name="amount" label="Amount purchased" type="number" value={amount} onChange={updateAmount} min="0.0001" step="0.0001" required /><Field name="acquisition_rate" label="Acquisition rate" type="number" value={rate} onChange={updateRate} min="0.000001" step="0.000001" /><Field name="total_cost" label="Total amount paid" type="number" value={total} onChange={updateTotal} min="0.01" step="0.01" /><Field name="source" label="Source / dealer" defaultValue={purchase?.source} /><Field name="reference" label="Reference" defaultValue={purchase?.reference} /><Field name="notes" label="Notes" defaultValue={purchase?.notes} textarea /></FormFrame>;
+}
+
 function ChequeStatusForm({ onSave, isSaving }: { onSave: SaveHandler; isSaving: boolean }) {
   return <FormFrame title="Add cheque status" isSaving={isSaving} onSubmit={(form) => onSave('/finance/cheque-statuses/', form)}><Field name="name" label="Status name" required /><Select name="balance_effect" label="Balance effect" options={[['none', 'No automatic balance effect'], ['settles_balance', 'Settles customer balance'], ['reverses_settlement', 'Reverses settlement']]} required /></FormFrame>;
 }
@@ -1768,8 +1965,18 @@ function ModalShell({ modal, onClose, children }: { modal: ModalState; onClose: 
   return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}><section className="modal-panel" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" onClick={onClose} aria-label="Close dialog"><X size={18} /></button>{children}</section></div>;
 }
 
-function Field({ name, label, type = 'text', required = false, textarea = false, defaultValue = '', autoComplete, min, max, step }: { name: string; label: string; type?: string; required?: boolean; textarea?: boolean; defaultValue?: string | number | null; autoComplete?: string; min?: string; max?: string; step?: string }) {
-  return <div className="field"><label htmlFor={name}>{label}</label>{textarea ? <textarea id={name} name={name} required={required} defaultValue={String(defaultValue ?? '')} autoComplete={autoComplete} /> : <input id={name} name={name} type={type} required={required} defaultValue={String(defaultValue ?? '')} autoComplete={autoComplete} min={min} max={max} step={step} />}</div>;
+function Field({ name, label, type = 'text', required = false, textarea = false, defaultValue = '', value, onChange, autoComplete, min, max, step, disabled = false, maxLength }: { name: string; label: string; type?: string; required?: boolean; textarea?: boolean; defaultValue?: string | number | null; value?: string; onChange?: (value: string) => void; autoComplete?: string; min?: string; max?: string; step?: string; disabled?: boolean; maxLength?: number }) {
+  const shared = { id: name, name, required, autoComplete, disabled };
+  return (
+    <div className="field">
+      <label htmlFor={name}>{label}</label>
+      {textarea ? (
+        <textarea {...shared} defaultValue={value === undefined ? String(defaultValue ?? '') : undefined} value={value} onChange={onChange ? (event) => onChange(event.currentTarget.value) : undefined} />
+      ) : (
+        <input {...shared} type={type} defaultValue={value === undefined ? String(defaultValue ?? '') : undefined} value={value} onChange={onChange ? (event) => onChange(event.currentTarget.value) : undefined} min={min} max={max} step={step} maxLength={maxLength} />
+      )}
+    </div>
+  );
 }
 
 function PhoneField({ value, onChange }: { value: string; onChange: (value?: string) => void }) {
