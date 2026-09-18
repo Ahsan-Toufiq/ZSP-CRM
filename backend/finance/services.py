@@ -90,6 +90,32 @@ def delete_currency_acquisition(*, instance) -> None:
 
 
 @transaction.atomic
+def create_currency_opening_balance(*, user, currency, currency_input='', **data) -> CurrencyOpeningBalance:
+    resolved = resolve_currency(currency=currency, currency_input=currency_input, user=user)
+    locked = Currency.objects.select_for_update().get(pk=resolved.pk)
+    if locked.opening_balances.exists():
+        raise ValidationError({
+            'currency_input': f'{locked.code} already has an opening balance. Edit the existing entry instead.',
+        })
+    return CurrencyOpeningBalance.objects.create(
+        currency=locked,
+        created_by=user,
+        updated_by=user,
+        **data,
+    )
+
+
+@transaction.atomic
+def update_currency_opening_balance(*, instance, user, currency, **data) -> CurrencyOpeningBalance:
+    target = Currency.objects.select_for_update().get(pk=currency.pk)
+    if target.opening_balances.exclude(pk=instance.pk).exists():
+        raise ValidationError({
+            'currency_input': f'{target.code} already has an opening balance. Edit the existing entry instead.',
+        })
+    return update_currency_acquisition(instance=instance, user=user, currency=target, **data)
+
+
+@transaction.atomic
 def create_currency_spending(*, user, currency, currency_input='', **data) -> CurrencySpending:
     resolved = resolve_currency(currency=currency, currency_input=currency_input, user=user)
     locked = Currency.objects.select_for_update().get(pk=resolved.pk)

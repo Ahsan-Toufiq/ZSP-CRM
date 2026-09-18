@@ -23,8 +23,10 @@ from finance.models import (
 from finance.services import (
     change_cheque_status,
     create_cheque,
+    create_currency_opening_balance,
     create_currency_spending,
     update_currency_acquisition,
+    update_currency_opening_balance,
     record_customer_payment,
     resolve_currency,
     update_currency_spending,
@@ -495,14 +497,25 @@ class CurrencyOpeningBalanceSerializer(CurrencyReferenceSerializerMixin, seriali
         return attrs
 
     def create(self, validated_data):
-        validated_data['currency'] = self._resolve_currency(validated_data)
-        return super().create(validated_data)
+        currency = validated_data.pop('currency', None)
+        currency_input = validated_data.pop('currency_input', '')
+        user = validated_data.pop('created_by')
+        validated_data.pop('updated_by', None)
+        try:
+            return create_currency_opening_balance(
+                user=user,
+                currency=currency,
+                currency_input=currency_input,
+                **validated_data,
+            )
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(error.message_dict) from error
 
     def update(self, instance, validated_data):
         currency = self._resolve_currency(validated_data)
         user = validated_data.pop('updated_by')
         try:
-            return update_currency_acquisition(instance=instance, user=user, currency=currency, **validated_data)
+            return update_currency_opening_balance(instance=instance, user=user, currency=currency, **validated_data)
         except DjangoValidationError as error:
             raise serializers.ValidationError(error.message_dict) from error
 

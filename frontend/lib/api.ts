@@ -12,6 +12,7 @@ export class ApiError extends Error {
 }
 
 function fieldLabel(value: string): string {
+  if (value === 'currency_input') return 'Currency';
   return value.replaceAll('_', ' ').replace(/^./, (character) => character.toUpperCase());
 }
 

@@ -274,6 +274,35 @@ def test_currency_opening_balance_allows_unknown_cost_and_remains_visible_at_zer
 
 
 @pytest.mark.django_db
+def test_currency_allows_only_one_opening_balance(api_client):
+    currency = Currency.objects.get(code='JPY')
+    first = api_client.post(
+        '/api/finance/currency-opening-balances/',
+        {
+            'currency': str(currency.id),
+            'entry_date': str(timezone.localdate()),
+            'amount': '1000.0000',
+        },
+        format='json',
+    )
+    duplicate = api_client.post(
+        '/api/finance/currency-opening-balances/',
+        {
+            'currency_input': 'JPY - Japanese Yen',
+            'entry_date': str(timezone.localdate()),
+            'amount': '500.0000',
+        },
+        format='json',
+    )
+
+    assert first.status_code == 201
+    assert duplicate.status_code == 400
+    assert duplicate.data['currency_input'][0] == 'JPY already has an opening balance. Edit the existing entry instead.'
+    assert CurrencyOpeningBalance.objects.filter(currency=currency).count() == 1
+    assert CurrencyOpeningBalance.objects.get(currency=currency).amount == Decimal('1000.0000')
+
+
+@pytest.mark.django_db
 def test_currency_spending_reduces_balance_and_rejects_overspending(api_client):
     currency = Currency.objects.get(code='USD')
     CurrencyOpeningBalance.objects.create(

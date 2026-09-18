@@ -1925,12 +1925,12 @@ function CurrencyForm({ currency, onSave, isSaving }: { currency?: Currency; onS
   return <FormFrame title={currency ? 'Edit currency' : 'Add currency'} isSaving={isSaving} onSubmit={(form) => onSave(currency ? `/finance/currencies/${currency.id}/` : '/finance/currencies/', { ...form, code: String(form.code || '').toUpperCase(), is_active: form.is_active === 'true' }, currency ? 'patch' : 'post')}><Field name="code" label="Currency code" defaultValue={currency?.code} maxLength={3} required /><Field name="name" label="Currency name" defaultValue={currency?.name} required /><Field name="symbol" label="Symbol" defaultValue={currency?.symbol} /><Select name="is_active" label="Status" defaultValue={String(currency?.is_active ?? true)} options={[['true', 'Active'], ['false', 'Inactive']]} required /></FormFrame>;
 }
 
-function CurrencyInput({ currencies, defaultCode, defaultName }: { currencies: Currency[]; defaultCode?: string; defaultName?: string }) {
-  const options = currencies
+function CurrencyInput({ currencies, defaultCode, defaultName, helper }: { currencies: Currency[]; defaultCode?: string; defaultName?: string; helper?: string }) {
+  const options: ComboOption[] = currencies
     .filter((currency) => currency.is_active || currency.code === defaultCode)
-    .map((currency) => `${currency.code} - ${currency.name}`);
+    .map((currency) => ({ value: `${currency.code} - ${currency.name}`, label: `${currency.code} - ${currency.name}` }));
   const defaultValue = defaultCode ? `${defaultCode} - ${defaultName || defaultCode}` : '';
-  return <OptionText name="currency_input" label="Currency" options={options} defaultValue={defaultValue} required showHelper={false} />;
+  return <ComboBox name="currency_input" label="Currency" options={options} defaultValue={defaultValue} required allowCustom helper={helper} />;
 }
 
 function CurrencyPurchaseForm({ purchase, currencies, onSave, isSaving }: { purchase?: CurrencyPurchase; currencies: Currency[]; onSave: SaveHandler; isSaving: boolean }) {
@@ -1956,6 +1956,7 @@ function CurrencyOpeningBalanceForm({ opening, currencies, onSave, isSaving }: {
   const [amount, setAmount] = useState(opening?.amount || '');
   const [rate, setRate] = useState(opening?.acquisition_rate || '');
   const [total, setTotal] = useState(opening?.total_cost || '');
+  const eligibleCurrencies = currencies.filter((currency) => currency.opening_balance_count === 0 || currency.id === opening?.currency);
   function updateAmount(value: string) {
     setAmount(value);
     if (rate) setTotal((Number(value || 0) * Number(rate || 0)).toFixed(2));
@@ -1970,7 +1971,7 @@ function CurrencyOpeningBalanceForm({ opening, currencies, onSave, isSaving }: {
   }
   return (
     <FormFrame title={opening ? 'Edit opening balance' : 'Record currency opening balance'} isSaving={isSaving} onSubmit={(form) => onSave(opening ? `/finance/currency-opening-balances/${opening.id}/` : '/finance/currency-opening-balances/', { ...form, amount, acquisition_rate: rate || null, total_cost: total || null }, opening ? 'patch' : 'post')}>
-      <CurrencyInput currencies={currencies} defaultCode={opening?.currency_code} defaultName={opening?.currency_name} />
+      <CurrencyInput currencies={eligibleCurrencies} defaultCode={opening?.currency_code} defaultName={opening?.currency_name} helper="An opening balance can be recorded only once per currency. Currencies with one already recorded are hidden; edit their existing history entry to correct it." />
       <Field name="entry_date" label="Balance date" type="date" defaultValue={opening?.entry_date || pakistanLocalDate()} required />
       <Field name="amount" label="Amount held" type="number" value={amount} onChange={updateAmount} min="0.0001" step="0.0001" required />
       <Field name="acquisition_rate" label="Known acquisition rate (optional)" type="number" value={rate} onChange={updateRate} min="0.000001" step="0.000001" />

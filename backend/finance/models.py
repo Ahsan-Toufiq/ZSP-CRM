@@ -277,6 +277,7 @@ class CurrencyOpeningBalance(UserStampedModel):
     class Meta:
         ordering = ['-entry_date', '-created_at']
         constraints = [
+            models.UniqueConstraint(fields=['currency'], name='unique_currency_opening_balance'),
             models.CheckConstraint(condition=models.Q(amount__gt=0), name='currency_opening_amount_positive'),
             models.CheckConstraint(
                 condition=models.Q(acquisition_rate__isnull=True) | models.Q(acquisition_rate__gt=0),

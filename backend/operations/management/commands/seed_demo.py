@@ -640,8 +640,8 @@ class Command(BaseCommand):
         if yen is not None:
             CurrencyOpeningBalance.objects.get_or_create(
                 currency=yen,
-                reference='DEMO-FX-JPY-OPENING',
                 defaults={
+                    'reference': 'DEMO-FX-JPY-OPENING',
                     'entry_date': today - timedelta(days=30),
                     'amount': Decimal('150000.0000'),
                     'notes': 'Existing holding recorded without historical acquisition cost.',
