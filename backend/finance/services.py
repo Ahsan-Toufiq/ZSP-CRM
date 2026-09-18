@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
@@ -12,12 +13,117 @@ from finance.models import (
     ChequeSettlementAllocation,
     ChequeStatus,
     ChequeStatusHistory,
+    Currency,
+    CurrencyOpeningBalance,
+    CurrencySpending,
     CustomerLedgerEntry,
     CustomerPayment,
     CustomerPaymentAllocation,
     CustomerPaymentComponent,
 )
 from operations.models import AuctionSale
+
+
+def resolve_currency(*, currency=None, currency_input='', user=None) -> Currency:
+    if currency is not None:
+        return currency
+    raw_value = str(currency_input or '').strip()
+    if not raw_value:
+        raise ValidationError({'currency_input': 'Select a currency or enter a new one.'})
+    code, separator, supplied_name = raw_value.partition(' - ')
+    code = code.strip().upper()
+    if len(code) != 3 or not code.isalpha():
+        raise ValidationError({'currency_input': 'Use a three-letter currency code, for example USD or USD - US Dollar.'})
+    name = supplied_name.strip() if separator and supplied_name.strip() else code
+    defaults = {'name': name, 'is_active': True, 'created_by': user, 'updated_by': user}
+    currency, _ = Currency.objects.get_or_create(code=code, defaults=defaults)
+    if not currency.is_active:
+        currency.is_active = True
+        currency.updated_by = user
+        currency.save(update_fields=['is_active', 'updated_by', 'updated_at'])
+    return currency
+
+
+def currency_balance(currency: Currency, *, exclude_spending_id=None) -> Decimal:
+    purchased = currency.purchases.aggregate(total=Sum('amount'))['total'] or Decimal('0.0000')
+    opening = currency.opening_balances.aggregate(total=Sum('amount'))['total'] or Decimal('0.0000')
+    spending = currency.spending_entries.all()
+    if exclude_spending_id:
+        spending = spending.exclude(pk=exclude_spending_id)
+    spent = spending.aggregate(total=Sum('amount'))['total'] or Decimal('0.0000')
+    return purchased + opening - spent
+
+
+@transaction.atomic
+def update_currency_acquisition(*, instance, user, currency, **data):
+    currency_ids = sorted({instance.currency_id, currency.id}, key=str)
+    locked_currencies = {
+        item.id: item for item in Currency.objects.select_for_update().filter(id__in=currency_ids).order_by('id')
+    }
+    original_currency = locked_currencies[instance.currency_id]
+    target_currency = locked_currencies[currency.id]
+    new_amount = Decimal(data.get('amount', instance.amount))
+    if instance.currency_id == target_currency.id:
+        resulting_balance = currency_balance(original_currency) - instance.amount + new_amount
+    else:
+        resulting_balance = currency_balance(original_currency) - instance.amount
+    if resulting_balance < 0:
+        raise ValidationError({
+            'amount': f'This change would leave {original_currency.code} with a negative balance. Reduce or remove its spending first.',
+        })
+    instance.currency = target_currency
+    instance.updated_by = user
+    for field, value in data.items():
+        setattr(instance, field, value)
+    instance.save()
+    return instance
+
+
+@transaction.atomic
+def delete_currency_acquisition(*, instance) -> None:
+    locked_currency = Currency.objects.select_for_update().get(pk=instance.currency_id)
+    if currency_balance(locked_currency) - instance.amount < 0:
+        raise ValidationError({
+            'detail': f'This entry cannot be deleted while it supports recorded {locked_currency.code} spending.',
+        })
+    instance.delete()
+
+
+@transaction.atomic
+def create_currency_spending(*, user, currency, currency_input='', **data) -> CurrencySpending:
+    resolved = resolve_currency(currency=currency, currency_input=currency_input, user=user)
+    locked = Currency.objects.select_for_update().get(pk=resolved.pk)
+    amount = Decimal(data['amount'])
+    available = currency_balance(locked)
+    if amount > available:
+        raise ValidationError({'amount': f'Only {available:.4f} {locked.code} is available.'})
+    return CurrencySpending.objects.create(
+        currency=locked,
+        created_by=user,
+        updated_by=user,
+        **data,
+    )
+
+
+@transaction.atomic
+def update_currency_spending(*, instance, user, currency, currency_input='', **data) -> CurrencySpending:
+    resolved = resolve_currency(currency=currency, currency_input=currency_input, user=user)
+    currency_ids = sorted({instance.currency_id, resolved.id}, key=str)
+    locked_currencies = {
+        item.id: item for item in Currency.objects.select_for_update().filter(id__in=currency_ids).order_by('id')
+    }
+    target = locked_currencies[resolved.id]
+    amount = Decimal(data.get('amount', instance.amount))
+    exclude_id = instance.id if instance.currency_id == target.id else None
+    available = currency_balance(target, exclude_spending_id=exclude_id)
+    if amount > available:
+        raise ValidationError({'amount': f'Only {available:.4f} {target.code} is available.'})
+    instance.currency = target
+    instance.updated_by = user
+    for field, value in data.items():
+        setattr(instance, field, value)
+    instance.save()
+    return instance
 
 
 @transaction.atomic

@@ -1,11 +1,13 @@
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count, DecimalField, F, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
 from accounts.permissions import DashboardPermission, FinancePermission, has_tab_access
@@ -14,7 +16,9 @@ from finance.models import (
     ChequeSettlementAllocation,
     ChequeStatus,
     Currency,
+    CurrencyOpeningBalance,
     CurrencyPurchase,
+    CurrencySpending,
     CustomerLedgerEntry,
     CustomerPayment,
     CustomerPaymentAllocation,
@@ -27,6 +31,7 @@ from finance.reporting import (
     credit_report_pdf_response,
     customer_statement_pdf_response,
 )
+from finance.services import delete_currency_acquisition
 from finance.serializers import (
     ChequeSerializer,
     ChequeStatusChangeSerializer,
@@ -34,6 +39,8 @@ from finance.serializers import (
     ChequeStatusSerializer,
     CurrencyPurchaseSerializer,
     CurrencySerializer,
+    CurrencyOpeningBalanceSerializer,
+    CurrencySpendingSerializer,
     CustomerBalanceSerializer,
     CustomerLedgerEntrySerializer,
     CustomerPaymentCreateSerializer,
@@ -166,7 +173,9 @@ class CurrencyViewSet(UserStampedMixin, viewsets.ModelViewSet):
     ordering_fields = ['code', 'name']
 
     def get_queryset(self):
-        return Currency.objects.prefetch_related('purchases').order_by('code')
+        return Currency.objects.prefetch_related(
+            'purchases', 'opening_balances', 'spending_entries',
+        ).order_by('code')
 
 
 class CurrencyPurchaseViewSet(UserStampedMixin, viewsets.ModelViewSet):
@@ -178,6 +187,40 @@ class CurrencyPurchaseViewSet(UserStampedMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         return CurrencyPurchase.objects.select_related('currency').order_by('-purchase_date', '-created_at')
+
+    def perform_destroy(self, instance):
+        try:
+            delete_currency_acquisition(instance=instance)
+        except DjangoValidationError as error:
+            raise DRFValidationError(error.message_dict) from error
+
+
+class CurrencyOpeningBalanceViewSet(UserStampedMixin, viewsets.ModelViewSet):
+    serializer_class = CurrencyOpeningBalanceSerializer
+    permission_classes = [FinancePermission]
+    filterset_fields = ['currency', 'entry_date']
+    search_fields = ['currency__code', 'currency__name', 'source', 'reference', 'notes']
+    ordering_fields = ['entry_date', 'amount', 'total_cost', 'acquisition_rate']
+
+    def get_queryset(self):
+        return CurrencyOpeningBalance.objects.select_related('currency').order_by('-entry_date', '-created_at')
+
+    def perform_destroy(self, instance):
+        try:
+            delete_currency_acquisition(instance=instance)
+        except DjangoValidationError as error:
+            raise DRFValidationError(error.message_dict) from error
+
+
+class CurrencySpendingViewSet(UserStampedMixin, viewsets.ModelViewSet):
+    serializer_class = CurrencySpendingSerializer
+    permission_classes = [FinancePermission]
+    filterset_fields = ['currency', 'spending_date']
+    search_fields = ['currency__code', 'currency__name', 'purpose', 'reference', 'notes']
+    ordering_fields = ['spending_date', 'amount']
+
+    def get_queryset(self):
+        return CurrencySpending.objects.select_related('currency').order_by('-spending_date', '-created_at')
 
 
 @api_view(['GET'])

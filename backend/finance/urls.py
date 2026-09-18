@@ -5,6 +5,8 @@ from finance.views import (
     ChequeStatusViewSet,
     ChequeViewSet,
     CurrencyPurchaseViewSet,
+    CurrencyOpeningBalanceViewSet,
+    CurrencySpendingViewSet,
     CurrencyViewSet,
     CustomerBalanceViewSet,
     CustomerPaymentViewSet,
@@ -22,6 +24,8 @@ router.register('ledger', LedgerEntryViewSet, basename='ledger')
 router.register('customer-balances', CustomerBalanceViewSet, basename='customer-balance')
 router.register('currencies', CurrencyViewSet, basename='currency')
 router.register('currency-purchases', CurrencyPurchaseViewSet, basename='currency-purchase')
+router.register('currency-opening-balances', CurrencyOpeningBalanceViewSet, basename='currency-opening-balance')
+router.register('currency-spending', CurrencySpendingViewSet, basename='currency-spending')
 
 urlpatterns = [
     path('dashboard-summary/', dashboard_summary, name='dashboard-summary'),

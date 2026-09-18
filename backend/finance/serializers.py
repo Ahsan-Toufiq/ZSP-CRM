@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Sum
 from rest_framework import serializers
 
@@ -11,13 +12,23 @@ from finance.models import (
     ChequeStatus,
     ChequeStatusHistory,
     Currency,
+    CurrencyOpeningBalance,
     CurrencyPurchase,
+    CurrencySpending,
     CustomerLedgerEntry,
     CustomerPayment,
     CustomerPaymentAllocation,
     CustomerPaymentComponent,
 )
-from finance.services import change_cheque_status, create_cheque, record_customer_payment
+from finance.services import (
+    change_cheque_status,
+    create_cheque,
+    create_currency_spending,
+    update_currency_acquisition,
+    record_customer_payment,
+    resolve_currency,
+    update_currency_spending,
+)
 from operations.models import AuctionSale, Customer
 
 
@@ -290,47 +301,114 @@ class CurrencySerializer(serializers.ModelSerializer):
     total_spent = serializers.SerializerMethodField()
     average_acquisition_rate = serializers.SerializerMethodField()
     purchase_count = serializers.SerializerMethodField()
+    opening_balance_count = serializers.SerializerMethodField()
+    spending_count = serializers.SerializerMethodField()
+    total_opening = serializers.SerializerMethodField()
+    total_currency_spent = serializers.SerializerMethodField()
+    total_acquisition_cost = serializers.SerializerMethodField()
+    has_activity = serializers.SerializerMethodField()
 
     class Meta:
         model = Currency
         fields = [
             'id', 'code', 'name', 'symbol', 'is_system', 'is_active',
             'current_amount', 'total_purchased', 'total_spent',
-            'average_acquisition_rate', 'purchase_count', 'created_at', 'updated_at',
+            'total_opening', 'total_currency_spent', 'total_acquisition_cost',
+            'average_acquisition_rate', 'purchase_count', 'opening_balance_count',
+            'spending_count', 'has_activity', 'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'is_system', 'created_at', 'updated_at']
 
     def _summary(self, obj):
         if not hasattr(obj, '_currency_summary'):
-            purchases = obj.purchases.all()
-            amount = sum((purchase.amount for purchase in purchases), Decimal('0.0000'))
-            spent = sum((purchase.total_cost for purchase in purchases), Decimal('0.00'))
-            obj._currency_summary = {'amount': amount, 'spent': spent, 'count': len(purchases)}
+            purchases = list(obj.purchases.all())
+            openings = list(obj.opening_balances.all())
+            spending_entries = list(obj.spending_entries.all())
+            purchased = sum((purchase.amount for purchase in purchases), Decimal('0.0000'))
+            opening = sum((entry.amount for entry in openings), Decimal('0.0000'))
+            currency_spent = sum((entry.amount for entry in spending_entries), Decimal('0.0000'))
+            acquisition_cost = sum((purchase.total_cost for purchase in purchases), Decimal('0.00'))
+            known_openings = [entry for entry in openings if entry.total_cost is not None]
+            acquisition_cost += sum((entry.total_cost for entry in known_openings), Decimal('0.00'))
+            known_amount = purchased + sum((entry.amount for entry in known_openings), Decimal('0.0000'))
+            obj._currency_summary = {
+                'current': purchased + opening - currency_spent,
+                'purchased': purchased,
+                'opening': opening,
+                'currency_spent': currency_spent,
+                'acquisition_cost': acquisition_cost,
+                'known_amount': known_amount,
+                'purchase_count': len(purchases),
+                'opening_count': len(openings),
+                'spending_count': len(spending_entries),
+            }
         return obj._currency_summary
 
     def get_current_amount(self, obj):
-        return self._summary(obj)['amount']
+        return self._summary(obj)['current']
 
     def get_total_purchased(self, obj):
-        return self._summary(obj)['amount']
+        return self._summary(obj)['purchased']
 
     def get_total_spent(self, obj):
-        return self._summary(obj)['spent']
+        return self._summary(obj)['acquisition_cost']
+
+    def get_total_opening(self, obj):
+        return self._summary(obj)['opening']
+
+    def get_total_currency_spent(self, obj):
+        return self._summary(obj)['currency_spent']
+
+    def get_total_acquisition_cost(self, obj):
+        return self._summary(obj)['acquisition_cost']
 
     def get_average_acquisition_rate(self, obj):
         summary = self._summary(obj)
-        if summary['amount'] <= 0:
+        if summary['known_amount'] <= 0:
             return Decimal('0.000000')
-        return (summary['spent'] / summary['amount']).quantize(Decimal('0.000001'))
+        return (summary['acquisition_cost'] / summary['known_amount']).quantize(Decimal('0.000001'))
 
     def get_purchase_count(self, obj):
-        return self._summary(obj)['count']
+        return self._summary(obj)['purchase_count']
+
+    def get_opening_balance_count(self, obj):
+        return self._summary(obj)['opening_count']
+
+    def get_spending_count(self, obj):
+        return self._summary(obj)['spending_count']
+
+    def get_has_activity(self, obj):
+        summary = self._summary(obj)
+        return bool(summary['purchase_count'] or summary['opening_count'] or summary['spending_count'])
 
     def validate_code(self, value):
         return value.upper()
 
 
-class CurrencyPurchaseSerializer(serializers.ModelSerializer):
+class CurrencyReferenceSerializerMixin:
+    def validate(self, attrs):
+        if not attrs.get('currency') and not attrs.get('currency_input') and self.instance is None:
+            raise serializers.ValidationError({'currency_input': 'Select a currency or enter a new one.'})
+        return super().validate(attrs)
+
+    def _resolve_currency(self, validated_data):
+        selected = validated_data.pop('currency', None)
+        currency_input = validated_data.pop('currency_input', '')
+        if selected is None and not currency_input and self.instance is not None:
+            return self.instance.currency
+        try:
+            return resolve_currency(
+                currency=selected,
+                currency_input=currency_input,
+                user=self.context['request'].user,
+            )
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(error.message_dict) from error
+
+
+class CurrencyPurchaseSerializer(CurrencyReferenceSerializerMixin, serializers.ModelSerializer):
+    currency = serializers.PrimaryKeyRelatedField(queryset=Currency.objects.all(), required=False)
+    currency_input = serializers.CharField(write_only=True, required=False, allow_blank=False)
     currency_code = serializers.CharField(source='currency.code', read_only=True)
     currency_name = serializers.CharField(source='currency.name', read_only=True)
     currency_symbol = serializers.CharField(source='currency.symbol', read_only=True)
@@ -338,7 +416,7 @@ class CurrencyPurchaseSerializer(serializers.ModelSerializer):
     class Meta:
         model = CurrencyPurchase
         fields = [
-            'id', 'currency', 'currency_code', 'currency_name', 'currency_symbol',
+            'id', 'currency', 'currency_input', 'currency_code', 'currency_name', 'currency_symbol',
             'purchase_date', 'amount', 'acquisition_rate', 'total_cost',
             'source', 'reference', 'notes', 'created_at', 'updated_at',
         ]
@@ -349,6 +427,7 @@ class CurrencyPurchaseSerializer(serializers.ModelSerializer):
         }
 
     def validate(self, attrs):
+        attrs = super().validate(attrs)
         amount = attrs.get('amount', getattr(self.instance, 'amount', None))
         rate = attrs.get('acquisition_rate', getattr(self.instance, 'acquisition_rate', None))
         total = attrs.get('total_cost', getattr(self.instance, 'total_cost', None))
@@ -365,3 +444,117 @@ class CurrencyPurchaseSerializer(serializers.ModelSerializer):
         elif total and not rate:
             attrs['acquisition_rate'] = (total / amount).quantize(Decimal('0.000001'))
         return attrs
+
+    def create(self, validated_data):
+        validated_data['currency'] = self._resolve_currency(validated_data)
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        currency = self._resolve_currency(validated_data)
+        user = validated_data.pop('updated_by')
+        try:
+            return update_currency_acquisition(instance=instance, user=user, currency=currency, **validated_data)
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(error.message_dict) from error
+
+
+class CurrencyOpeningBalanceSerializer(CurrencyReferenceSerializerMixin, serializers.ModelSerializer):
+    currency = serializers.PrimaryKeyRelatedField(queryset=Currency.objects.all(), required=False)
+    currency_input = serializers.CharField(write_only=True, required=False, allow_blank=False)
+    currency_code = serializers.CharField(source='currency.code', read_only=True)
+    currency_name = serializers.CharField(source='currency.name', read_only=True)
+
+    class Meta:
+        model = CurrencyOpeningBalance
+        fields = [
+            'id', 'currency', 'currency_input', 'currency_code', 'currency_name',
+            'entry_date', 'amount', 'acquisition_rate', 'total_cost',
+            'source', 'reference', 'notes', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'currency_code', 'currency_name', 'created_at', 'updated_at']
+        extra_kwargs = {
+            'acquisition_rate': {'required': False, 'allow_null': True},
+            'total_cost': {'required': False, 'allow_null': True},
+        }
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        amount = attrs.get('amount', getattr(self.instance, 'amount', None))
+        rate = attrs.get('acquisition_rate', getattr(self.instance, 'acquisition_rate', None))
+        total = attrs.get('total_cost', getattr(self.instance, 'total_cost', None))
+        if amount is None or amount <= 0:
+            raise serializers.ValidationError({'amount': 'Amount must be greater than zero.'})
+        if rate is not None and rate <= 0:
+            raise serializers.ValidationError({'acquisition_rate': 'Acquisition rate must be greater than zero.'})
+        if total is not None and total <= 0:
+            raise serializers.ValidationError({'total_cost': 'Total cost must be greater than zero.'})
+        if rate and not total:
+            attrs['total_cost'] = (amount * rate).quantize(Decimal('0.01'))
+        elif total and not rate:
+            attrs['acquisition_rate'] = (total / amount).quantize(Decimal('0.000001'))
+        return attrs
+
+    def create(self, validated_data):
+        validated_data['currency'] = self._resolve_currency(validated_data)
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        currency = self._resolve_currency(validated_data)
+        user = validated_data.pop('updated_by')
+        try:
+            return update_currency_acquisition(instance=instance, user=user, currency=currency, **validated_data)
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(error.message_dict) from error
+
+
+class CurrencySpendingSerializer(CurrencyReferenceSerializerMixin, serializers.ModelSerializer):
+    currency = serializers.PrimaryKeyRelatedField(queryset=Currency.objects.all(), required=False)
+    currency_input = serializers.CharField(write_only=True, required=False, allow_blank=False)
+    currency_code = serializers.CharField(source='currency.code', read_only=True)
+    currency_name = serializers.CharField(source='currency.name', read_only=True)
+
+    class Meta:
+        model = CurrencySpending
+        fields = [
+            'id', 'currency', 'currency_input', 'currency_code', 'currency_name',
+            'spending_date', 'amount', 'purpose', 'reference', 'notes',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'currency_code', 'currency_name', 'created_at', 'updated_at']
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        amount = attrs.get('amount', getattr(self.instance, 'amount', None))
+        if amount is None or amount <= 0:
+            raise serializers.ValidationError({'amount': 'Amount must be greater than zero.'})
+        return attrs
+
+    def create(self, validated_data):
+        currency = validated_data.pop('currency', None)
+        currency_input = validated_data.pop('currency_input', '')
+        user = validated_data.pop('created_by')
+        validated_data.pop('updated_by', None)
+        try:
+            return create_currency_spending(
+                user=user,
+                currency=currency,
+                currency_input=currency_input,
+                **validated_data,
+            )
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(error.message_dict) from error
+
+    def update(self, instance, validated_data):
+        currency = validated_data.pop('currency', None)
+        currency_input = validated_data.pop('currency_input', '')
+        user = validated_data.pop('updated_by')
+        try:
+            return update_currency_spending(
+                instance=instance,
+                user=user,
+                currency=currency if currency is not None or currency_input else instance.currency,
+                currency_input=currency_input,
+                **validated_data,
+            )
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(error.message_dict) from error

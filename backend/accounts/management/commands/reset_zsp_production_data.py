@@ -15,6 +15,8 @@ from finance.models import (
     ChequeStatus,
     ChequeStatusHistory,
     CurrencyPurchase,
+    CurrencyOpeningBalance,
+    CurrencySpending,
     CustomerLedgerEntry,
     CustomerPayment,
     CustomerPaymentAllocation,
@@ -102,6 +104,8 @@ class Command(BaseCommand):
         PartInventory.objects.all().delete()
         Container.objects.all().delete()
         Customer.objects.all().delete()
+        CurrencySpending.objects.all().delete()
+        CurrencyOpeningBalance.objects.all().delete()
         CurrencyPurchase.objects.all().delete()
         AuditLog.objects.all().delete()
 
@@ -130,6 +134,7 @@ class Command(BaseCommand):
         client.save()
         permissions = {tab: AccessLevel.FULL for tab in sorted(ALL_TABS)}
         permissions['users'] = AccessLevel.NONE
+        permissions['currency'] = AccessLevel.NONE
         UserProfile.objects.update_or_create(
             user=client,
             defaults={'tab_permissions': permissions, 'allowed_tabs': []},

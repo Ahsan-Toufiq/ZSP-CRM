@@ -1494,6 +1494,10 @@ td select {
   color: #991b1b;
 }
 
+.modal-alert {
+  margin-right: 48px;
+}
+
 .empty-state {
   display: grid;
   gap: 8px;
@@ -1600,6 +1604,15 @@ td select {
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 14px;
   margin: 16px 0;
+}
+
+.currency-header > div:first-child {
+  min-width: 0;
+}
+
+.currency-actions {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
 }
 
 .currency-card {
@@ -1794,6 +1807,11 @@ td select {
   .container-top,
   .container-meta {
     display: grid;
+  }
+
+  .currency-actions {
+    display: grid;
+    grid-template-columns: 1fr;
   }
 
   .segmented-control {

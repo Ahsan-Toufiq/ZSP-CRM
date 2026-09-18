@@ -8,7 +8,15 @@ from rest_framework.test import APIClient
 
 from accounts.models import UserProfile
 from accounts.permissions import AccessLevel, full_tab_permissions
-from finance.models import ChequeStatus, Currency, CustomerLedgerEntry, CustomerPayment, CustomerPaymentAllocation
+from finance.models import (
+    ChequeStatus,
+    Currency,
+    CurrencyOpeningBalance,
+    CurrencySpending,
+    CustomerLedgerEntry,
+    CustomerPayment,
+    CustomerPaymentAllocation,
+)
 from finance.services import create_cheque
 from operations.models import AuctionSale, Customer, InventoryBatch, PartInventory
 from operations.services import create_auction_sale
@@ -210,3 +218,118 @@ def test_currency_purchase_calculates_missing_total_and_rate(api_client):
     assert total_response.data['total_cost'] == '28050.00'
     assert rate_response.status_code == 201
     assert rate_response.data['acquisition_rate'] == '300.000000'
+
+
+@pytest.mark.django_db
+def test_currency_purchase_accepts_optional_context_and_creates_custom_currency(api_client):
+    response = api_client.post(
+        '/api/finance/currency-purchases/',
+        {
+            'currency_input': 'AED - UAE Dirham',
+            'purchase_date': str(timezone.localdate()),
+            'amount': '25.0000',
+            'total_cost': '1900.00',
+        },
+        format='json',
+    )
+
+    assert response.status_code == 201
+    assert response.data['currency_code'] == 'AED'
+    assert response.data['source'] == ''
+    assert response.data['reference'] == ''
+    assert response.data['notes'] == ''
+    assert Currency.objects.filter(code='AED', name='UAE Dirham').exists()
+
+
+@pytest.mark.django_db
+def test_currency_opening_balance_allows_unknown_cost_and_remains_visible_at_zero(api_client):
+    opening_response = api_client.post(
+        '/api/finance/currency-opening-balances/',
+        {
+            'currency_input': 'SAR - Saudi Riyal',
+            'entry_date': str(timezone.localdate()),
+            'amount': '100.0000',
+        },
+        format='json',
+    )
+    currency = Currency.objects.get(code='SAR')
+    spending_response = api_client.post(
+        '/api/finance/currency-spending/',
+        {
+            'currency': str(currency.id),
+            'spending_date': str(timezone.localdate()),
+            'amount': '100.0000',
+        },
+        format='json',
+    )
+    summary_response = api_client.get(f'/api/finance/currencies/{currency.id}/')
+
+    assert opening_response.status_code == 201
+    assert opening_response.data['acquisition_rate'] is None
+    assert opening_response.data['total_cost'] is None
+    assert spending_response.status_code == 201
+    assert summary_response.status_code == 200
+    assert summary_response.data['current_amount'] == Decimal('0.0000')
+    assert summary_response.data['has_activity'] is True
+
+
+@pytest.mark.django_db
+def test_currency_spending_reduces_balance_and_rejects_overspending(api_client):
+    currency = Currency.objects.get(code='USD')
+    CurrencyOpeningBalance.objects.create(
+        currency=currency,
+        entry_date=timezone.localdate(),
+        amount=Decimal('50.0000'),
+    )
+
+    accepted = api_client.post(
+        '/api/finance/currency-spending/',
+        {
+            'currency': str(currency.id),
+            'spending_date': str(timezone.localdate()),
+            'amount': '20.0000',
+            'purpose': 'Supplier settlement',
+        },
+        format='json',
+    )
+    rejected = api_client.post(
+        '/api/finance/currency-spending/',
+        {
+            'currency': str(currency.id),
+            'spending_date': str(timezone.localdate()),
+            'amount': '31.0000',
+        },
+        format='json',
+    )
+
+    assert accepted.status_code == 201
+    assert rejected.status_code == 400
+    assert 'amount' in rejected.data
+    assert CurrencySpending.objects.filter(currency=currency).count() == 1
+
+
+@pytest.mark.django_db
+def test_acquisition_cannot_be_reduced_or_deleted_below_recorded_spending(api_client):
+    currency = Currency.objects.get(code='USD')
+    opening = CurrencyOpeningBalance.objects.create(
+        currency=currency,
+        entry_date=timezone.localdate(),
+        amount=Decimal('50.0000'),
+    )
+    CurrencySpending.objects.create(
+        currency=currency,
+        spending_date=timezone.localdate(),
+        amount=Decimal('20.0000'),
+    )
+
+    reduction = api_client.patch(
+        f'/api/finance/currency-opening-balances/{opening.id}/',
+        {'amount': '10.0000'},
+        format='json',
+    )
+    deletion = api_client.delete(f'/api/finance/currency-opening-balances/{opening.id}/')
+
+    assert reduction.status_code == 400
+    assert 'amount' in reduction.data
+    assert deletion.status_code == 400
+    assert CurrencyOpeningBalance.objects.filter(pk=opening.id).exists()

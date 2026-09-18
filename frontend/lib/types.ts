@@ -352,8 +352,40 @@ export interface Currency {
   current_amount: string;
   total_purchased: string;
   total_spent: string;
+  total_opening: string;
+  total_currency_spent: string;
+  total_acquisition_cost: string;
   average_acquisition_rate: string;
   purchase_count: number;
+  opening_balance_count: number;
+  spending_count: number;
+  has_activity: boolean;
+}
+
+export interface CurrencyOpeningBalance {
+  id: UUID;
+  currency: UUID;
+  currency_code: string;
+  currency_name: string;
+  entry_date: string;
+  amount: string;
+  acquisition_rate: string | null;
+  total_cost: string | null;
+  source: string;
+  reference: string;
+  notes: string;
+}
+
+export interface CurrencySpending {
+  id: UUID;
+  currency: UUID;
+  currency_code: string;
+  currency_name: string;
+  spending_date: string;
+  amount: string;
+  purpose: string;
+  reference: string;
+  notes: string;
 }
 
 export interface CurrencyPurchase {

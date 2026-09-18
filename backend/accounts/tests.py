@@ -10,7 +10,14 @@ from accounts.models import UserProfile
 from accounts.permissions import AccessLevel, full_tab_permissions
 from audit.models import AuditLog
 from catalog.models import DropdownOption
-from finance.models import ChequeStatus, Currency, CurrencyPurchase, CustomerPayment
+from finance.models import (
+    ChequeStatus,
+    Currency,
+    CurrencyOpeningBalance,
+    CurrencyPurchase,
+    CurrencySpending,
+    CustomerPayment,
+)
 from operations.models import Container, ContainerItem, Customer, PartInventory
 
 
@@ -294,14 +301,17 @@ def test_reset_zsp_production_data_keeps_only_handover_users_and_configuration(m
     assert all(
         level == AccessLevel.FULL
         for tab, level in client.profile.tab_permissions.items()
-        if tab != 'users'
+        if tab not in {'users', 'currency'}
     )
+    assert client.profile.tab_permissions['currency'] == AccessLevel.NONE
     assert Customer.objects.count() == 0
     assert Container.objects.count() == 0
     assert ContainerItem.objects.count() == 0
     assert PartInventory.objects.count() == 0
     assert CustomerPayment.objects.count() == 0
     assert CurrencyPurchase.objects.count() == 0
+    assert CurrencyOpeningBalance.objects.count() == 0
+    assert CurrencySpending.objects.count() == 0
     assert DropdownOption.objects.filter(group=DropdownOption.Group.PART_NAME).count() == 0
     assert DropdownOption.objects.filter(group=DropdownOption.Group.BANK, label='Demo Bank', created_by=admin, updated_by=admin).exists()
     assert ChequeStatus.objects.filter(name='Pending', balance_effect=ChequeStatus.BalanceEffect.NONE, created_by=admin).exists()
@@ -328,3 +338,25 @@ def test_currency_permission_backfill_only_updates_handover_accounts():
     assert client_profile.tab_permissions['currency'] == AccessLevel.FULL
     assert client_profile.tab_permissions['users'] == AccessLevel.NONE
     assert 'currency' not in restricted_profile.tab_permissions
+
+
+@pytest.mark.django_db
+def test_corrective_migration_removes_only_client_currency_access():
+    client_user = User.objects.create_user(username='syed.zulfiqar', password='StrongPass123!')
+    client_profile = UserProfile.objects.create(
+        user=client_user,
+        tab_permissions={'dashboard': AccessLevel.FULL, 'currency': AccessLevel.FULL},
+    )
+    restricted_user = User.objects.create_user(username='restricted-user', password='StrongPass123!')
+    restricted_profile = UserProfile.objects.create(
+        user=restricted_user,
+        tab_permissions={'currency': AccessLevel.VIEW},
+    )
+
+    migration = import_module('accounts.migrations.0004_remove_automatic_client_currency_access')
+    migration.remove_automatic_client_currency_access(django_apps, None)
+
+    client_profile.refresh_from_db()
+    restricted_profile.refresh_from_db()
+    assert 'currency' not in client_profile.tab_permissions
+    assert restricted_profile.tab_permissions['currency'] == AccessLevel.VIEW

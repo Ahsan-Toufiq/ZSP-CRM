@@ -38,7 +38,9 @@ import type {
   ContainerItem,
   CreditReport,
   Currency,
+  CurrencyOpeningBalance,
   CurrencyPurchase,
+  CurrencySpending,
   Customer,
   CustomerLedgerEntry,
   CustomerPayment,
@@ -67,6 +69,8 @@ type ModalState =
   | { type: 'customer-payment'; customer?: Customer }
   | { type: 'currency'; currency?: Currency }
   | { type: 'currency-purchase'; purchase?: CurrencyPurchase }
+  | { type: 'currency-opening'; opening?: CurrencyOpeningBalance }
+  | { type: 'currency-spending'; spending?: CurrencySpending }
   | { type: 'cheque-status' }
   | { type: 'dropdown-option'; group?: DropdownOption['group'] }
   | { type: 'user'; user?: ManagedUser }
@@ -270,6 +274,8 @@ export default function Home() {
   const [salesAnalytics, setSalesAnalytics] = useState<SalesAnalytics | null>(null);
   const [currencies, setCurrencies] = useState<Currency[]>([]);
   const [currencyPurchases, setCurrencyPurchases] = useState<CurrencyPurchase[]>([]);
+  const [currencyOpenings, setCurrencyOpenings] = useState<CurrencyOpeningBalance[]>([]);
+  const [currencySpending, setCurrencySpending] = useState<CurrencySpending[]>([]);
 
   const availableBatches = useMemo<BatchWithPart[]>(() => parts.flatMap((part) => (part.batches ?? []).map((batch) => ({ ...batch, item_detail: part }))).filter((batch) => batch.available_quantity > 0), [parts]);
   const visibleTabs = useMemo(() => {
@@ -371,13 +377,17 @@ export default function Home() {
       }
 
       if (tab === 'currency') {
-        const [currencyData, purchaseData] = await Promise.allSettled([
+        const [currencyData, purchaseData, openingData, spendingData] = await Promise.allSettled([
           list<Currency>('/finance/currencies/?page_size=250'),
           list<CurrencyPurchase>('/finance/currency-purchases/?page_size=250'),
+          list<CurrencyOpeningBalance>('/finance/currency-opening-balances/?page_size=250'),
+          list<CurrencySpending>('/finance/currency-spending/?page_size=250'),
         ]);
         if (loadToken.current === token) {
           setCurrencies(valueOf(currencyData, emptyPage<Currency>()).results);
           setCurrencyPurchases(valueOf(purchaseData, emptyPage<CurrencyPurchase>()).results);
+          setCurrencyOpenings(valueOf(openingData, emptyPage<CurrencyOpeningBalance>()).results);
+          setCurrencySpending(valueOf(spendingData, emptyPage<CurrencySpending>()).results);
         }
       }
 
@@ -738,7 +748,7 @@ export default function Home() {
           <div><p className="eyebrow">Digi7 for ZSP spare-parts auctions</p><h1>{currentTitle}</h1><p className="muted">Fast operational entry with guarded inventory release and auditable receivables.</p></div>
           <button className="btn" onClick={() => loadTabData(activeTab)} disabled={loading}>{loading ? <ProcessingLoader /> : <RefreshCw size={18} />} Refresh</button>
         </header>
-        {message ? <div className="alert">{message}</div> : null}
+        {message && !modal ? <div className="alert">{message}</div> : null}
         {visibleTabs.length === 0 ? <div className="empty-state"><ShieldCheck size={22} /> No product tabs are enabled for this account.</div> : null}
         {loading ? <LoadingState label={`Loading ${currentTitle.toLowerCase()}...`} /> : null}
         {!loading && activeTab === 'dashboard' ? <Dashboard summary={summary} /> : null}
@@ -746,11 +756,12 @@ export default function Home() {
         {!loading && activeTab === 'containers' ? <ContainersPanel canWrite={canWrite('containers')} containers={containers} items={items} itemsByContainer={itemsByContainer} parts={parts} expandedContainers={expandedContainers} expandedParts={expandedParts} inventoryPane={inventoryPane} onInventoryPaneChange={setInventoryPane} onToggleContainer={(id) => toggleSet(setExpandedContainers, id)} onTogglePart={(id) => toggleSet(setExpandedParts, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onDelete={(container) => remove(`/operations/containers/${container.id}/`)} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddSubparts={(item) => setModal({ type: 'subparts', parentItem: item })} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} onExport={() => setModal({ type: 'inventory-export' })} /> : null}
         {!loading && activeTab === 'sales' ? <SalesPanel canWrite={canWrite('sales')} sales={sales} analytics={salesAnalytics} onLoadAnalytics={loadSalesAnalytics} onAdd={() => { setNewSaleCustomer(null); setModal({ type: 'sale' }); }} onEdit={(sale) => { setNewSaleCustomer(null); setModal({ type: 'sale', sale }); }} onPrint={printSaleGatePass} onDownloadInvoice={downloadSaleInvoice} onPrintInvoice={printSaleInvoice} /> : null}
         {!loading && activeTab === 'cheques' ? <ChequesPanel canWrite={canWrite('cheques')} cheques={cheques} statuses={chequeStatuses} onAdd={() => setModal({ type: 'cheque' })} onEdit={(cheque) => setModal({ type: 'cheque', cheque })} onStatus={markChequeStatus} onAddStatus={() => setModal({ type: 'cheque-status' })} /> : null}
-        {!loading && activeTab === 'currency' ? <CurrencyPanel canWrite={canWrite('currency')} currencies={currencies} purchases={currencyPurchases} onAddCurrency={() => setModal({ type: 'currency' })} onEditCurrency={(currency) => setModal({ type: 'currency', currency })} onAddPurchase={() => setModal({ type: 'currency-purchase' })} onEditPurchase={(purchase) => setModal({ type: 'currency-purchase', purchase })} /> : null}
+        {!loading && activeTab === 'currency' ? <CurrencyPanel canWrite={canWrite('currency')} currencies={currencies} purchases={currencyPurchases} openings={currencyOpenings} spending={currencySpending} onAddOpening={() => setModal({ type: 'currency-opening' })} onEditCurrency={(currency) => setModal({ type: 'currency', currency })} onAddPurchase={() => setModal({ type: 'currency-purchase' })} onEditPurchase={(purchase) => setModal({ type: 'currency-purchase', purchase })} onAddSpending={() => setModal({ type: 'currency-spending' })} onEditOpening={(opening) => setModal({ type: 'currency-opening', opening })} onEditSpending={(entry) => setModal({ type: 'currency-spending', spending: entry })} /> : null}
         {!loading && activeTab === 'settings' ? <SettingsPanel canWrite={canWrite('settings')} options={dropdownOptions} chequeStatuses={chequeStatuses} onAdd={(group) => setModal({ type: 'dropdown-option', group })} onAddChequeStatus={() => setModal({ type: 'cheque-status' })} /> : null}
         {!loading && activeTab === 'users' ? <UsersPanel canWrite={canWrite('users')} users={managedUsers} currentUserId={currentUser?.id} deletingPath={deletingPath} onAdd={() => setModal({ type: 'user' })} onEdit={(user) => setModal({ type: 'user', user })} onDelete={(user) => remove(`/auth/users/${user.id}/`)} /> : null}
       </section>
       <ModalShell modal={modal} onClose={() => setModal(null)}>
+        {message && !saleCustomerOverlayOpen ? <div className="alert modal-alert">{message}</div> : null}
         {modal?.type === 'customer' ? <CustomerForm customer={modal.customer} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'container' ? <ContainerForm container={modal.container} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'item' ? <ItemForm item={modal.item} containerId={modal.containerId} containers={containers} items={items} parts={parts} options={dropdownOptions} onSave={save} isSaving={saving} /> : null}
@@ -761,13 +772,15 @@ export default function Home() {
         {modal?.type === 'customer-payment' ? <CustomerPaymentForm customer={modal.customer} customers={customers} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'currency' ? <CurrencyForm currency={modal.currency} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'currency-purchase' ? <CurrencyPurchaseForm purchase={modal.purchase} currencies={currencies} onSave={save} isSaving={saving} /> : null}
+        {modal?.type === 'currency-opening' ? <CurrencyOpeningBalanceForm opening={modal.opening} currencies={currencies} onSave={save} isSaving={saving} /> : null}
+        {modal?.type === 'currency-spending' ? <CurrencySpendingForm spending={modal.spending} currencies={currencies} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'cheque-status' ? <ChequeStatusForm onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'dropdown-option' ? <DropdownOptionForm group={modal.group} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'user' ? <UserForm user={modal.user} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'inventory-export' ? <InventoryExportDialog containers={containers} parts={parts} onDownload={downloadInventoryReport} /> : null}
         {modal?.type === 'change-password' ? <ChangePasswordForm onSave={changePassword} isSaving={saving} /> : null}
       </ModalShell>
-      {saleCustomerOverlayOpen ? <ModalShell modal={{ type: 'customer' }} onClose={() => setSaleCustomerOverlayOpen(false)}><CustomerForm onSave={saveSaleCustomer} isSaving={saving} /></ModalShell> : null}
+      {saleCustomerOverlayOpen ? <ModalShell modal={{ type: 'customer' }} onClose={() => setSaleCustomerOverlayOpen(false)}>{message ? <div className="alert modal-alert">{message}</div> : null}<CustomerForm onSave={saveSaleCustomer} isSaving={saving} /></ModalShell> : null}
     </main>
   );
 }
@@ -1432,25 +1445,34 @@ function ChequesPanel({ cheques, statuses, canWrite, onAdd, onEdit, onStatus, on
   return <section className="panel"><div className="section-head"><div><h2>Cheque control</h2><p className="muted">Receivables reduce only when a cheque reaches a settlement status.</p></div>{canWrite ? <div className="head-actions"><button className="btn" onClick={onAddStatus}><Plus size={18} /> Status</button><button className="btn primary" onClick={onAdd}><Plus size={18} /> Cheque</button></div> : null}</div><DataTable headers={['Cheque', 'Customer', 'Name on cheque', 'Bank', 'Amount', 'Dates', 'Status', 'Actions']} rows={cheques.map((cheque) => ({ className: chequeRowClass(cheque), cells: [cheque.cheque_number, cheque.customer_name, cheque.name_on_cheque || '-', cheque.bank_name, money(cheque.amount), <div key="dates">Cheque: {cheque.cheque_date}<span className="cell-note">Expiry: {cheque.expiry_date}</span></div>, canWrite ? <Select key="status" compact name={`cheque-status-${cheque.id}`} label="Status" value={cheque.status} onChange={(value) => onStatus(cheque, value)} options={statusOptions} /> : <span key="status" className={statusClass(cheque.status_name)}>{cheque.status_name}</span>, canWrite ? <button className="icon-btn" key="edit" onClick={() => onEdit(cheque)} aria-label={`Edit ${cheque.cheque_number}`}><Pencil size={16} /></button> : <span className="muted" key="view">View only</span>] }))} /></section>;
 }
 
-function CurrencyPanel({ currencies, purchases, canWrite, onAddCurrency, onEditCurrency, onAddPurchase, onEditPurchase }: { currencies: Currency[]; purchases: CurrencyPurchase[]; canWrite: boolean; onAddCurrency: () => void; onEditCurrency: (currency: Currency) => void; onAddPurchase: () => void; onEditPurchase: (purchase: CurrencyPurchase) => void }) {
-  const activeCurrencies = currencies.filter((currency) => currency.is_active);
-  const totalSpent = activeCurrencies.reduce((sum, currency) => sum + Number(currency.total_spent || 0), 0);
+function CurrencyPanel({ currencies, purchases, openings, spending, canWrite, onAddOpening, onEditCurrency, onAddPurchase, onEditPurchase, onAddSpending, onEditOpening, onEditSpending }: { currencies: Currency[]; purchases: CurrencyPurchase[]; openings: CurrencyOpeningBalance[]; spending: CurrencySpending[]; canWrite: boolean; onAddOpening: () => void; onEditCurrency: (currency: Currency) => void; onAddPurchase: () => void; onEditPurchase: (purchase: CurrencyPurchase) => void; onAddSpending: () => void; onEditOpening: (opening: CurrencyOpeningBalance) => void; onEditSpending: (entry: CurrencySpending) => void }) {
+  const portfolioCurrencies = currencies
+    .filter((currency) => currency.has_activity)
+    .sort((first, second) => Number(second.current_amount) - Number(first.current_amount) || first.code.localeCompare(second.code));
+  const totalAcquisitionCost = portfolioCurrencies.reduce((sum, currency) => sum + Number(currency.total_acquisition_cost || 0), 0);
+  const movements = [
+    ...purchases.map((purchase) => ({ id: purchase.id, date: purchase.purchase_date, type: 'Purchase', currency: purchase.currency_code, amount: purchase.amount, rate: purchase.acquisition_rate, cost: purchase.total_cost, detail: purchase.source || purchase.reference || purchase.notes || '-', tone: 'money-good', edit: () => onEditPurchase(purchase) })),
+    ...openings.map((opening) => ({ id: opening.id, date: opening.entry_date, type: 'Opening balance', currency: opening.currency_code, amount: opening.amount, rate: opening.acquisition_rate, cost: opening.total_cost, detail: opening.source || opening.reference || opening.notes || 'Existing holding recorded', tone: 'money-good', edit: () => onEditOpening(opening) })),
+    ...spending.map((entry) => ({ id: entry.id, date: entry.spending_date, type: 'Spending', currency: entry.currency_code, amount: entry.amount, rate: null, cost: null, detail: entry.purpose || entry.reference || entry.notes || '-', tone: 'money-bad', edit: () => onEditSpending(entry) })),
+  ].sort((first, second) => second.date.localeCompare(first.date));
   return (
     <section className="panel">
-      <div className="section-head">
+      <div className="section-head currency-header">
         <div>
           <h2>Currency portfolio</h2>
-          <p className="muted">Track foreign currency purchases as historical lots with calculated average acquisition rates.</p>
+          <p className="muted">Track acquisitions, opening holdings, and spending while preserving every historical entry.</p>
         </div>
-        {canWrite ? <div className="head-actions"><button className="btn" onClick={onAddCurrency}><Plus size={18} /> Currency</button><button className="btn primary" onClick={onAddPurchase}><Plus size={18} /> Purchase</button></div> : null}
+        {canWrite ? <div className="head-actions currency-actions"><button className="btn" onClick={onAddOpening}><Plus size={18} /> Opening balance</button><button className="btn" onClick={onAddSpending}><Plus size={18} /> Spending</button><button className="btn primary" onClick={onAddPurchase}><Plus size={18} /> Purchase</button></div> : null}
       </div>
       <div className="report-summary">
-        <Metric compact label="Currencies held" value={activeCurrencies.filter((currency) => Number(currency.current_amount) > 0).length} tone="success" />
-        <Metric compact label="Total acquisition cost" value={money(totalSpent)} tone="cash" />
-        <Metric compact label="Purchase records" value={purchases.length} tone="warning" />
+        <Metric compact label="Currencies held" value={portfolioCurrencies.filter((currency) => Number(currency.current_amount) > 0).length} tone="success" />
+        <Metric compact label="Acquisition cost on record" value={money(totalAcquisitionCost)} tone="cash" />
+        <Metric compact label="Acquisition entries" value={purchases.length + openings.length} tone="warning" />
+        <Metric compact label="Spending entries" value={spending.length} />
       </div>
       <div className="currency-grid">
-        {activeCurrencies.map((currency) => (
+        {portfolioCurrencies.length === 0 ? <div className="empty-state"><Globe2 size={22} /> No currency holdings recorded yet.</div> : null}
+        {portfolioCurrencies.map((currency) => (
           <article className="currency-card" key={currency.id}>
             <div className="inline-between">
               <div><h3>{currency.code}</h3><span>{currency.name}</span></div>
@@ -1458,21 +1480,25 @@ function CurrencyPanel({ currencies, purchases, canWrite, onAddCurrency, onEditC
             </div>
             <strong>{Number(currency.current_amount).toLocaleString('en-PK', { maximumFractionDigits: 4 })} {currency.code}</strong>
             <div className="currency-stats">
-              <span>Spent <b>{money(currency.total_spent)}</b></span>
-              <span>Avg rate <b>{Number(currency.average_acquisition_rate).toLocaleString('en-PK', { maximumFractionDigits: 6 })}</b></span>
-              <span>Lots <b>{currency.purchase_count}</b></span>
+              <span>Purchased <b>{Number(currency.total_purchased).toLocaleString('en-PK', { maximumFractionDigits: 4 })}</b></span>
+              <span>Opening balance <b>{Number(currency.total_opening).toLocaleString('en-PK', { maximumFractionDigits: 4 })}</b></span>
+              <span>Spent currency <b>{Number(currency.total_currency_spent).toLocaleString('en-PK', { maximumFractionDigits: 4 })}</b></span>
+              <span>Average acquisition rate <b>{Number(currency.average_acquisition_rate).toLocaleString('en-PK', { maximumFractionDigits: 6 })}</b></span>
+              <span>History entries <b>{currency.purchase_count + currency.opening_balance_count + currency.spending_count}</b></span>
             </div>
           </article>
         ))}
       </div>
-      <DataTable headers={['Date', 'Currency', 'Amount', 'Rate', 'Total cost', 'Source', 'Actions']} rows={purchases.map((purchase) => [
-        shortDate(purchase.purchase_date),
-        <strong key="currency">{purchase.currency_code}<span className="cell-note">{purchase.currency_name}</span></strong>,
-        Number(purchase.amount).toLocaleString('en-PK', { maximumFractionDigits: 4 }),
-        Number(purchase.acquisition_rate).toLocaleString('en-PK', { maximumFractionDigits: 6 }),
-        money(purchase.total_cost),
-        purchase.source || purchase.reference || '-',
-        canWrite ? <button className="icon-btn" key="edit" onClick={() => onEditPurchase(purchase)} aria-label={`Edit ${purchase.currency_code} purchase`}><Pencil size={16} /></button> : <span className="muted" key="view">View only</span>,
+      <div className="section-head slim"><div><h3>Currency history</h3><p className="muted">Acquisitions add to holdings; spending reduces them.</p></div></div>
+      <DataTable headers={['Date', 'Type', 'Currency', 'Amount', 'Rate', 'Local cost', 'Details', 'Actions']} rows={movements.map((movement) => [
+        shortDate(movement.date),
+        <span className="badge" key="type">{movement.type}</span>,
+        <strong key="currency">{movement.currency}</strong>,
+        <strong className={movement.tone} key="amount">{movement.type === 'Spending' ? '-' : '+'}{Number(movement.amount).toLocaleString('en-PK', { maximumFractionDigits: 4 })}</strong>,
+        movement.rate ? Number(movement.rate).toLocaleString('en-PK', { maximumFractionDigits: 6 }) : '-',
+        movement.cost ? money(movement.cost) : '-',
+        movement.detail,
+        canWrite ? <button className="icon-btn" key="edit" onClick={movement.edit} aria-label={`Edit ${movement.currency} ${movement.type.toLowerCase()}`}><Pencil size={16} /></button> : <span className="muted" key="view">View only</span>,
       ])} />
     </section>
   );
@@ -1899,6 +1925,14 @@ function CurrencyForm({ currency, onSave, isSaving }: { currency?: Currency; onS
   return <FormFrame title={currency ? 'Edit currency' : 'Add currency'} isSaving={isSaving} onSubmit={(form) => onSave(currency ? `/finance/currencies/${currency.id}/` : '/finance/currencies/', { ...form, code: String(form.code || '').toUpperCase(), is_active: form.is_active === 'true' }, currency ? 'patch' : 'post')}><Field name="code" label="Currency code" defaultValue={currency?.code} maxLength={3} required /><Field name="name" label="Currency name" defaultValue={currency?.name} required /><Field name="symbol" label="Symbol" defaultValue={currency?.symbol} /><Select name="is_active" label="Status" defaultValue={String(currency?.is_active ?? true)} options={[['true', 'Active'], ['false', 'Inactive']]} required /></FormFrame>;
 }
 
+function CurrencyInput({ currencies, defaultCode, defaultName }: { currencies: Currency[]; defaultCode?: string; defaultName?: string }) {
+  const options = currencies
+    .filter((currency) => currency.is_active || currency.code === defaultCode)
+    .map((currency) => `${currency.code} - ${currency.name}`);
+  const defaultValue = defaultCode ? `${defaultCode} - ${defaultName || defaultCode}` : '';
+  return <OptionText name="currency_input" label="Currency" options={options} defaultValue={defaultValue} required showHelper={false} />;
+}
+
 function CurrencyPurchaseForm({ purchase, currencies, onSave, isSaving }: { purchase?: CurrencyPurchase; currencies: Currency[]; onSave: SaveHandler; isSaving: boolean }) {
   const [amount, setAmount] = useState(purchase?.amount || '');
   const [rate, setRate] = useState(purchase?.acquisition_rate || '');
@@ -1915,7 +1949,50 @@ function CurrencyPurchaseForm({ purchase, currencies, onSave, isSaving }: { purc
     setTotal(value);
     if (amount && Number(amount) > 0) setRate((Number(value || 0) / Number(amount)).toFixed(6));
   }
-  return <FormFrame title={purchase ? 'Edit currency purchase' : 'Record currency purchase'} isSaving={isSaving} onSubmit={(form) => onSave(purchase ? `/finance/currency-purchases/${purchase.id}/` : '/finance/currency-purchases/', { ...form, amount, acquisition_rate: rate || null, total_cost: total || null }, purchase ? 'patch' : 'post')}><Select name="currency" label="Currency" defaultValue={purchase?.currency} options={currencies.filter((currency) => currency.is_active || currency.id === purchase?.currency).map((currency) => [currency.id, `${currency.code} - ${currency.name}`])} required /><Field name="purchase_date" label="Purchase date" type="date" defaultValue={purchase?.purchase_date || pakistanLocalDate()} required /><Field name="amount" label="Amount purchased" type="number" value={amount} onChange={updateAmount} min="0.0001" step="0.0001" required /><Field name="acquisition_rate" label="Acquisition rate" type="number" value={rate} onChange={updateRate} min="0.000001" step="0.000001" /><Field name="total_cost" label="Total amount paid" type="number" value={total} onChange={updateTotal} min="0.01" step="0.01" /><Field name="source" label="Source / dealer" defaultValue={purchase?.source} /><Field name="reference" label="Reference" defaultValue={purchase?.reference} /><Field name="notes" label="Notes" defaultValue={purchase?.notes} textarea /></FormFrame>;
+  return <FormFrame title={purchase ? 'Edit currency purchase' : 'Record currency purchase'} isSaving={isSaving} onSubmit={(form) => onSave(purchase ? `/finance/currency-purchases/${purchase.id}/` : '/finance/currency-purchases/', { ...form, amount, acquisition_rate: rate || null, total_cost: total || null }, purchase ? 'patch' : 'post')}><CurrencyInput currencies={currencies} defaultCode={purchase?.currency_code} defaultName={purchase?.currency_name} /><Field name="purchase_date" label="Purchase date" type="date" defaultValue={purchase?.purchase_date || pakistanLocalDate()} required /><Field name="amount" label="Amount purchased" type="number" value={amount} onChange={updateAmount} min="0.0001" step="0.0001" required /><Field name="acquisition_rate" label="Acquisition rate" type="number" value={rate} onChange={updateRate} min="0.000001" step="0.000001" /><Field name="total_cost" label="Total amount paid" type="number" value={total} onChange={updateTotal} min="0.01" step="0.01" /><Field name="source" label="Source / dealer" defaultValue={purchase?.source} /><Field name="reference" label="Reference" defaultValue={purchase?.reference} /><Field name="notes" label="Notes" defaultValue={purchase?.notes} textarea /></FormFrame>;
+}
+
+function CurrencyOpeningBalanceForm({ opening, currencies, onSave, isSaving }: { opening?: CurrencyOpeningBalance; currencies: Currency[]; onSave: SaveHandler; isSaving: boolean }) {
+  const [amount, setAmount] = useState(opening?.amount || '');
+  const [rate, setRate] = useState(opening?.acquisition_rate || '');
+  const [total, setTotal] = useState(opening?.total_cost || '');
+  function updateAmount(value: string) {
+    setAmount(value);
+    if (rate) setTotal((Number(value || 0) * Number(rate || 0)).toFixed(2));
+  }
+  function updateRate(value: string) {
+    setRate(value);
+    if (amount) setTotal((Number(amount || 0) * Number(value || 0)).toFixed(2));
+  }
+  function updateTotal(value: string) {
+    setTotal(value);
+    if (amount && Number(amount) > 0) setRate((Number(value || 0) / Number(amount)).toFixed(6));
+  }
+  return (
+    <FormFrame title={opening ? 'Edit opening balance' : 'Record currency opening balance'} isSaving={isSaving} onSubmit={(form) => onSave(opening ? `/finance/currency-opening-balances/${opening.id}/` : '/finance/currency-opening-balances/', { ...form, amount, acquisition_rate: rate || null, total_cost: total || null }, opening ? 'patch' : 'post')}>
+      <CurrencyInput currencies={currencies} defaultCode={opening?.currency_code} defaultName={opening?.currency_name} />
+      <Field name="entry_date" label="Balance date" type="date" defaultValue={opening?.entry_date || pakistanLocalDate()} required />
+      <Field name="amount" label="Amount held" type="number" value={amount} onChange={updateAmount} min="0.0001" step="0.0001" required />
+      <Field name="acquisition_rate" label="Known acquisition rate (optional)" type="number" value={rate} onChange={updateRate} min="0.000001" step="0.000001" />
+      <Field name="total_cost" label="Known total cost (optional)" type="number" value={total} onChange={updateTotal} min="0.01" step="0.01" />
+      <Field name="source" label="Source / dealer" defaultValue={opening?.source} />
+      <Field name="reference" label="Reference" defaultValue={opening?.reference} />
+      <Field name="notes" label="Notes" defaultValue={opening?.notes} textarea />
+    </FormFrame>
+  );
+}
+
+function CurrencySpendingForm({ spending, currencies, onSave, isSaving }: { spending?: CurrencySpending; currencies: Currency[]; onSave: SaveHandler; isSaving: boolean }) {
+  return (
+    <FormFrame title={spending ? 'Edit currency spending' : 'Record currency spending'} isSaving={isSaving} onSubmit={(form) => onSave(spending ? `/finance/currency-spending/${spending.id}/` : '/finance/currency-spending/', form, spending ? 'patch' : 'post')}>
+      <CurrencyInput currencies={currencies} defaultCode={spending?.currency_code} defaultName={spending?.currency_name} />
+      <Field name="spending_date" label="Spending date" type="date" defaultValue={spending?.spending_date || pakistanLocalDate()} required />
+      <Field name="amount" label="Amount spent" type="number" defaultValue={spending?.amount} min="0.0001" step="0.0001" required />
+      <Field name="purpose" label="Purpose / paid to" defaultValue={spending?.purpose} />
+      <Field name="reference" label="Reference" defaultValue={spending?.reference} />
+      <Field name="notes" label="Notes" defaultValue={spending?.notes} textarea />
+    </FormFrame>
+  );
 }
 
 function ChequeStatusForm({ onSave, isSaving }: { onSave: SaveHandler; isSaving: boolean }) {

@@ -263,4 +263,52 @@ class CurrencyPurchase(UserStampedModel):
     def __str__(self) -> str:
         return f'{self.currency.code} {self.amount} on {self.purchase_date}'
 
+
+class CurrencyOpeningBalance(UserStampedModel):
+    currency = models.ForeignKey(Currency, on_delete=models.PROTECT, related_name='opening_balances')
+    entry_date = models.DateField()
+    amount = models.DecimalField(max_digits=18, decimal_places=4)
+    acquisition_rate = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
+    total_cost = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+    source = models.CharField(max_length=160, blank=True)
+    reference = models.CharField(max_length=120, blank=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['-entry_date', '-created_at']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(amount__gt=0), name='currency_opening_amount_positive'),
+            models.CheckConstraint(
+                condition=models.Q(acquisition_rate__isnull=True) | models.Q(acquisition_rate__gt=0),
+                name='currency_opening_rate_positive_or_null',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(total_cost__isnull=True) | models.Q(total_cost__gt=0),
+                name='currency_opening_total_positive_or_null',
+            ),
+        ]
+        indexes = [models.Index(fields=['currency', 'entry_date'])]
+
+    def __str__(self) -> str:
+        return f'{self.currency.code} opening {self.amount} on {self.entry_date}'
+
+
+class CurrencySpending(UserStampedModel):
+    currency = models.ForeignKey(Currency, on_delete=models.PROTECT, related_name='spending_entries')
+    spending_date = models.DateField()
+    amount = models.DecimalField(max_digits=18, decimal_places=4)
+    purpose = models.CharField(max_length=180, blank=True)
+    reference = models.CharField(max_length=120, blank=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['-spending_date', '-created_at']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(amount__gt=0), name='currency_spending_amount_positive'),
+        ]
+        indexes = [models.Index(fields=['currency', 'spending_date'])]
+
+    def __str__(self) -> str:
+        return f'{self.currency.code} spent {self.amount} on {self.spending_date}'
+
 # Create your models here.

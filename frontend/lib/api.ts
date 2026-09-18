@@ -11,6 +11,23 @@ export class ApiError extends Error {
   }
 }
 
+function fieldLabel(value: string): string {
+  return value.replaceAll('_', ' ').replace(/^./, (character) => character.toUpperCase());
+}
+
+function errorMessages(value: unknown, field = ''): string[] {
+  if (typeof value === 'string') return [field ? `${fieldLabel(field)}: ${value}` : value];
+  if (Array.isArray(value)) return value.flatMap((entry) => errorMessages(entry, field));
+  if (value && typeof value === 'object') {
+    return Object.entries(value).flatMap(([key, entry]) => (
+      key === 'detail' || key === 'non_field_errors'
+        ? errorMessages(entry)
+        : errorMessages(entry, key)
+    ));
+  }
+  return [];
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const csrfToken = typeof document === 'undefined'
     ? ''
@@ -30,7 +47,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     let message = `Request failed with status ${response.status}`;
     try {
       const body = await response.json();
-      message = body.detail ?? JSON.stringify(body);
+      const messages = errorMessages(body);
+      if (messages.length > 0) message = messages.join(' ');
     } catch {
       // Keep the generic message when the response is not JSON.
     }

@@ -14,7 +14,9 @@ from finance.models import (
     Cheque,
     ChequeStatus,
     Currency,
+    CurrencyOpeningBalance,
     CurrencyPurchase,
+    CurrencySpending,
     CustomerPayment,
     CustomerPaymentComponent,
 )
@@ -629,6 +631,41 @@ class Command(BaseCommand):
                     'total_cost': (amount_value * rate_value).quantize(Decimal('0.01')),
                     'source': source,
                     'notes': 'Seeded local currency acquisition lot.',
+                    'created_by': admin,
+                    'updated_by': admin,
+                },
+            )
+
+        yen = currencies.get('JPY')
+        if yen is not None:
+            CurrencyOpeningBalance.objects.get_or_create(
+                currency=yen,
+                reference='DEMO-FX-JPY-OPENING',
+                defaults={
+                    'entry_date': today - timedelta(days=30),
+                    'amount': Decimal('150000.0000'),
+                    'notes': 'Existing holding recorded without historical acquisition cost.',
+                    'created_by': admin,
+                    'updated_by': admin,
+                },
+            )
+
+        spending_specs = [
+            ('USD', 'DEMO-FX-SPEND-USD-001', 2, '1200.0000', 'Overseas supplier deposit'),
+            ('AED', 'DEMO-FX-SPEND-AED-001', 1, '2500.0000', 'Freight settlement'),
+            ('JPY', 'DEMO-FX-SPEND-JPY-001', 3, '25000.0000', 'Parts supplier advance'),
+        ]
+        for code, reference, days_ago, amount, purpose in spending_specs:
+            currency = currencies.get(code)
+            if currency is None:
+                continue
+            CurrencySpending.objects.get_or_create(
+                reference=reference,
+                defaults={
+                    'currency': currency,
+                    'spending_date': today - timedelta(days=days_ago),
+                    'amount': Decimal(amount),
+                    'purpose': purpose,
                     'created_by': admin,
                     'updated_by': admin,
                 },
