@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const appRoutes = new Set(['/login', '/dashboard', '/customers', '/containers', '/sales', '/cheques', '/settings', '/users']);
+const appRoutes = new Set(['/login', '/dashboard', '/customers', '/containers', '/sales', '/cheques', '/currency', '/settings', '/users']);
 
 export function proxy(request: NextRequest) {
   if (appRoutes.has(request.nextUrl.pathname)) {
@@ -10,5 +10,5 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/login', '/dashboard', '/customers', '/containers', '/sales', '/cheques', '/settings', '/users'],
+  matcher: ['/login', '/dashboard', '/customers', '/containers', '/sales', '/cheques', '/currency', '/settings', '/users'],
 };
