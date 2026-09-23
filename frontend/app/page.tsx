@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Container as ContainerIcon,
   FileDown,
+  Eye,
   Gavel,
   Globe2,
   KeyRound,
@@ -17,6 +18,7 @@ import {
   Pencil,
   Plus,
   Printer,
+  ReceiptText,
   RefreshCw,
   Search,
   ShieldCheck,
@@ -37,6 +39,8 @@ import type {
   Container,
   ContainerItem,
   CreditReport,
+  CustomerReceivable,
+  CustomerReceivableResponse,
   Currency,
   CurrencyOpeningBalance,
   CurrencyPurchase,
@@ -44,6 +48,7 @@ import type {
   Customer,
   CustomerLedgerEntry,
   CustomerPayment,
+  DailyPaymentReport,
   DashboardSummary,
   DropdownOption,
   GatePass,
@@ -67,6 +72,7 @@ type ModalState =
   | { type: 'sale'; sale?: AuctionSale }
   | { type: 'cheque'; cheque?: Cheque }
   | { type: 'customer-payment'; customer?: Customer }
+  | { type: 'customer-details'; customer: Customer }
   | { type: 'currency'; currency?: Currency }
   | { type: 'currency-purchase'; purchase?: CurrencyPurchase }
   | { type: 'currency-opening'; opening?: CurrencyOpeningBalance }
@@ -248,7 +254,6 @@ export default function Home() {
   const [saleCustomerOverlayOpen, setSaleCustomerOverlayOpen] = useState(false);
   const [newSaleCustomer, setNewSaleCustomer] = useState<Customer | null>(null);
   const [expandedContainers, setExpandedContainers] = useState<Set<UUID>>(new Set());
-  const [expandedCustomers, setExpandedCustomers] = useState<Set<UUID>>(new Set());
   const [expandedParts, setExpandedParts] = useState<Set<UUID>>(new Set());
   const [inventoryPane, setInventoryPane] = useState<'parts' | 'containers'>('parts');
   const [message, setMessage] = useState('');
@@ -646,6 +651,14 @@ export default function Home() {
     );
   }
 
+  async function downloadDailyPaymentReport(reportDate: string) {
+    await downloadBlob(
+      `/api/finance/daily-payments/?date=${encodeURIComponent(reportDate)}&export=pdf`,
+      `zsp-daily-payments-${reportDate}.pdf`,
+      'Unable to download the daily payment report.',
+    );
+  }
+
   async function downloadInventoryReport(format: 'csv' | 'pdf', containerId?: UUID) {
     const params = new URLSearchParams({ export: format });
     if (containerId) params.set('container', containerId);
@@ -662,11 +675,21 @@ export default function Home() {
       `zsp-invoice-${sale.sale_number}.pdf`,
       'Unable to download invoice.',
     );
+    await downloadBlob(
+      `/api/operations/auction-sales/${sale.id}/invoice/?layout=thermal`,
+      `zsp-thermal-invoice-${sale.sale_number}.pdf`,
+      'Standard invoice downloaded, but the thermal invoice could not be downloaded.',
+    );
   }
 
   function printSaleInvoice(sale: AuctionSale) {
     const printWindow = window.open(`/api/operations/auction-sales/${sale.id}/invoice/?disposition=inline`, '_blank', 'noopener,noreferrer,width=980,height=760');
     if (!printWindow) setMessage('Browser blocked the invoice window. Allow popups for this site and try again.');
+  }
+
+  function printThermalInvoice(sale: AuctionSale) {
+    const printWindow = window.open(`/api/operations/auction-sales/${sale.id}/invoice/?layout=thermal&disposition=inline`, '_blank', 'noopener,noreferrer,width=480,height=760');
+    if (!printWindow) setMessage('Browser blocked the thermal invoice window. Allow popups for this site and try again.');
   }
 
   async function markChequeStatus(cheque: Cheque, statusId: UUID) {
@@ -752,9 +775,9 @@ export default function Home() {
         {visibleTabs.length === 0 ? <div className="empty-state"><ShieldCheck size={22} /> No product tabs are enabled for this account.</div> : null}
         {loading ? <LoadingState label={`Loading ${currentTitle.toLowerCase()}...`} /> : null}
         {!loading && activeTab === 'dashboard' ? <Dashboard summary={summary} /> : null}
-        {!loading && activeTab === 'customers' ? <CustomersPanel canWrite={canWrite('customers')} customers={customers} ledgerByCustomer={ledgerByCustomer} payments={customerPayments} creditReport={creditReport} expanded={expandedCustomers} onToggle={(id) => toggleSet(setExpandedCustomers, id)} onAdd={() => setModal({ type: 'customer' })} onEdit={(customer) => setModal({ type: 'customer', customer })} onDelete={(customer) => remove(`/operations/customers/${customer.id}/`)} onStatus={(customer) => quickPatch(`/operations/customers/${customer.id}/`, { is_active: !customer.is_active })} onDownloadReport={downloadCreditReport} onDownloadStatement={downloadCustomerStatement} onRecordPayment={(customer) => setModal({ type: 'customer-payment', customer })} onRecordPagePayment={() => setModal({ type: 'customer-payment' })} /> : null}
+        {!loading && activeTab === 'customers' ? <CustomersPanel canWrite={canWrite('customers')} customers={customers} creditReport={creditReport} onAdd={() => setModal({ type: 'customer' })} onEdit={(customer) => setModal({ type: 'customer', customer })} onDelete={(customer) => remove(`/operations/customers/${customer.id}/`)} onStatus={(customer) => quickPatch(`/operations/customers/${customer.id}/`, { is_active: !customer.is_active })} onDownloadReport={downloadCreditReport} onDownloadDailyReport={downloadDailyPaymentReport} onDownloadStatement={downloadCustomerStatement} onViewDetails={(customer) => setModal({ type: 'customer-details', customer })} onRecordPayment={(customer) => setModal({ type: 'customer-payment', customer })} onRecordPagePayment={() => setModal({ type: 'customer-payment' })} /> : null}
         {!loading && activeTab === 'containers' ? <ContainersPanel canWrite={canWrite('containers')} containers={containers} items={items} itemsByContainer={itemsByContainer} parts={parts} expandedContainers={expandedContainers} expandedParts={expandedParts} inventoryPane={inventoryPane} onInventoryPaneChange={setInventoryPane} onToggleContainer={(id) => toggleSet(setExpandedContainers, id)} onTogglePart={(id) => toggleSet(setExpandedParts, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onDelete={(container) => remove(`/operations/containers/${container.id}/`)} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddSubparts={(item) => setModal({ type: 'subparts', parentItem: item })} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} onExport={() => setModal({ type: 'inventory-export' })} /> : null}
-        {!loading && activeTab === 'sales' ? <SalesPanel canWrite={canWrite('sales')} sales={sales} analytics={salesAnalytics} onLoadAnalytics={loadSalesAnalytics} onAdd={() => { setNewSaleCustomer(null); setModal({ type: 'sale' }); }} onEdit={(sale) => { setNewSaleCustomer(null); setModal({ type: 'sale', sale }); }} onPrint={printSaleGatePass} onDownloadInvoice={downloadSaleInvoice} onPrintInvoice={printSaleInvoice} /> : null}
+        {!loading && activeTab === 'sales' ? <SalesPanel canWrite={canWrite('sales')} sales={sales} analytics={salesAnalytics} onLoadAnalytics={loadSalesAnalytics} onAdd={() => { setNewSaleCustomer(null); setModal({ type: 'sale' }); }} onEdit={(sale) => { setNewSaleCustomer(null); setModal({ type: 'sale', sale }); }} onPrint={printSaleGatePass} onDownloadInvoice={downloadSaleInvoice} onPrintInvoice={printSaleInvoice} onPrintThermalInvoice={printThermalInvoice} /> : null}
         {!loading && activeTab === 'cheques' ? <ChequesPanel canWrite={canWrite('cheques')} cheques={cheques} statuses={chequeStatuses} onAdd={() => setModal({ type: 'cheque' })} onEdit={(cheque) => setModal({ type: 'cheque', cheque })} onStatus={markChequeStatus} onAddStatus={() => setModal({ type: 'cheque-status' })} /> : null}
         {!loading && activeTab === 'currency' ? <CurrencyPanel canWrite={canWrite('currency')} currencies={currencies} purchases={currencyPurchases} openings={currencyOpenings} spending={currencySpending} onAddOpening={() => setModal({ type: 'currency-opening' })} onEditCurrency={(currency) => setModal({ type: 'currency', currency })} onAddPurchase={() => setModal({ type: 'currency-purchase' })} onEditPurchase={(purchase) => setModal({ type: 'currency-purchase', purchase })} onAddSpending={() => setModal({ type: 'currency-spending' })} onEditOpening={(opening) => setModal({ type: 'currency-opening', opening })} onEditSpending={(entry) => setModal({ type: 'currency-spending', spending: entry })} /> : null}
         {!loading && activeTab === 'settings' ? <SettingsPanel canWrite={canWrite('settings')} options={dropdownOptions} chequeStatuses={chequeStatuses} onAdd={(group) => setModal({ type: 'dropdown-option', group })} onAddChequeStatus={() => setModal({ type: 'cheque-status' })} /> : null}
@@ -770,6 +793,7 @@ export default function Home() {
         {modal?.type === 'sale' ? <SaleForm sale={modal.sale} customers={customers} availableBatches={availableBatches} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} selectedCustomer={newSaleCustomer} onAddCustomer={() => setSaleCustomerOverlayOpen(true)} /> : null}
         {modal?.type === 'cheque' ? <ChequeForm cheque={modal.cheque} customers={customers} statuses={chequeStatuses} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'customer-payment' ? <CustomerPaymentForm customer={modal.customer} customers={customers} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} /> : null}
+        {modal?.type === 'customer-details' ? <CustomerDetails customer={modal.customer} entries={ledgerByCustomer.get(modal.customer.id) ?? []} payments={customerPayments.filter((payment) => payment.customer === modal.customer.id)} reportCustomer={creditReport?.customers.find((item) => item.id === modal.customer.id)} onDownloadStatement={downloadCustomerStatement} /> : null}
         {modal?.type === 'currency' ? <CurrencyForm currency={modal.currency} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'currency-purchase' ? <CurrencyPurchaseForm purchase={modal.purchase} currencies={currencies} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'currency-opening' ? <CurrencyOpeningBalanceForm opening={modal.opening} currencies={currencies} onSave={save} isSaving={saving} /> : null}
@@ -886,24 +910,33 @@ function UsersPanel({ users, currentUserId, deletingPath, canWrite, onAdd, onEdi
   return <section className="panel"><div className="section-head"><div><h2>User access control</h2><p className="muted">Create staff accounts and control module access per user.</p></div>{canWrite ? <button className="btn primary" onClick={onAdd}><UserPlus size={18} /> User</button> : null}</div><DataTable headers={['User', 'Module access', 'Status', 'Actions']} rows={users.map((user) => { const permanent = user.is_permanent_admin; return [<div key={user.id}><strong>{user.full_name}</strong><span className="cell-note">{user.username}{permanent ? ' · Permanent Digi7 Admin' : ''}</span></div>, <PermissionSummary key="access" permissions={user.effective_tab_permissions || user.tab_permissions} />, <span key="status" className={user.is_active ? 'badge good' : 'badge bad'}>{user.is_active ? 'Active' : 'Inactive'}</span>, <div className="table-actions" key="actions">{canWrite && !permanent ? <button className="icon-btn" onClick={() => onEdit(user)} aria-label={`Edit ${user.username}`}><Pencil size={16} /></button> : null}{canWrite && !permanent ? <button className="icon-btn danger" onClick={() => onDelete(user)} aria-label={`Delete ${user.username}`} disabled={user.id === currentUserId || deletingPath === `/auth/users/${user.id}/`} title={user.id === currentUserId ? 'You cannot delete your own account.' : `Delete ${user.username}`}>{deletingPath === `/auth/users/${user.id}/` ? <ProcessingLoader /> : <Trash2 size={16} />}</button> : null}{!canWrite || permanent ? <span className="muted">{permanent ? 'Locked' : 'View only'}</span> : null}</div>]; })} /></section>;
 }
 
-function CustomersPanel({ customers, ledgerByCustomer, payments, creditReport, expanded, canWrite, onToggle, onAdd, onEdit, onDelete, onStatus, onDownloadReport, onDownloadStatement, onRecordPayment, onRecordPagePayment }: { customers: Customer[]; ledgerByCustomer: Map<UUID, CustomerLedgerEntry[]>; payments: CustomerPayment[]; creditReport: CreditReport | null; expanded: Set<UUID>; canWrite: boolean; onToggle: (id: UUID) => void; onAdd: () => void; onEdit: (customer: Customer) => void; onDelete: (customer: Customer) => void; onStatus: (customer: Customer) => void; onDownloadReport: (format: 'csv' | 'pdf') => void; onDownloadStatement: (customer: Customer) => void; onRecordPayment: (customer: Customer) => void; onRecordPagePayment: () => void }) {
+function CustomersPanel({ customers, creditReport, canWrite, onAdd, onEdit, onDelete, onStatus, onDownloadReport, onDownloadDailyReport, onDownloadStatement, onViewDetails, onRecordPayment, onRecordPagePayment }: { customers: Customer[]; creditReport: CreditReport | null; canWrite: boolean; onAdd: () => void; onEdit: (customer: Customer) => void; onDelete: (customer: Customer) => void; onStatus: (customer: Customer) => void; onDownloadReport: (format: 'csv' | 'pdf') => void; onDownloadDailyReport: (date: string) => void; onDownloadStatement: (customer: Customer) => void; onViewDetails: (customer: Customer) => void; onRecordPayment: (customer: Customer) => void; onRecordPagePayment: () => void }) {
+  const [pane, setPane] = useState<'customers' | 'daily'>('customers');
+  const [query, setQuery] = useState('');
   const agingBuckets = creditReport?.aging_buckets ?? [];
   const reportCustomers = creditReport?.customers ?? [];
   const reportByCustomer = new Map(reportCustomers.map((customer) => [customer.id, customer]));
+  const filteredCustomers = customers.filter((customer) => `${customer.name} ${customer.phone} ${customer.customer_type}`.toLowerCase().includes(query.trim().toLowerCase()));
   return (
     <section className="panel">
       <div className="section-head">
         <div>
-          <h2>Customers and balance breakdown</h2>
-          <p className="muted">Total credit report, aging, and per-customer balances in one place.</p>
+          <h2>{pane === 'customers' ? 'Customers and balances' : 'Daily payments'}</h2>
+          <p className="muted">{pane === 'customers' ? 'Compact customer monitoring with complete financial details one action away.' : 'Review receipts, adjustments, and resulting customer balances for any past date.'}</p>
         </div>
         <div className="head-actions">
-          <button className="btn" onClick={() => onDownloadReport('csv')}><FileDown size={18} /> Spreadsheet</button>
-          <button className="btn" onClick={() => onDownloadReport('pdf')}><FileDown size={18} /> PDF</button>
+          <div className="segmented-control" role="tablist" aria-label="Customer views">
+            <button type="button" role="tab" aria-selected={pane === 'customers'} className={pane === 'customers' ? 'active' : ''} onClick={() => setPane('customers')}>Customers</button>
+            <button type="button" role="tab" aria-selected={pane === 'daily'} className={pane === 'daily' ? 'active' : ''} onClick={() => setPane('daily')}>Daily payments</button>
+          </div>
+          {pane === 'customers' ? <button className="btn" onClick={() => onDownloadReport('csv')}><FileDown size={18} /> Spreadsheet</button> : null}
+          {pane === 'customers' ? <button className="btn" onClick={() => onDownloadReport('pdf')}><FileDown size={18} /> PDF</button> : null}
           {canWrite ? <button className="btn" onClick={onRecordPagePayment}><Banknote size={18} /> Payment</button> : null}
           {canWrite ? <button className="btn primary" onClick={onAdd}><Plus size={18} /> Customer</button> : null}
         </div>
       </div>
+      {pane === 'daily' ? <DailyPaymentsPanel onDownload={onDownloadDailyReport} /> : null}
+      {pane === 'customers' ? <>
       {creditReport ? (
         <div className="report-summary">
           <Metric compact label="Creditors" value={creditReport.totals.creditor_count} tone="warning" />
@@ -925,67 +958,62 @@ function CustomersPanel({ customers, ledgerByCustomer, payments, creditReport, e
           ))}
         </div>
       ) : null}
-      <DataTable
-        headers={['Customer', 'Contact Number', 'Remaining Balance', 'Last Payment', ...agingBuckets.map((bucket) => bucket.label)]}
-        rows={reportCustomers.filter((customer) => Number(customer.remaining_balance) > 0).map((customer) => [
-          customer.name,
-          customer.phone,
-          <strong className="money-bad" key="balance">{money(customer.remaining_balance)}</strong>,
-          shortDate(customer.last_payment_date),
-          ...agingBuckets.map((bucket) => <span key={bucket.key} className={Number(customer.aging[bucket.key] ?? 0) > 0 ? 'money-bad' : 'muted'}>{money(customer.aging[bucket.key] ?? 0)}</span>),
-        ])}
-      />
-      <div className="record-stack">
-        {customers.map((customer) => {
-          const entries = ledgerByCustomer.get(customer.id) ?? [];
-          const reportCustomer = reportByCustomer.get(customer.id);
-          const customerPayments = payments.filter((payment) => payment.customer === customer.id);
-          const balance = Number(customer.balance);
-          return (
-            <article className="record-card" key={customer.id}>
-              <button className="record-main" onClick={() => onToggle(customer.id)}>
-                {expanded.has(customer.id) ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
-                <div><strong>{customer.name}</strong><span>{customer.phone} · {customer.customer_type}</span></div>
-                <b className={balance > 0 ? 'money-bad' : 'money-good'}>{money(customer.balance)}</b>
-                <span className={customer.is_active ? 'badge good' : 'badge bad'}>{customer.is_active ? 'Active' : 'Inactive'}</span>
-              </button>
-              {canWrite ? (
-                <div className="record-actions">
-                  <button className="icon-btn" onClick={() => onEdit(customer)} aria-label={`Edit ${customer.name}`}><Pencil size={16} /></button>
-                  <button className="icon-btn" onClick={() => onDownloadStatement(customer)} aria-label={`Download statement for ${customer.name}`}><FileDown size={16} /></button>
-                  <button className="btn small" onClick={() => onRecordPayment(customer)}><Banknote size={16} /> Payment</button>
-                  <button className="icon-btn danger" onClick={() => onDelete(customer)} aria-label={`Delete ${customer.name}`} disabled={!customer.can_delete} title={customer.can_delete ? `Delete ${customer.name}` : 'Customers with transactions cannot be deleted.'}><Trash2 size={16} /></button>
-                  <button className="btn small" onClick={() => onStatus(customer)}>{customer.is_active ? 'Mark inactive' : 'Mark active'}</button>
-                </div>
-              ) : null}
-              {expanded.has(customer.id) ? (
-                <div className="customer-detail-grid">
-                  <div>
-                    <h3>Ledger</h3>
-                    <DataTable headers={['Date', 'Type', 'Description', 'Debit', 'Credit', 'Ref']} rows={entries.map((entry) => [entry.entry_date, statusLabel(entry.entry_type), entry.description, <span className="money-bad" key="debit">{money(entry.debit)}</span>, <span className="money-good" key="credit">{money(entry.credit)}</span>, entry.sale_number || entry.cheque_number || entry.payment_number || '-'])} />
-                    <h3>Direct payments</h3>
-                    <DataTable headers={['Date', 'Payment', 'Type', 'Amount', 'Details']} rows={customerPayments.flatMap((payment) => payment.components.map((component) => [payment.payment_date, payment.payment_number, statusLabel(component.method), <span className={component.method === 'cheque' ? 'money-bad' : 'money-good'} key="amount">{money(component.amount)}</span>, component.method === 'cheque' ? `${component.cheque_number || '-'} · ${component.cheque_status || 'Pending'}` : component.bank_name || component.reference || '-']))} />
-                  </div>
-                  <div>
-                    <h3>Outstanding sales</h3>
-                    <DataTable
-                      headers={['Sale', 'Date', 'Outstanding', 'Items']}
-                      rows={(reportCustomer?.sale_breakdown ?? []).map((sale) => [
-                        sale.sale_number,
-                        `${shortDate(sale.sale_date)} · ${sale.days_old} days`,
-                        <strong className="money-bad" key="outstanding">{money(sale.outstanding_amount)}</strong>,
-                        <div className="line-stack" key="items">{sale.items.map((item) => <span key={`${sale.sale_number}-${item.part_name}-${item.part_number}`}>{item.quantity} x {item.part_name}<small>{item.part_number || 'No number'} · {item.category || 'No category'} · {money(item.line_total)}</small></span>)}</div>,
-                      ])}
-                    />
-                  </div>
-                </div>
-              ) : null}
-            </article>
-          );
-        })}
+      <div className="table-toolbar">
+        <label className="search-box"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Search customer name, phone, or type" aria-label="Search customers" /></label>
+        <span className="muted">{filteredCustomers.length} of {customers.length} customers</span>
       </div>
+      <DataTable
+        headers={['Customer', 'Contact', 'Balance', 'Last payment', 'Aging', 'Status', 'Actions']}
+        rows={filteredCustomers.map((customer) => {
+          const reportCustomer = reportByCustomer.get(customer.id);
+          const balance = Number(customer.balance);
+          return [
+            <div key="customer"><strong>{customer.name}</strong><span className="cell-note">{statusLabel(customer.customer_type)}</span></div>,
+            customer.phone,
+            <strong className={balance > 0 ? 'money-bad' : 'money-good'} key="balance">{money(balance)}</strong>,
+            shortDate(reportCustomer?.last_payment_date),
+            <div className="aging-compact" key="aging">{agingBuckets.map((bucket) => Number(reportCustomer?.aging[bucket.key] ?? 0) > 0 ? <span key={bucket.key}><small>{bucket.label}</small><b>{money(reportCustomer?.aging[bucket.key] ?? 0)}</b></span> : null)}</div>,
+            <span className={customer.is_active ? 'badge good' : 'badge bad'} key="status">{customer.is_active ? 'Active' : 'Inactive'}</span>,
+            <div className="table-actions" key="actions">
+                  <button className="icon-btn" onClick={() => onViewDetails(customer)} aria-label={`View details for ${customer.name}`} title="View complete details"><Eye size={16} /></button>
+                  <button className="icon-btn" onClick={() => onDownloadStatement(customer)} aria-label={`Download statement for ${customer.name}`} title="Download statement"><FileDown size={16} /></button>
+                  {canWrite ? <button className="icon-btn" onClick={() => onRecordPayment(customer)} aria-label={`Record payment for ${customer.name}`} title="Record payment"><Banknote size={16} /></button> : null}
+                  {canWrite ? <button className="icon-btn" onClick={() => onEdit(customer)} aria-label={`Edit ${customer.name}`} title="Edit customer"><Pencil size={16} /></button> : null}
+                  {canWrite ? <button className="icon-btn danger" onClick={() => onDelete(customer)} aria-label={`Delete ${customer.name}`} disabled={!customer.can_delete} title={customer.can_delete ? `Delete ${customer.name}` : 'Customers with transactions cannot be deleted.'}><Trash2 size={16} /></button> : null}
+                  {canWrite ? <button className="btn small" onClick={() => onStatus(customer)}>{customer.is_active ? 'Deactivate' : 'Activate'}</button> : null}
+            </div>,
+          ];
+        })}
+      />
+      </> : null}
     </section>
   );
+}
+
+function CustomerDetails({ customer, entries, payments, reportCustomer, onDownloadStatement }: { customer: Customer; entries: CustomerLedgerEntry[]; payments: CustomerPayment[]; reportCustomer?: CreditReport['customers'][number]; onDownloadStatement: (customer: Customer) => void }) {
+  return <div className="detail-dialog"><div className="detail-dialog-head"><div><p className="eyebrow">Customer account</p><h2>{customer.name}</h2><p className="muted">{customer.phone} · {statusLabel(customer.customer_type)} · {customer.is_active ? 'Active' : 'Inactive'}</p></div><button className="btn" onClick={() => onDownloadStatement(customer)}><FileDown size={17} /> Statement</button></div><div className="report-summary"><Metric compact label="Current balance" value={money(customer.balance)} tone={Number(customer.balance) > 0 ? 'warning' : 'success'} /><Metric compact label="Total debit" value={money(reportCustomer?.total_debit ?? 0)} /><Metric compact label="Total credit" value={money(reportCustomer?.total_credit ?? 0)} tone="success" /><Metric compact label="Last payment" value={shortDate(reportCustomer?.last_payment_date)} /></div><div className="customer-detail-grid"><div><h3>Transaction history</h3><DataTable headers={['Date', 'Type', 'Description', 'Debit', 'Credit', 'Reference']} rows={entries.map((entry) => [shortDate(entry.entry_date), statusLabel(entry.entry_type), entry.description, <span className="money-bad" key="debit">{money(entry.debit)}</span>, <span className="money-good" key="credit">{money(entry.credit)}</span>, entry.sale_number || entry.cheque_number || entry.payment_number || '-'])} /><h3>Payment records</h3><DataTable headers={['Date', 'Payment', 'Method', 'Amount', 'Allocation / status']} rows={payments.flatMap((payment) => payment.components.map((component) => [shortDate(payment.payment_date), payment.payment_number, statusLabel(component.method), money(component.amount), component.method === 'cheque' ? `${component.cheque_number || '-'} · ${component.cheque_status || 'Pending'}` : payment.targets?.map((target) => target.target_label).join(', ') || statusLabel(payment.allocation_mode)]))} /></div><div><h3>Outstanding transactions</h3><DataTable headers={['Reference', 'Date', 'Outstanding', 'Details']} rows={(reportCustomer?.sale_breakdown ?? []).map((sale) => [sale.sale_number, `${shortDate(sale.sale_date)} · ${sale.days_old} days`, <strong className="money-bad" key="outstanding">{money(sale.outstanding_amount)}</strong>, sale.items.length ? <div className="line-stack" key="items">{sale.items.map((item) => <span key={`${sale.sale_number}-${item.part_name}-${item.part_number}`}>{item.quantity} x {item.part_name}<small>{item.part_number || 'No number'} · {item.category || 'No category'} · {money(item.line_total)}</small></span>)}</div> : 'Opening account balance'])} /></div></div></div>;
+}
+
+function DailyPaymentsPanel({ onDownload }: { onDownload: (date: string) => void }) {
+  const [reportDate, setReportDate] = useState(pakistanLocalDate());
+  const [report, setReport] = useState<DailyPaymentReport | null>(null);
+  const [loadingReport, setLoadingReport] = useState(true);
+  const [error, setError] = useState('');
+  function changeReportDate(value: string) {
+    setReportDate(value);
+    setLoadingReport(true);
+    setError('');
+  }
+  useEffect(() => {
+    let active = true;
+    get<DailyPaymentReport>(`/finance/daily-payments/?date=${encodeURIComponent(reportDate)}`)
+      .then((data) => { if (active) setReport(data); })
+      .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : 'Unable to load daily payments.'); })
+      .finally(() => { if (active) setLoadingReport(false); });
+    return () => { active = false; };
+  }, [reportDate]);
+  if (loadingReport) return <LoadingState label="Loading daily payments..." />;
+  return <div className="daily-payments"><div className="table-toolbar"><Field name="daily_payment_date" label="Payment date" type="date" value={reportDate} onChange={changeReportDate} max={pakistanLocalDate()} /><button className="btn" onClick={() => onDownload(reportDate)} disabled={!report}><FileDown size={17} /> Download PDF</button></div>{error ? <div className="alert">{error}</div> : null}{report ? <><div className="report-summary"><Metric compact label="Payments" value={report.totals.payment_count} /><Metric compact label="Total recorded" value={money(report.totals.total_recorded)} tone="cash" /><Metric compact label="Applied to balance" value={money(report.totals.total_applied)} tone="success" /><Metric compact label="Cheque" value={money(report.totals.cheque)} /><Metric compact label="Write-off" value={money(report.totals.write_off)} tone="warning" /></div><DataTable headers={['Payment', 'Customer', 'Methods', 'Allocation', 'Recorded', 'Applied', 'Balance after', 'Notes']} rows={report.rows.map((row) => [row.payment_number, <div key="customer"><strong>{row.customer_name}</strong><span className="cell-note">{row.customer_phone}</span></div>, <div className="line-stack" key="methods">{row.components.map((component, index) => <span key={`${row.id}-${index}`}>{component.method}: {money(component.amount)}<small>{component.cheque_number ? `${component.cheque_number} · ${component.cheque_status}` : component.bank_name || component.reference || ''}</small></span>)}</div>, row.targets.length ? row.targets.map((target) => `${target.label}: ${money(target.amount)}`).join(', ') : row.allocation_mode, money(row.total_amount), <span className="money-good" key="applied">{money(row.applied_amount)}</span>, <strong className={Number(row.balance_after) > 0 ? 'money-bad' : 'money-good'} key="balance">{money(row.balance_after)}</strong>, row.notes || '-'])} /></> : null}</div>;
 }
 
 function ContainersPanel({
@@ -1288,7 +1316,7 @@ function InventoryExportDialog({ containers, parts, onDownload }: { containers: 
   );
 }
 
-function SalesPanel({ sales, analytics, canWrite, onLoadAnalytics, onAdd, onEdit, onPrint, onDownloadInvoice, onPrintInvoice }: { sales: AuctionSale[]; analytics: SalesAnalytics | null; canWrite: boolean; onLoadAnalytics: (params?: { start?: string; end?: string; granularity?: 'day' | 'month' | 'year' }) => Promise<void>; onAdd: () => void; onEdit: (sale: AuctionSale) => void; onPrint: (sale: AuctionSale) => void; onDownloadInvoice: (sale: AuctionSale) => void; onPrintInvoice: (sale: AuctionSale) => void }) {
+function SalesPanel({ sales, analytics, canWrite, onLoadAnalytics, onAdd, onEdit, onPrint, onDownloadInvoice, onPrintInvoice, onPrintThermalInvoice }: { sales: AuctionSale[]; analytics: SalesAnalytics | null; canWrite: boolean; onLoadAnalytics: (params?: { start?: string; end?: string; granularity?: 'day' | 'month' | 'year' }) => Promise<void>; onAdd: () => void; onEdit: (sale: AuctionSale) => void; onPrint: (sale: AuctionSale) => void; onDownloadInvoice: (sale: AuctionSale) => void; onPrintInvoice: (sale: AuctionSale) => void; onPrintThermalInvoice: (sale: AuctionSale) => void }) {
   const [pane, setPane] = useState<'ledger' | 'analytics'>('ledger');
   return (
     <section className="panel">
@@ -1327,8 +1355,9 @@ function SalesPanel({ sales, analytics, canWrite, onLoadAnalytics, onAdd, onEdit
               {canWrite ? <button className="icon-btn" onClick={() => onPrint(sale)} aria-label={`Print gate pass for ${sale.sale_number}`} disabled={!sale.gate_pass}><Printer size={16} /></button> : null}
             </div>,
             <div className="table-actions" key="invoice">
-              <button className="icon-btn" onClick={() => onDownloadInvoice(sale)} aria-label={`Download invoice for ${sale.sale_number}`}><FileDown size={16} /></button>
-              <button className="icon-btn" onClick={() => onPrintInvoice(sale)} aria-label={`Print invoice for ${sale.sale_number}`}><Printer size={16} /></button>
+              <button className="icon-btn" onClick={() => onDownloadInvoice(sale)} aria-label={`Download standard and thermal invoices for ${sale.sale_number}`} title="Download both invoice formats"><FileDown size={16} /></button>
+              <button className="icon-btn" onClick={() => onPrintInvoice(sale)} aria-label={`Print standard invoice for ${sale.sale_number}`} title="Print standard invoice"><Printer size={16} /></button>
+              <button className="icon-btn" onClick={() => onPrintThermalInvoice(sale)} aria-label={`Print thermal invoice for ${sale.sale_number}`} title="Print 80 mm thermal invoice"><ReceiptText size={16} /></button>
             </div>,
             <div className="table-actions" key="actions">
               {canWrite ? <button className="icon-btn" onClick={() => onEdit(sale)} aria-label={`Edit ${sale.sale_number}`}><Pencil size={16} /></button> : null}
@@ -1827,29 +1856,89 @@ function ChequeForm({ cheque, customers, statuses, banks, onSave, isSaving }: { 
 }
 
 function CustomerPaymentForm({ customer, customers, banks, onSave, isSaving }: { customer?: Customer; customers: Customer[]; banks: string[]; onSave: SaveHandler; isSaving: boolean }) {
+  const [allocationMode, setAllocationMode] = useState<'overall' | 'specific' | null>(null);
   const [customerId, setCustomerId] = useState(customer?.id || '');
   const [components, setComponents] = useState<PaymentComponentDraft[]>([{ key: crypto.randomUUID(), method: 'cash', amount: '' }]);
+  const [receivables, setReceivables] = useState<CustomerReceivable[]>([]);
+  const [allocationAmounts, setAllocationAmounts] = useState<Record<string, string>>({});
+  const [receivablesLoading, setReceivablesLoading] = useState(false);
+  const [formError, setFormError] = useState('');
   const total = components.reduce((sum, component) => sum + Number(component.amount || 0), 0);
+  const allocationTotal = Object.values(allocationAmounts).reduce((sum, amount) => sum + Number(amount || 0), 0);
   const selectedCustomerName = customers.find((item) => item.id === customerId)?.name || '';
+  const selectedCustomer = customers.find((item) => item.id === customerId);
   const updateComponent = (key: string, updates: Partial<PaymentComponentDraft>) => setComponents((rows) => rows.map((row) => row.key === key ? { ...row, ...updates } : row));
   const addComponent = () => setComponents((rows) => [...rows, { key: crypto.randomUUID(), method: 'cash', amount: '' }]);
   const removeComponent = (key: string) => setComponents((rows) => rows.length === 1 ? rows : rows.filter((row) => row.key !== key));
+  const targetKey = (target: CustomerReceivable) => `${target.target_type}:${target.target_id}`;
   const methodLabels: Record<PaymentComponentDraft['method'], string> = {
     cash: 'Cash',
     bank_transfer: 'Bank transfer',
     cheque: 'Cheque',
     write_off: 'Write-off / adjustment',
   };
+
+  function chooseAllocationMode(mode: 'overall' | 'specific') {
+    setAllocationMode(mode);
+    setAllocationAmounts({});
+    setReceivables([]);
+    setFormError('');
+    setReceivablesLoading(mode === 'specific' && Boolean(customerId));
+  }
+
+  function changePaymentCustomer(value: string) {
+    setCustomerId(value);
+    setAllocationAmounts({});
+    setReceivables([]);
+    setFormError('');
+    setReceivablesLoading(allocationMode === 'specific' && Boolean(value));
+  }
+
+  useEffect(() => {
+    if (allocationMode !== 'specific' || !customerId) return;
+    let active = true;
+    get<CustomerReceivableResponse>(`/finance/customers/${customerId}/receivables/`)
+      .then((data) => { if (active) setReceivables(data.results); })
+      .catch((reason) => { if (active) setFormError(reason instanceof Error ? reason.message : 'Unable to load outstanding transactions.'); })
+      .finally(() => { if (active) setReceivablesLoading(false); });
+    return () => { active = false; };
+  }, [allocationMode, customerId]);
+
+  if (!allocationMode) {
+    return <div className="modal-form payment-mode-dialog"><div><p className="eyebrow">Customer payment</p><h2>How should this payment be applied?</h2><p className="muted">Choose a specific transaction when the customer identifies what they are paying. Use overall balance to settle the oldest outstanding amounts first.</p></div><div className="payment-mode-grid"><button type="button" onClick={() => chooseAllocationMode('specific')}><span><ReceiptText size={22} /></span><strong>Against selected transactions</strong><small>Select one or more sales or the opening balance, then assign a partial or full amount to each.</small></button><button type="button" onClick={() => chooseAllocationMode('overall')}><span><Banknote size={22} /></span><strong>Against overall balance</strong><small>Apply the payment automatically to the oldest outstanding amounts first.</small></button></div></div>;
+  }
+
   return (
     <FormFrame
       title={customer ? `Record payment - ${customer.name}` : 'Record customer payment'}
       isSaving={isSaving}
       onSubmit={(form, raw) => {
+        setFormError('');
+        if (!customerId) {
+          setFormError('Select a customer before recording payment.');
+          return;
+        }
+        if (total <= 0) {
+          setFormError('Enter a payment amount greater than zero.');
+          return;
+        }
+        if (allocationMode === 'specific' && (allocationTotal <= 0 || Math.abs(allocationTotal - total) > 0.001)) {
+          setFormError('Selected transaction amounts must equal the payment method total.');
+          return;
+        }
+        if (allocationMode === 'overall' && total > Number(selectedCustomer?.balance || 0)) {
+          setFormError('Payment total cannot exceed the customer outstanding balance.');
+          return;
+        }
         const payload = {
           customer: customerId,
           payment_date: form.payment_date || pakistanLocalDate(),
-          reference: form.reference || '',
+          allocation_mode: allocationMode,
           notes: form.notes || '',
+          targets: allocationMode === 'specific' ? receivables.flatMap((target) => {
+            const amount = allocationAmounts[targetKey(target)];
+            return Number(amount || 0) > 0 ? [{ target_type: target.target_type, target_id: target.target_id, amount }] : [];
+          }) : [],
           components: components.map((component) => {
             const prefix = component.key;
             const base: Record<string, unknown> = {
@@ -1878,9 +1967,10 @@ function CustomerPaymentForm({ customer, customers, banks, onSave, isSaving }: {
         onSave('/finance/customer-payments/', payload);
       }}
     >
-      <Select name="customer" label="Customer" value={customerId} onChange={setCustomerId} options={customers.map((item) => [item.id, item.name])} required />
+      <div className="payment-flow-bar full-span"><button type="button" className="btn small" onClick={() => setAllocationMode(null)}>Change payment approach</button><span>{allocationMode === 'specific' ? 'Applying to selected transactions' : 'Applying to oldest balance first'}</span></div>
+      <Select name="customer" label="Customer" value={customerId} onChange={changePaymentCustomer} options={customers.map((item) => [item.id, item.name])} required />
       <Field name="payment_date" label="Payment date" type="date" defaultValue={pakistanLocalDate()} required />
-      <Field name="reference" label="Overall reference" />
+      {allocationMode === 'specific' ? <section className="receivable-selector full-span"><div className="payment-builder-head"><div><h3>Apply payment to</h3><p>Select transactions and enter the amount being paid against each.</p></div><div className={Math.abs(allocationTotal - total) < 0.001 && total > 0 ? 'allocation-match good' : 'allocation-match'}><span>Allocated {money(allocationTotal)}</span><strong>Payment {money(total)}</strong></div></div>{receivablesLoading ? <LoadingState label="Loading outstanding transactions..." /> : null}{!receivablesLoading && receivables.length === 0 ? <div className="empty-state">This customer has no outstanding sales or opening balance.</div> : null}<div className="receivable-list">{receivables.map((target) => { const key = targetKey(target); const selected = allocationAmounts[key] !== undefined; return <article className={selected ? 'receivable-row selected' : 'receivable-row'} key={key}><label><input type="checkbox" checked={selected} onChange={(event) => setAllocationAmounts((current) => { const next = { ...current }; if (event.currentTarget.checked) next[key] = String(target.outstanding_amount); else delete next[key]; return next; })} /><span><strong>{target.reference}</strong><small>{shortDate(target.date)} · {target.description}</small></span></label><div><span>Outstanding <b>{money(target.outstanding_amount)}</b></span><input aria-label={`Amount for ${target.reference}`} type="number" min="0.01" max={target.outstanding_amount} step="0.01" value={allocationAmounts[key] ?? ''} disabled={!selected} onChange={(event) => setAllocationAmounts((current) => ({ ...current, [key]: event.currentTarget.value }))} /></div></article>; })}</div></section> : <div className="overall-allocation-note full-span"><span><Banknote size={18} /></span><div><strong>Oldest balances will be settled first</strong><p>Current outstanding balance: {money(selectedCustomer?.balance || 0)}</p></div></div>}
       <section className="payment-builder full-span" aria-label="Payment methods">
         <div className="payment-builder-head">
           <div><h3>Payment details</h3><p>Use one method or combine several for a split payment.</p></div>
@@ -1916,7 +2006,8 @@ function CustomerPaymentForm({ customer, customers, banks, onSave, isSaving }: {
         </div>
         <div className="total-bar" aria-live="polite"><span>Total recorded</span><strong>{money(total)}</strong></div>
       </section>
-      <Field name="notes" label="Overall notes" textarea />
+      {formError ? <div className="alert full-span">{formError}</div> : null}
+      <Field name="notes" label="Notes" textarea />
     </FormFrame>
   );
 }

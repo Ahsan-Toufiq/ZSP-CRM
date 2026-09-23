@@ -15,7 +15,13 @@ from rest_framework.status import HTTP_409_CONFLICT
 from accounts.permissions import OperationsPermission, has_tab_access
 from finance.models import Cheque, CustomerLedgerEntry
 from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass, InventoryBatch, PartInventory
-from operations.reporting import build_inventory_report, inventory_report_csv_response, inventory_report_pdf_response, sale_invoice_pdf_response
+from operations.reporting import (
+    build_inventory_report,
+    inventory_report_csv_response,
+    inventory_report_pdf_response,
+    sale_invoice_pdf_response,
+    sale_thermal_invoice_pdf_response,
+)
 from operations.serializers import (
     AuctionSaleCreateSerializer,
     AuctionSaleLineReadSerializer,
@@ -403,6 +409,8 @@ class AuctionSaleViewSet(viewsets.ModelViewSet):
     def invoice(self, request, pk=None):
         sale = self.get_object()
         inline = request.query_params.get('disposition') == 'inline'
+        if request.query_params.get('layout') == 'thermal':
+            return sale_thermal_invoice_pdf_response(sale, inline=inline)
         return sale_invoice_pdf_response(sale, inline=inline)
 
 

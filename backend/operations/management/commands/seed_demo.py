@@ -17,10 +17,11 @@ from finance.models import (
     CurrencyOpeningBalance,
     CurrencyPurchase,
     CurrencySpending,
+    CustomerLedgerEntry,
     CustomerPayment,
     CustomerPaymentComponent,
 )
-from finance.services import change_cheque_status, create_cheque, record_customer_payment
+from finance.services import change_cheque_status, create_cheque, customer_receivables, record_customer_payment
 from operations.models import AuctionSale, Container, ContainerItem, Customer, PartInventory
 from operations.services import apply_container_inventory_delta, create_auction_sale, create_subparts, is_container_cost_locked, recalculate_container_net_costs
 
@@ -602,6 +603,51 @@ class Command(BaseCommand):
             if spec['customer'] is None or CustomerPayment.objects.filter(reference=spec['reference']).exists():
                 continue
             record_customer_payment(user=admin, **spec)
+
+        allocated_customer = customers.get('Ahsan Toufiq')
+        if allocated_customer and not CustomerPayment.objects.filter(reference='DEMO-PAY-SPECIFIC-TODAY').exists():
+            opening, _ = CustomerLedgerEntry.objects.get_or_create(
+                customer=allocated_customer,
+                entry_type=CustomerLedgerEntry.EntryType.ADJUSTMENT,
+                description='Opening balance',
+                sale=None,
+                cheque=None,
+                defaults={
+                    'entry_date': today - timedelta(days=120),
+                    'debit': Decimal('15000.00'),
+                    'created_by': admin,
+                    'updated_by': admin,
+                },
+            )
+            available_targets = customer_receivables(customer=allocated_customer)
+            opening_target = next((target for target in available_targets if target['target_type'] == 'opening_balance'), None)
+            sale_target = next((target for target in available_targets if target['target_type'] == 'sale'), None)
+            if opening_target and sale_target:
+                opening_amount = min(Decimal('3500.00'), opening_target['outstanding_amount'])
+                sale_amount = min(Decimal('6500.00'), sale_target['outstanding_amount'])
+                total = opening_amount + sale_amount
+                if total > 0:
+                    record_customer_payment(
+                        user=admin,
+                        reference='DEMO-PAY-SPECIFIC-TODAY',
+                        customer=allocated_customer,
+                        payment_date=today,
+                        allocation_mode=CustomerPayment.AllocationMode.SPECIFIC,
+                        targets=[
+                            {'target_type': 'opening_balance', 'target_id': str(opening.id), 'amount': opening_amount},
+                            {'target_type': 'sale', 'target_id': sale_target['target_id'], 'amount': sale_amount},
+                        ],
+                        notes='Demo payment allocated across an opening balance and a selected sale.',
+                        components=[
+                            {'method': CustomerPaymentComponent.Method.CASH, 'amount': min(total, Decimal('4000.00'))},
+                            {
+                                'method': CustomerPaymentComponent.Method.BANK_TRANSFER,
+                                'amount': max(total - Decimal('4000.00'), Decimal('0.00')),
+                                'bank_name': 'Meezan Bank Limited',
+                                'reference': 'IBFT-DEMO-TODAY',
+                            },
+                        ],
+                    )
 
     def _seed_currency_portfolio(self, admin):
         today = timezone.localdate()

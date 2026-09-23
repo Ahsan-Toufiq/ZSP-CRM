@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from io import BytesIO, StringIO
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 from django.conf import settings
 from django.db.models import IntegerField, Q, Sum, Value
@@ -188,10 +189,10 @@ def inventory_report_pdf_response(report: InventoryReport) -> HttpResponse:
     ]]
     for row in report.rows:
         rows.append([
-            Paragraph(row['part_name'], styles['BodyText']),
-            Paragraph(row['part_number'] or '-', styles['BodyText']),
-            Paragraph(row['category'] or '-', styles['BodyText']),
-            Paragraph(row['container_reference'], styles['BodyText']),
+            Paragraph(escape(row['part_name']), styles['BodyText']),
+            Paragraph(escape(row['part_number'] or '-'), styles['BodyText']),
+            Paragraph(escape(row['category'] or '-'), styles['BodyText']),
+            Paragraph(escape(row['container_reference']), styles['BodyText']),
             f"{row['available_quantity']} {row['unit']}",
             f"PKR {row['raw_unit_cost']:,.2f}",
             f"PKR {row['added_cost_share_unit']:,.2f}",
@@ -270,9 +271,9 @@ def sale_invoice_pdf_response(sale: AuctionSale, *, inline: bool = False) -> Htt
     item_rows = [['Item', 'Part No.', 'Category', 'Quantity', 'Unit Price', 'Amount']]
     for line in sale.lines.all():
         item_rows.append([
-            Paragraph(line.item.part_name, styles['BodyText']),
-            Paragraph(line.item.part_number or '-', styles['BodyText']),
-            Paragraph(line.item.category or '-', styles['BodyText']),
+            Paragraph(escape(line.item.part_name), styles['BodyText']),
+            Paragraph(escape(line.item.part_number or '-'), styles['BodyText']),
+            Paragraph(escape(line.item.category or '-'), styles['BodyText']),
             f'{line.quantity} {line.item.unit}',
             f'PKR {line.sold_price:,.2f}',
             f'PKR {(line.quantity * line.sold_price):,.2f}',
@@ -314,4 +315,117 @@ def sale_invoice_pdf_response(sale: AuctionSale, *, inline: bool = False) -> Htt
 
     response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
     response['Content-Disposition'] = _content_disposition(f'zsp-invoice-{sale.sale_number}.pdf', inline=inline)
+    return response
+
+
+def sale_thermal_invoice_pdf_response(sale: AuctionSale, *, inline: bool = False) -> HttpResponse:
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    sale = (
+        AuctionSale.objects
+        .select_related('customer')
+        .prefetch_related('lines__item', 'cheques')
+        .get(id=sale.id)
+    )
+    page_height = max(150 * mm, (118 + (len(sale.lines.all()) * 11)) * mm)
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=(80 * mm, page_height),
+        rightMargin=5 * mm,
+        leftMargin=5 * mm,
+        topMargin=5 * mm,
+        bottomMargin=5 * mm,
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('ThermalTitle', parent=styles['Title'], fontSize=13, leading=15, alignment=1, spaceAfter=2)
+    center_style = ParagraphStyle('ThermalCenter', parent=styles['BodyText'], fontSize=7.5, leading=9, alignment=1)
+    cell_style = ParagraphStyle('ThermalCell', parent=styles['BodyText'], fontSize=7, leading=8.5)
+    story = []
+    logo_path = _logo_path()
+    if logo_path.exists():
+        logo = Image(str(logo_path), width=16 * mm, height=16 * mm)
+        logo.hAlign = 'CENTER'
+        story.append(logo)
+    story.extend([
+        Paragraph('<b>ZSP SALES INVOICE</b>', title_style),
+        Paragraph('Spare Parts Auction', center_style),
+        Spacer(1, 3 * mm),
+    ])
+
+    customer_name = sale.customer.name if sale.customer_id else 'Cash customer'
+    customer_phone = sale.customer.phone if sale.customer_id else '-'
+    meta = Table([
+        ['Invoice', escape(sale.sale_number)],
+        ['Date', sale.sale_date.strftime('%d %b %Y')],
+        ['Customer', Paragraph(escape(customer_name), cell_style)],
+        ['Contact', escape(customer_phone)],
+        ['Payment', sale.get_payment_type_display()],
+    ], colWidths=[18 * mm, 52 * mm])
+    meta.setStyle(TableStyle([
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 7),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ('TOPPADDING', (0, 0), (-1, -1), 2),
+    ]))
+    story.extend([meta, Spacer(1, 3 * mm)])
+
+    rows = [['Item', 'Qty', 'Rate', 'Amount']]
+    for line in sale.lines.all():
+        rows.append([
+            Paragraph(
+                f"<b>{escape(line.item.part_name)}</b>"
+                f"<br/><font size='6'>{escape(line.item.part_number or line.item.category or '')}</font>",
+                cell_style,
+            ),
+            f'{line.quantity}',
+            f'{line.sold_price:,.0f}',
+            f'{(line.quantity * line.sold_price):,.0f}',
+        ])
+    items = Table(rows, repeatRows=1, colWidths=[34 * mm, 9 * mm, 13 * mm, 14 * mm])
+    items.setStyle(TableStyle([
+        ('LINEABOVE', (0, 0), (-1, 0), 0.7, colors.black),
+        ('LINEBELOW', (0, 0), (-1, 0), 0.7, colors.black),
+        ('LINEBELOW', (0, -1), (-1, -1), 0.7, colors.black),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 6.7),
+        ('ALIGN', (1, 1), (-1, -1), 'RIGHT'),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 1.5),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 1.5),
+        ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+    ]))
+    story.extend([items, Spacer(1, 3 * mm)])
+
+    cheque_total = sum((cheque.amount for cheque in sale.cheques.all()), Decimal('0.00'))
+    totals = Table([
+        ['Invoice total', f'PKR {sale.total_amount:,.0f}'],
+        ['Cash paid', f'PKR {sale.cash_amount:,.0f}'],
+        ['Cheque', f'PKR {cheque_total:,.0f}'],
+        ['Balance due', f'PKR {sale.receivable_amount:,.0f}'],
+    ], colWidths=[35 * mm, 35 * mm])
+    totals.setStyle(TableStyle([
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+        ('LINEABOVE', (0, 0), (-1, 0), 0.7, colors.black),
+        ('LINEBELOW', (0, -1), (-1, -1), 0.7, colors.black),
+        ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+    ]))
+    story.extend([
+        totals,
+        Spacer(1, 4 * mm),
+        Paragraph('Thank you for your business.', center_style),
+        Paragraph('ZSP powered by Digi7', center_style),
+    ])
+    doc.build(story)
+
+    response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
+    response['Content-Disposition'] = _content_disposition(f'zsp-thermal-invoice-{sale.sale_number}.pdf', inline=inline)
     return response

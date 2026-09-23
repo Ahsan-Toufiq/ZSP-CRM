@@ -16,8 +16,9 @@ from finance.models import (
     CustomerLedgerEntry,
     CustomerPayment,
     CustomerPaymentAllocation,
+    CustomerPaymentTarget,
 )
-from finance.services import create_cheque
+from finance.services import change_cheque_status, create_cheque
 from operations.models import AuctionSale, Customer, InventoryBatch, PartInventory
 from operations.services import create_auction_sale
 
@@ -121,6 +122,13 @@ def test_customer_cash_payment_posts_ledger_and_allocates_oldest_sale(api_client
 def test_customer_cheque_payment_creates_pending_cheque_without_ledger_credit(api_client):
     customer = Customer.objects.create(name='Cheque Payment Customer', phone='+923001113333')
     pending = ChequeStatus.objects.get(name='Pending')
+    CustomerLedgerEntry.objects.create(
+        customer=customer,
+        entry_date=timezone.localdate(),
+        entry_type=CustomerLedgerEntry.EntryType.ADJUSTMENT,
+        description='Opening balance',
+        debit=Decimal('7000.00'),
+    )
 
     response = api_client.post(
         '/api/finance/customer-payments/',
@@ -149,6 +157,144 @@ def test_customer_cheque_payment_creates_pending_cheque_without_ledger_credit(ap
     component = payment.components.get()
     assert component.cheque.status == pending
     assert not CustomerLedgerEntry.objects.filter(payment=payment).exists()
+
+
+@pytest.mark.django_db
+def test_specific_payment_allocates_to_sale_and_opening_balance(api_client, admin_user):
+    customer = Customer.objects.create(name='Allocated Customer', phone='+923001119001')
+    opening = CustomerLedgerEntry.objects.create(
+        customer=customer,
+        entry_date=timezone.localdate() - timedelta(days=10),
+        entry_type=CustomerLedgerEntry.EntryType.ADJUSTMENT,
+        description='Opening balance',
+        debit=Decimal('5000.00'),
+    )
+    item = PartInventory.objects.create(part_name='Allocated gearbox', quantity=1, unit='piece')
+    batch = InventoryBatch.objects.create(item=item, quantity=1, raw_unit_cost=Decimal('1000.00'), source_label='Test')
+    sale = create_auction_sale(
+        user=admin_user,
+        sale_date=timezone.localdate() - timedelta(days=2),
+        payment_type=AuctionSale.PaymentType.CREDIT,
+        customer=customer,
+        lines=[{'inventory_batch': batch, 'quantity': 1, 'sold_price': Decimal('10000.00')}],
+    )
+
+    response = api_client.post('/api/finance/customer-payments/', {
+        'customer': str(customer.id),
+        'payment_date': str(timezone.localdate()),
+        'allocation_mode': 'specific',
+        'targets': [
+            {'target_type': 'opening_balance', 'target_id': str(opening.id), 'amount': '2000.00'},
+            {'target_type': 'sale', 'target_id': str(sale.id), 'amount': '3000.00'},
+        ],
+        'components': [{'method': 'cash', 'amount': '5000.00'}],
+    }, format='json')
+
+    assert response.status_code == 201
+    payment = CustomerPayment.objects.get(customer=customer)
+    assert payment.allocation_mode == CustomerPayment.AllocationMode.SPECIFIC
+    assert CustomerPaymentTarget.objects.filter(payment=payment).count() == 2
+    allocations = payment.components.get().allocations.all()
+    assert sum(allocation.amount for allocation in allocations) == Decimal('5000.00')
+    assert allocations.filter(opening_balance=opening, amount=Decimal('2000.00')).exists()
+    assert allocations.filter(sale=sale, amount=Decimal('3000.00')).exists()
+
+
+@pytest.mark.django_db
+def test_specific_payment_rejects_amount_above_selected_receivable(api_client):
+    customer = Customer.objects.create(name='Bounded Customer', phone='+923001119002')
+    opening = CustomerLedgerEntry.objects.create(
+        customer=customer,
+        entry_date=timezone.localdate(),
+        entry_type=CustomerLedgerEntry.EntryType.ADJUSTMENT,
+        description='Opening balance',
+        debit=Decimal('1000.00'),
+    )
+
+    response = api_client.post('/api/finance/customer-payments/', {
+        'customer': str(customer.id),
+        'payment_date': str(timezone.localdate()),
+        'allocation_mode': 'specific',
+        'targets': [{'target_type': 'opening_balance', 'target_id': str(opening.id), 'amount': '1200.00'}],
+        'components': [{'method': 'cash', 'amount': '1200.00'}],
+    }, format='json')
+
+    assert response.status_code == 400
+    assert 'cannot exceed' in str(response.data).lower()
+    assert not CustomerPayment.objects.filter(customer=customer).exists()
+
+
+@pytest.mark.django_db
+def test_specific_pending_cheque_honors_selected_sale_when_cleared(api_client, admin_user):
+    customer = Customer.objects.create(name='Targeted Cheque Customer', phone='+923001119003')
+    first_item = PartInventory.objects.create(part_name='Older receivable', quantity=1, unit='piece')
+    second_item = PartInventory.objects.create(part_name='Selected receivable', quantity=1, unit='piece')
+    first_sale = create_auction_sale(
+        user=admin_user,
+        sale_date=timezone.localdate() - timedelta(days=20),
+        payment_type=AuctionSale.PaymentType.CREDIT,
+        customer=customer,
+        lines=[{'inventory_batch': InventoryBatch.objects.create(item=first_item, quantity=1), 'sold_price': Decimal('5000.00')}],
+    )
+    second_sale = create_auction_sale(
+        user=admin_user,
+        sale_date=timezone.localdate() - timedelta(days=2),
+        payment_type=AuctionSale.PaymentType.CREDIT,
+        customer=customer,
+        lines=[{'inventory_batch': InventoryBatch.objects.create(item=second_item, quantity=1), 'sold_price': Decimal('7000.00')}],
+    )
+    response = api_client.post('/api/finance/customer-payments/', {
+        'customer': str(customer.id),
+        'payment_date': str(timezone.localdate()),
+        'allocation_mode': 'specific',
+        'targets': [{'target_type': 'sale', 'target_id': str(second_sale.id), 'amount': '4000.00'}],
+        'components': [{'method': 'cheque', 'amount': '4000.00', 'cheque': {
+            'cheque_number': 'TARGET-CHQ-1',
+            'bank_name': 'HBL',
+            'cheque_date': str(timezone.localdate()),
+            'expiry_date': str(timezone.localdate() + timedelta(days=30)),
+        }}],
+    }, format='json')
+    assert response.status_code == 201
+
+    payment = CustomerPayment.objects.get(customer=customer)
+    cheque = payment.components.get().cheque
+    change_cheque_status(user=admin_user, cheque=cheque, status=ChequeStatus.objects.get(name='Cleared'))
+
+    allocation = cheque.settlement_allocations.get(is_reversed=False)
+    assert allocation.sale == second_sale
+    assert allocation.amount == Decimal('4000.00')
+    assert not cheque.settlement_allocations.filter(sale=first_sale).exists()
+
+
+@pytest.mark.django_db
+def test_customer_receivables_and_daily_payment_reports(api_client):
+    customer = Customer.objects.create(name='Daily Report Customer', phone='+923001119004')
+    CustomerLedgerEntry.objects.create(
+        customer=customer,
+        entry_date=timezone.localdate(),
+        entry_type=CustomerLedgerEntry.EntryType.ADJUSTMENT,
+        description='Opening balance',
+        debit=Decimal('3000.00'),
+    )
+    receivables = api_client.get(f'/api/finance/customers/{customer.id}/receivables/')
+    payment = api_client.post('/api/finance/customer-payments/', {
+        'customer': str(customer.id),
+        'payment_date': str(timezone.localdate()),
+        'allocation_mode': 'overall',
+        'components': [{'method': 'cash', 'amount': '1000.00'}],
+    }, format='json')
+    report = api_client.get(f'/api/finance/daily-payments/?date={timezone.localdate()}')
+    pdf = api_client.get(f'/api/finance/daily-payments/?date={timezone.localdate()}&export=pdf')
+
+    assert receivables.status_code == 200
+    assert receivables.data['results'][0]['reference'] == 'Opening balance'
+    assert payment.status_code == 201
+    assert report.status_code == 200
+    assert report.data['totals']['payment_count'] == 1
+    assert Decimal(report.data['rows'][0]['balance_after']) == Decimal('2000.00')
+    assert pdf.status_code == 200
+    assert pdf.content.startswith(b'%PDF')
 
 
 @pytest.mark.django_db

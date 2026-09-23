@@ -317,6 +317,12 @@ def test_sale_invoice_pdf_endpoint_returns_pdf(api_client, admin_user):
     assert response['Content-Type'] == 'application/pdf'
     assert response.content.startswith(b'%PDF')
 
+    thermal_response = api_client.get(f'/api/operations/auction-sales/{sale.id}/invoice/?layout=thermal')
+    assert thermal_response.status_code == 200
+    assert thermal_response['Content-Type'] == 'application/pdf'
+    assert thermal_response.content.startswith(b'%PDF')
+    assert 'thermal-invoice' in thermal_response['Content-Disposition']
+
 
 @pytest.mark.django_db
 def test_sales_analytics_returns_daily_monthly_yearly_totals(api_client, admin_user):

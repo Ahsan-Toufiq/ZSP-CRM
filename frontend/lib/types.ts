@@ -219,9 +219,12 @@ export interface Cheque {
 export interface ChequeSettlementAllocation {
   id: UUID;
   cheque: UUID;
-  sale: UUID;
-  sale_number: string;
+  sale: UUID | null;
+  opening_balance: UUID | null;
+  sale_number: string | null;
   sale_date: string;
+  target_type: 'sale' | 'opening_balance';
+  target_label: string;
   amount: string;
   is_reversed: boolean;
   created_at: string;
@@ -237,6 +240,27 @@ export interface CustomerPaymentComponent {
   cheque_number: string;
   cheque_status: string;
   notes: string;
+  allocations: CustomerPaymentAllocation[];
+}
+
+export interface CustomerPaymentAllocation {
+  id: UUID;
+  sale: UUID | null;
+  opening_balance: UUID | null;
+  target_type: 'sale' | 'opening_balance';
+  target_label: string;
+  sale_date: string;
+  amount: string;
+}
+
+export interface CustomerPaymentTarget {
+  id: UUID;
+  sale: UUID | null;
+  opening_balance: UUID | null;
+  target_type: 'sale' | 'opening_balance';
+  target_label: string;
+  target_date: string;
+  amount: string;
 }
 
 export interface CustomerPayment {
@@ -246,10 +270,67 @@ export interface CustomerPayment {
   customer_name: string;
   payment_date: string;
   kind: string;
+  allocation_mode: 'overall' | 'specific';
   total_amount: string;
   reference: string;
   notes: string;
   components: CustomerPaymentComponent[];
+  targets: CustomerPaymentTarget[];
+}
+
+export interface CustomerReceivable {
+  target_type: 'sale' | 'opening_balance';
+  target_id: UUID;
+  reference: string;
+  date: string;
+  description: string;
+  original_amount: string;
+  outstanding_amount: string;
+}
+
+export interface CustomerReceivableResponse {
+  customer: UUID;
+  outstanding_total: string;
+  results: CustomerReceivable[];
+}
+
+export interface DailyPaymentReportRow {
+  id: UUID;
+  payment_number: string;
+  customer_id: UUID;
+  customer_name: string;
+  customer_phone: string;
+  kind: string;
+  allocation_mode: string;
+  total_amount: string;
+  applied_amount: string;
+  balance_after: string;
+  notes: string;
+  components: {
+    method: string;
+    amount: string;
+    bank_name: string;
+    reference: string;
+    cheque_number: string;
+    cheque_status: string;
+    applied_amount: string;
+  }[];
+  targets: { label: string; amount: string }[];
+}
+
+export interface DailyPaymentReport {
+  report_date: string;
+  prepared_at: string;
+  rows: DailyPaymentReportRow[];
+  totals: {
+    payment_count: number;
+    total_recorded: string;
+    total_applied: string;
+    cash: string;
+    bank_transfer: string;
+    cheque: string;
+    write_off: string;
+  };
 }
 
 export interface CreditReportSaleItem {

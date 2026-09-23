@@ -77,16 +77,39 @@ class ChequeStatusHistory(UserStampedModel):
 
 class ChequeSettlementAllocation(UserStampedModel):
     cheque = models.ForeignKey(Cheque, on_delete=models.PROTECT, related_name='settlement_allocations')
-    sale = models.ForeignKey(AuctionSale, on_delete=models.PROTECT, related_name='cheque_allocations')
+    sale = models.ForeignKey(AuctionSale, on_delete=models.PROTECT, related_name='cheque_allocations', null=True, blank=True)
+    opening_balance = models.ForeignKey(
+        'CustomerLedgerEntry',
+        on_delete=models.PROTECT,
+        related_name='cheque_allocations',
+        null=True,
+        blank=True,
+    )
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     is_reversed = models.BooleanField(default=False)
     reversed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        ordering = ['sale__sale_date', 'created_at']
+        ordering = ['created_at']
         constraints = [
-            models.UniqueConstraint(fields=['cheque', 'sale'], name='unique_cheque_allocation_per_sale'),
+            models.UniqueConstraint(
+                fields=['cheque', 'sale'],
+                condition=models.Q(sale__isnull=False),
+                name='unique_cheque_allocation_per_sale',
+            ),
+            models.UniqueConstraint(
+                fields=['cheque', 'opening_balance'],
+                condition=models.Q(opening_balance__isnull=False),
+                name='unique_cheque_allocation_per_opening',
+            ),
             models.CheckConstraint(condition=models.Q(amount__gt=0), name='cheque_allocation_amount_positive'),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(sale__isnull=False, opening_balance__isnull=True)
+                    | models.Q(sale__isnull=True, opening_balance__isnull=False)
+                ),
+                name='cheque_allocation_exactly_one_target',
+            ),
         ]
         indexes = [
             models.Index(fields=['cheque', 'is_reversed']),
@@ -94,7 +117,8 @@ class ChequeSettlementAllocation(UserStampedModel):
         ]
 
     def __str__(self) -> str:
-        return f'{self.cheque.cheque_number} -> {self.sale.sale_number}: {self.amount}'
+        target = self.sale.sale_number if self.sale_id else 'Opening balance'
+        return f'{self.cheque.cheque_number} -> {target}: {self.amount}'
 
 
 class CustomerLedgerEntry(UserStampedModel):
@@ -144,10 +168,15 @@ class CustomerPayment(UserStampedModel):
         WRITE_OFF = 'write_off', 'Write-off / balance adjustment'
         SPLIT = 'split', 'Split payment'
 
+    class AllocationMode(models.TextChoices):
+        OVERALL = 'overall', 'Overall balance (oldest first)'
+        SPECIFIC = 'specific', 'Selected sales or opening balance'
+
     payment_number = models.CharField(max_length=40, unique=True)
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name='payments')
     payment_date = models.DateField()
     kind = models.CharField(max_length=30, choices=PaymentKind.choices)
+    allocation_mode = models.CharField(max_length=20, choices=AllocationMode.choices, default=AllocationMode.OVERALL)
     total_amount = models.DecimalField(max_digits=14, decimal_places=2)
     reference = models.CharField(max_length=120, blank=True)
     notes = models.TextField(blank=True)
@@ -198,14 +227,37 @@ class CustomerPaymentComponent(UserStampedModel):
 
 class CustomerPaymentAllocation(UserStampedModel):
     component = models.ForeignKey(CustomerPaymentComponent, on_delete=models.PROTECT, related_name='allocations')
-    sale = models.ForeignKey(AuctionSale, on_delete=models.PROTECT, related_name='payment_allocations')
+    sale = models.ForeignKey(AuctionSale, on_delete=models.PROTECT, related_name='payment_allocations', null=True, blank=True)
+    opening_balance = models.ForeignKey(
+        CustomerLedgerEntry,
+        on_delete=models.PROTECT,
+        related_name='payment_allocations',
+        null=True,
+        blank=True,
+    )
     amount = models.DecimalField(max_digits=14, decimal_places=2)
 
     class Meta:
-        ordering = ['sale__sale_date', 'created_at']
+        ordering = ['created_at']
         constraints = [
-            models.UniqueConstraint(fields=['component', 'sale'], name='unique_payment_component_allocation_per_sale'),
+            models.UniqueConstraint(
+                fields=['component', 'sale'],
+                condition=models.Q(sale__isnull=False),
+                name='unique_payment_component_allocation_per_sale',
+            ),
+            models.UniqueConstraint(
+                fields=['component', 'opening_balance'],
+                condition=models.Q(opening_balance__isnull=False),
+                name='unique_payment_component_allocation_per_opening',
+            ),
             models.CheckConstraint(condition=models.Q(amount__gt=0), name='payment_allocation_amount_positive'),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(sale__isnull=False, opening_balance__isnull=True)
+                    | models.Q(sale__isnull=True, opening_balance__isnull=False)
+                ),
+                name='payment_allocation_exactly_one_target',
+            ),
         ]
         indexes = [
             models.Index(fields=['component']),
@@ -213,7 +265,49 @@ class CustomerPaymentAllocation(UserStampedModel):
         ]
 
     def __str__(self) -> str:
-        return f'{self.component.payment.payment_number} -> {self.sale.sale_number}: {self.amount}'
+        target = self.sale.sale_number if self.sale_id else 'Opening balance'
+        return f'{self.component.payment.payment_number} -> {target}: {self.amount}'
+
+
+class CustomerPaymentTarget(UserStampedModel):
+    payment = models.ForeignKey(CustomerPayment, on_delete=models.PROTECT, related_name='targets')
+    sale = models.ForeignKey(AuctionSale, on_delete=models.PROTECT, related_name='payment_targets', null=True, blank=True)
+    opening_balance = models.ForeignKey(
+        CustomerLedgerEntry,
+        on_delete=models.PROTECT,
+        related_name='payment_targets',
+        null=True,
+        blank=True,
+    )
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+
+    class Meta:
+        ordering = ['created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['payment', 'sale'],
+                condition=models.Q(sale__isnull=False),
+                name='unique_payment_target_per_sale',
+            ),
+            models.UniqueConstraint(
+                fields=['payment', 'opening_balance'],
+                condition=models.Q(opening_balance__isnull=False),
+                name='unique_payment_target_per_opening',
+            ),
+            models.CheckConstraint(condition=models.Q(amount__gt=0), name='payment_target_amount_positive'),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(sale__isnull=False, opening_balance__isnull=True)
+                    | models.Q(sale__isnull=True, opening_balance__isnull=False)
+                ),
+                name='payment_target_exactly_one_receivable',
+            ),
+        ]
+        indexes = [models.Index(fields=['payment'])]
+
+    def __str__(self) -> str:
+        target = self.sale.sale_number if self.sale_id else 'Opening balance'
+        return f'{self.payment.payment_number} intends {target}: {self.amount}'
 
 
 class Currency(UserStampedModel):

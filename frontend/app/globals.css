@@ -476,7 +476,7 @@ h3 {
 
 .customer-detail-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   margin-top: 12px;
 }
@@ -1758,6 +1758,245 @@ td select {
   background: #f8fbfa;
 }
 
+.table-toolbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 14px 0;
+}
+
+.table-toolbar .search-box {
+  width: min(520px, 100%);
+}
+
+.table-toolbar > .field {
+  width: min(240px, 100%);
+}
+
+.aging-compact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 150px;
+}
+
+.aging-compact span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 6px;
+  border: 1px solid #f0d4cf;
+  border-radius: 6px;
+  background: #fff7f5;
+}
+
+.aging-compact small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.aging-compact b {
+  color: #9b1c13;
+  font-size: 10px;
+}
+
+.detail-dialog {
+  display: grid;
+  gap: 16px;
+}
+
+.detail-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-right: 46px;
+}
+
+.detail-dialog-head h2,
+.detail-dialog-head p {
+  margin: 0;
+}
+
+.daily-payments {
+  display: grid;
+  gap: 14px;
+}
+
+.payment-mode-dialog {
+  display: grid;
+  gap: 20px;
+}
+
+.payment-mode-dialog h2,
+.payment-mode-dialog p {
+  margin: 0;
+}
+
+.payment-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.payment-mode-grid button {
+  display: grid;
+  min-height: 190px;
+  align-content: start;
+  gap: 10px;
+  padding: 20px;
+  border: 1px solid #d7e5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--ink);
+  text-align: left;
+  box-shadow: 0 12px 30px rgba(16, 36, 34, 0.06);
+}
+
+.payment-mode-grid button:hover,
+.payment-mode-grid button:focus-visible {
+  border-color: var(--brand);
+  background: #f4faf8;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(19, 127, 116, 0.1), 0 16px 34px rgba(16, 36, 34, 0.08);
+}
+
+.payment-mode-grid button > span,
+.overall-allocation-note > span {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 8px;
+  background: #dff3ee;
+  color: var(--brand-dark);
+}
+
+.payment-mode-grid strong {
+  font-size: 17px;
+}
+
+.payment-mode-grid small {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.payment-flow-bar,
+.overall-allocation-note {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #d8e5e1;
+  border-radius: 8px;
+  background: #f7fbf9;
+}
+
+.payment-flow-bar {
+  justify-content: space-between;
+}
+
+.payment-flow-bar span {
+  color: var(--brand-dark);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.overall-allocation-note p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.receivable-selector {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbfa;
+}
+
+.allocation-match {
+  display: grid;
+  gap: 3px;
+  min-width: 170px;
+  padding: 8px 10px;
+  border: 1px solid #efd8a7;
+  border-radius: 8px;
+  background: #fff9e9;
+  color: #8c5600;
+  font-size: 12px;
+  text-align: right;
+}
+
+.allocation-match.good {
+  border-color: #b7dfc4;
+  background: #eefaf2;
+  color: #0f6c34;
+}
+
+.receivable-list {
+  display: grid;
+  gap: 8px;
+  max-height: 310px;
+  overflow: auto;
+}
+
+.receivable-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(190px, 0.48fr);
+  gap: 14px;
+  align-items: center;
+  padding: 11px 12px;
+  border: 1px solid #dce6e3;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.receivable-row.selected {
+  border-color: rgba(19, 127, 116, 0.55);
+  background: #f2faf7;
+}
+
+.receivable-row label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.receivable-row label span,
+.receivable-row > div {
+  display: grid;
+  gap: 3px;
+}
+
+.receivable-row small,
+.receivable-row > div > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.receivable-row > div {
+  grid-template-columns: 1fr 120px;
+  align-items: center;
+}
+
+.receivable-row input[type='number'] {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 9px;
+}
+
+.receivable-row input:disabled {
+  background: #eef2f0;
+  color: var(--muted);
+}
+
 @media (max-width: 980px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -1788,6 +2027,8 @@ td select {
   .payment-cheque-fields,
   .export-choice-grid,
   .download-format-grid,
+  .payment-mode-grid,
+  .receivable-row,
   .login-card {
     grid-template-columns: 1fr;
   }
@@ -1839,6 +2080,17 @@ td select {
 
   .payment-builder-head {
     display: grid;
+  }
+
+  .table-toolbar,
+  .detail-dialog-head,
+  .payment-flow-bar {
+    display: grid;
+    align-items: stretch;
+  }
+
+  .receivable-row > div {
+    grid-template-columns: 1fr;
   }
 
   .record-main {

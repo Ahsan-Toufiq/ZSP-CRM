@@ -72,6 +72,14 @@ class CustomerSerializer(serializers.ModelSerializer):
     def _sync_opening_balance(self, *, customer, amount, direction):
         amount = Decimal(amount or 0).quantize(Decimal('0.01'))
         entry = self._opening_balance_entry(customer)
+        if entry is not None:
+            direct_allocated = entry.payment_allocations.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+            cheque_allocated = entry.cheque_allocations.filter(is_reversed=False).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+            settled = direct_allocated + cheque_allocated
+            if settled > 0 and (direction != 'receivable' or amount < settled):
+                raise serializers.ValidationError({
+                    'opening_balance': f'Opening balance cannot be below the settled amount of {settled:,.2f}.',
+                })
         if amount <= 0:
             if entry is not None:
                 entry.delete()

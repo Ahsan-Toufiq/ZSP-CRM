@@ -3,7 +3,9 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count, DecimalField, F, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied
@@ -26,12 +28,15 @@ from finance.models import (
 from finance.reporting import (
     build_credit_report,
     build_customer_statement,
+    build_daily_payment_report,
     credit_report_csv_response,
     credit_report_payload,
     credit_report_pdf_response,
     customer_statement_pdf_response,
+    daily_payment_report_payload,
+    daily_payment_report_pdf_response,
 )
-from finance.services import delete_currency_acquisition
+from finance.services import customer_receivables, delete_currency_acquisition
 from finance.serializers import (
     ChequeSerializer,
     ChequeStatusChangeSerializer,
@@ -106,6 +111,9 @@ class CustomerPaymentViewSet(viewsets.ModelViewSet):
             .prefetch_related(
                 'components__cheque__status',
                 'components__allocations__sale',
+                'components__allocations__opening_balance',
+                'targets__sale',
+                'targets__opening_balance',
             )
             .order_by('-payment_date', '-created_at')
         )
@@ -308,3 +316,32 @@ def customer_statement(request, customer_id):
         raise PermissionDenied('You do not have access to customer statements.')
     report = build_customer_statement(customer_id=customer_id)
     return customer_statement_pdf_response(report)
+
+
+@api_view(['GET'])
+def customer_receivable_list(request, customer_id):
+    if not has_tab_access(request.user, 'customers'):
+        raise PermissionDenied('You do not have access to customer balances.')
+    customer = get_object_or_404(Customer, id=customer_id)
+    rows = customer_receivables(customer=customer)
+    return Response({
+        'customer': str(customer.id),
+        'outstanding_total': sum((row['outstanding_amount'] for row in rows), Decimal('0.00')),
+        'results': rows,
+    })
+
+
+@api_view(['GET'])
+def daily_payment_report(request):
+    if not has_tab_access(request.user, 'customers'):
+        raise PermissionDenied('You do not have access to customer payment reports.')
+    raw_date = request.query_params.get('date') or str(timezone.localdate())
+    report_date = parse_date(raw_date)
+    if report_date is None:
+        raise DRFValidationError({'date': 'Use a valid date in YYYY-MM-DD format.'})
+    if report_date > timezone.localdate():
+        raise DRFValidationError({'date': 'Daily payment reports cannot be generated for a future date.'})
+    report = build_daily_payment_report(report_date=report_date)
+    if request.query_params.get('export', '').lower() == 'pdf':
+        return daily_payment_report_pdf_response(report)
+    return Response(daily_payment_report_payload(report))

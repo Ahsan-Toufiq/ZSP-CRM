@@ -19,6 +19,7 @@ from finance.models import (
     CustomerPayment,
     CustomerPaymentAllocation,
     CustomerPaymentComponent,
+    CustomerPaymentTarget,
 )
 from finance.services import (
     change_cheque_status,
@@ -42,13 +43,27 @@ class ChequeStatusSerializer(serializers.ModelSerializer):
 
 
 class ChequeSettlementAllocationSerializer(serializers.ModelSerializer):
-    sale_number = serializers.CharField(source='sale.sale_number', read_only=True)
-    sale_date = serializers.DateField(source='sale.sale_date', read_only=True)
+    sale_number = serializers.SerializerMethodField()
+    sale_date = serializers.SerializerMethodField()
+    target_type = serializers.SerializerMethodField()
+    target_label = serializers.SerializerMethodField()
 
     class Meta:
         model = ChequeSettlementAllocation
-        fields = ['id', 'cheque', 'sale', 'sale_number', 'sale_date', 'amount', 'is_reversed', 'created_at']
+        fields = ['id', 'cheque', 'sale', 'opening_balance', 'sale_number', 'sale_date', 'target_type', 'target_label', 'amount', 'is_reversed', 'created_at']
         read_only_fields = fields
+
+    def get_sale_number(self, obj):
+        return obj.sale.sale_number if obj.sale_id else None
+
+    def get_sale_date(self, obj):
+        return obj.sale.sale_date if obj.sale_id else obj.opening_balance.entry_date
+
+    def get_target_type(self, obj):
+        return 'sale' if obj.sale_id else 'opening_balance'
+
+    def get_target_label(self, obj):
+        return obj.sale.sale_number if obj.sale_id else 'Opening balance'
 
 
 class ChequeSerializer(serializers.ModelSerializer):
@@ -125,13 +140,47 @@ class CustomerLedgerEntrySerializer(serializers.ModelSerializer):
 
 
 class CustomerPaymentAllocationSerializer(serializers.ModelSerializer):
-    sale_number = serializers.CharField(source='sale.sale_number', read_only=True)
-    sale_date = serializers.DateField(source='sale.sale_date', read_only=True)
+    sale_number = serializers.SerializerMethodField()
+    sale_date = serializers.SerializerMethodField()
+    target_type = serializers.SerializerMethodField()
+    target_label = serializers.SerializerMethodField()
 
     class Meta:
         model = CustomerPaymentAllocation
-        fields = ['id', 'component', 'sale', 'sale_number', 'sale_date', 'amount', 'created_at']
+        fields = ['id', 'component', 'sale', 'opening_balance', 'sale_number', 'sale_date', 'target_type', 'target_label', 'amount', 'created_at']
         read_only_fields = fields
+
+    def get_sale_number(self, obj):
+        return obj.sale.sale_number if obj.sale_id else None
+
+    def get_sale_date(self, obj):
+        return obj.sale.sale_date if obj.sale_id else obj.opening_balance.entry_date
+
+    def get_target_type(self, obj):
+        return 'sale' if obj.sale_id else 'opening_balance'
+
+    def get_target_label(self, obj):
+        return obj.sale.sale_number if obj.sale_id else 'Opening balance'
+
+
+class CustomerPaymentTargetSerializer(serializers.ModelSerializer):
+    target_type = serializers.SerializerMethodField()
+    target_label = serializers.SerializerMethodField()
+    target_date = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CustomerPaymentTarget
+        fields = ['id', 'sale', 'opening_balance', 'target_type', 'target_label', 'target_date', 'amount']
+        read_only_fields = fields
+
+    def get_target_type(self, obj):
+        return 'sale' if obj.sale_id else 'opening_balance'
+
+    def get_target_label(self, obj):
+        return obj.sale.sale_number if obj.sale_id else 'Opening balance'
+
+    def get_target_date(self, obj):
+        return obj.sale.sale_date if obj.sale_id else obj.opening_balance.entry_date
 
 
 class CustomerPaymentComponentSerializer(serializers.ModelSerializer):
@@ -151,12 +200,13 @@ class CustomerPaymentComponentSerializer(serializers.ModelSerializer):
 class CustomerPaymentSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     components = CustomerPaymentComponentSerializer(read_only=True, many=True)
+    targets = CustomerPaymentTargetSerializer(read_only=True, many=True)
 
     class Meta:
         model = CustomerPayment
         fields = [
             'id', 'payment_number', 'customer', 'customer_name', 'payment_date',
-            'kind', 'total_amount', 'reference', 'notes', 'components',
+            'kind', 'allocation_mode', 'total_amount', 'reference', 'notes', 'components', 'targets',
             'created_at', 'updated_at',
         ]
         read_only_fields = fields
@@ -201,9 +251,10 @@ class CustomerPaymentComponentWriteSerializer(serializers.Serializer):
 class CustomerPaymentCreateSerializer(serializers.Serializer):
     customer = serializers.PrimaryKeyRelatedField(queryset=Customer.objects.filter(is_active=True))
     payment_date = serializers.DateField()
-    reference = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    allocation_mode = serializers.ChoiceField(choices=CustomerPayment.AllocationMode.choices, default=CustomerPayment.AllocationMode.OVERALL)
     notes = serializers.CharField(required=False, allow_blank=True)
     components = CustomerPaymentComponentWriteSerializer(many=True)
+    targets = serializers.ListField(child=serializers.DictField(), required=False, default=list)
 
     def validate_components(self, value):
         if not value:

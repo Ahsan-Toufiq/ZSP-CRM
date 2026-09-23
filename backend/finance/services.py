@@ -20,6 +20,7 @@ from finance.models import (
     CustomerPayment,
     CustomerPaymentAllocation,
     CustomerPaymentComponent,
+    CustomerPaymentTarget,
 )
 from operations.models import AuctionSale
 
@@ -198,71 +199,232 @@ def _sale_outstanding(sale: AuctionSale) -> Decimal:
     return Decimal(sale.receivable_amount) - _active_allocated_amount(sale) - _active_direct_payment_amount(sale)
 
 
-def _allocate_cheque_to_oldest_sales(*, user, cheque: Cheque) -> None:
+def _opening_balance_outstanding(entry: CustomerLedgerEntry) -> Decimal:
+    if entry.debit <= 0:
+        return Decimal('0.00')
+    cheque_amount = entry.cheque_allocations.filter(is_reversed=False).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+    payment_amount = entry.payment_allocations.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+    return max(Decimal(entry.debit) - cheque_amount - payment_amount, Decimal('0.00'))
+
+
+def _opening_balance_for_customer(customer):
+    return (
+        CustomerLedgerEntry.objects
+        .select_for_update()
+        .filter(
+            customer=customer,
+            entry_type=CustomerLedgerEntry.EntryType.ADJUSTMENT,
+            description='Opening balance',
+            debit__gt=0,
+            sale__isnull=True,
+            cheque__isnull=True,
+        )
+        .order_by('entry_date', 'created_at')
+        .first()
+    )
+
+
+def _receivable_targets_for_customer(customer) -> list[dict]:
+    targets = []
+    opening = _opening_balance_for_customer(customer)
+    if opening is not None:
+        outstanding = _opening_balance_outstanding(opening)
+        if outstanding > 0:
+            targets.append({
+                'kind': 'opening_balance',
+                'opening_balance': opening,
+                'sale': None,
+                'date': opening.entry_date,
+                'created_at': opening.created_at,
+                'outstanding': outstanding,
+            })
+    sales = (
+        AuctionSale.objects
+        .select_for_update()
+        .filter(
+            customer=customer,
+            payment_type__in=[
+                AuctionSale.PaymentType.CREDIT,
+                AuctionSale.PaymentType.CHEQUE,
+                AuctionSale.PaymentType.MIXED,
+            ],
+            is_cancelled=False,
+        )
+        .order_by('sale_date', 'created_at')
+    )
+    for sale in sales:
+        outstanding = _sale_outstanding(sale)
+        if outstanding > 0:
+            targets.append({
+                'kind': 'sale',
+                'sale': sale,
+                'opening_balance': None,
+                'date': sale.sale_date,
+                'created_at': sale.created_at,
+                'outstanding': outstanding,
+            })
+    return sorted(targets, key=lambda target: (target['date'], target['created_at']))
+
+
+def _target_outstanding(target) -> Decimal:
+    if target.get('sale') is not None:
+        return _sale_outstanding(target['sale'])
+    return _opening_balance_outstanding(target['opening_balance'])
+
+
+def _create_cheque_allocation(*, user, cheque, target, amount):
+    ChequeSettlementAllocation.objects.create(
+        cheque=cheque,
+        sale=target.get('sale'),
+        opening_balance=target.get('opening_balance'),
+        amount=amount,
+        created_by=user,
+        updated_by=user,
+    )
+
+
+def _create_payment_allocation(*, user, component, target, amount):
+    CustomerPaymentAllocation.objects.create(
+        component=component,
+        sale=target.get('sale'),
+        opening_balance=target.get('opening_balance'),
+        amount=amount,
+        created_by=user,
+        updated_by=user,
+    )
+
+
+def _allocate_cheque_to_oldest_receivables(*, user, cheque: Cheque) -> None:
     remaining = Decimal(cheque.amount)
-    sales = (
-        AuctionSale.objects
-        .select_for_update()
-        .filter(
-            customer=cheque.customer,
-            payment_type__in=[
-                AuctionSale.PaymentType.CREDIT,
-                AuctionSale.PaymentType.CHEQUE,
-                AuctionSale.PaymentType.MIXED,
-            ],
-            is_cancelled=False,
-        )
-        .order_by('sale_date', 'created_at')
-    )
-
-    for sale in sales:
+    for target in _receivable_targets_for_customer(cheque.customer):
         if remaining <= 0:
             break
-        outstanding = _sale_outstanding(sale)
-        if outstanding <= 0:
+        amount = min(remaining, _target_outstanding(target))
+        if amount <= 0:
             continue
-        amount = min(remaining, outstanding)
-        ChequeSettlementAllocation.objects.create(
-            cheque=cheque,
-            sale=sale,
-            amount=amount,
-            created_by=user,
-            updated_by=user,
-        )
+        _create_cheque_allocation(user=user, cheque=cheque, target=target, amount=amount)
         remaining -= amount
 
 
-def _allocate_component_to_oldest_sales(*, user, component: CustomerPaymentComponent) -> None:
+def _fulfilled_target_amount(target: CustomerPaymentTarget) -> Decimal:
+    payment_allocations = CustomerPaymentAllocation.objects.filter(component__payment=target.payment)
+    cheque_allocations = ChequeSettlementAllocation.objects.filter(
+        cheque__payment_component__payment=target.payment,
+        is_reversed=False,
+    )
+    if target.sale_id:
+        payment_allocations = payment_allocations.filter(sale=target.sale)
+        cheque_allocations = cheque_allocations.filter(sale=target.sale)
+    else:
+        payment_allocations = payment_allocations.filter(opening_balance=target.opening_balance)
+        cheque_allocations = cheque_allocations.filter(opening_balance=target.opening_balance)
+    direct = payment_allocations.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+    settled_cheques = cheque_allocations.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+    return direct + settled_cheques
+
+
+def _specific_target_dict(target: CustomerPaymentTarget) -> dict:
+    return {'sale': target.sale, 'opening_balance': target.opening_balance}
+
+
+def _allocate_cheque_to_payment_targets(*, user, cheque: Cheque, payment: CustomerPayment) -> None:
+    remaining = Decimal(cheque.amount)
+    targets = payment.targets.select_for_update().order_by('created_at')
+    for desired in targets:
+        if remaining <= 0:
+            break
+        target = _specific_target_dict(desired)
+        intended_remaining = max(Decimal(desired.amount) - _fulfilled_target_amount(desired), Decimal('0.00'))
+        amount = min(remaining, intended_remaining, _target_outstanding(target))
+        if amount <= 0:
+            continue
+        _create_cheque_allocation(user=user, cheque=cheque, target=target, amount=amount)
+        remaining -= amount
+
+
+def _allocate_component_to_targets(*, user, component: CustomerPaymentComponent, targets) -> None:
     remaining = Decimal(component.amount)
-    sales = (
-        AuctionSale.objects
-        .select_for_update()
-        .filter(
-            customer=component.payment.customer,
-            payment_type__in=[
-                AuctionSale.PaymentType.CREDIT,
-                AuctionSale.PaymentType.CHEQUE,
-                AuctionSale.PaymentType.MIXED,
-            ],
-            is_cancelled=False,
-        )
-        .order_by('sale_date', 'created_at')
-    )
-    for sale in sales:
+    for desired in targets:
         if remaining <= 0:
             break
-        outstanding = _sale_outstanding(sale)
-        if outstanding <= 0:
+        target = _specific_target_dict(desired)
+        intended_remaining = max(Decimal(desired.amount) - _fulfilled_target_amount(desired), Decimal('0.00'))
+        amount = min(remaining, intended_remaining, _target_outstanding(target))
+        if amount <= 0:
             continue
-        amount = min(remaining, outstanding)
-        CustomerPaymentAllocation.objects.create(
-            component=component,
-            sale=sale,
-            amount=amount,
-            created_by=user,
-            updated_by=user,
-        )
+        _create_payment_allocation(user=user, component=component, target=target, amount=amount)
         remaining -= amount
+
+
+def _allocate_component_to_oldest_receivables(*, user, component: CustomerPaymentComponent) -> None:
+    remaining = Decimal(component.amount)
+    for target in _receivable_targets_for_customer(component.payment.customer):
+        if remaining <= 0:
+            break
+        amount = min(remaining, _target_outstanding(target))
+        if amount <= 0:
+            continue
+        _create_payment_allocation(user=user, component=component, target=target, amount=amount)
+        remaining -= amount
+
+
+def _validate_specific_targets(*, customer, targets, total) -> list[dict]:
+    if not targets:
+        raise ValueError('Select at least one sale or opening balance for this payment.')
+    normalized = []
+    seen = set()
+    allocated_total = Decimal('0.00')
+    available = {
+        (target['kind'], str((target.get('sale') or target.get('opening_balance')).id)): target
+        for target in _receivable_targets_for_customer(customer)
+    }
+    for requested in targets:
+        key = (requested.get('target_type'), str(requested.get('target_id') or ''))
+        if key in seen:
+            raise ValueError('Each sale or opening balance can be selected only once.')
+        seen.add(key)
+        target = available.get(key)
+        if target is None:
+            raise ValueError('A selected transaction is invalid, belongs to another customer, or is already settled.')
+        amount = Decimal(requested.get('amount') or 0).quantize(Decimal('0.01'))
+        if amount <= 0:
+            raise ValueError('Each selected transaction amount must be greater than zero.')
+        if amount > target['outstanding']:
+            raise ValueError('A payment allocation cannot exceed the selected transaction outstanding amount.')
+        normalized.append({**target, 'amount': amount})
+        allocated_total += amount
+    if allocated_total != total:
+        raise ValueError('Selected transaction allocations must equal the payment total.')
+    return normalized
+
+
+@transaction.atomic
+def customer_receivables(*, customer) -> list[dict]:
+    rows = []
+    for target in _receivable_targets_for_customer(customer):
+        if target['kind'] == 'sale':
+            sale = target['sale']
+            rows.append({
+                'target_type': 'sale',
+                'target_id': str(sale.id),
+                'reference': sale.sale_number,
+                'date': sale.sale_date,
+                'description': f'Auction sale {sale.sale_number}',
+                'original_amount': Decimal(sale.receivable_amount),
+                'outstanding_amount': target['outstanding'],
+            })
+        else:
+            opening = target['opening_balance']
+            rows.append({
+                'target_type': 'opening_balance',
+                'target_id': str(opening.id),
+                'reference': 'Opening balance',
+                'date': opening.entry_date,
+                'description': opening.description,
+                'original_amount': Decimal(opening.debit),
+                'outstanding_amount': target['outstanding'],
+            })
+    return rows
 
 
 def _post_cheque_settlement(*, user, cheque: Cheque) -> None:
@@ -281,10 +443,16 @@ def _post_cheque_settlement(*, user, cheque: Cheque) -> None:
         description=f'Cheque settlement {cheque.cheque_number}',
         credit=cheque.amount,
         cheque=cheque,
+        payment=getattr(getattr(cheque, 'payment_component', None), 'payment', None),
         created_by=user,
         updated_by=user,
     )
-    _allocate_cheque_to_oldest_sales(user=user, cheque=cheque)
+    component = getattr(cheque, 'payment_component', None)
+    payment = component.payment if component is not None else None
+    if payment is not None and payment.allocation_mode == CustomerPayment.AllocationMode.SPECIFIC:
+        _allocate_cheque_to_payment_targets(user=user, cheque=cheque, payment=payment)
+    else:
+        _allocate_cheque_to_oldest_receivables(user=user, cheque=cheque)
 
 
 def next_customer_payment_number() -> str:
@@ -337,7 +505,7 @@ def _create_component_cheque(*, user, payment: CustomerPayment, component: Custo
 
 
 @transaction.atomic
-def record_customer_payment(*, user, customer, payment_date, components, reference='', notes='') -> CustomerPayment:
+def record_customer_payment(*, user, customer, payment_date, components, allocation_mode='overall', targets=None, reference='', notes='') -> CustomerPayment:
     normalized_components = []
     total = Decimal('0.00')
     for component in components:
@@ -350,17 +518,39 @@ def record_customer_payment(*, user, customer, payment_date, components, referen
     if total <= 0:
         raise ValueError('Payment total must be greater than zero.')
 
+    if allocation_mode not in CustomerPayment.AllocationMode.values:
+        raise ValueError('Select a valid payment allocation mode.')
+    receivable_total = sum((target['outstanding'] for target in _receivable_targets_for_customer(customer)), Decimal('0.00'))
+    if total > receivable_total:
+        raise ValueError('Payment total cannot exceed the customer outstanding balance.')
+    normalized_targets = (
+        _validate_specific_targets(customer=customer, targets=targets or [], total=total)
+        if allocation_mode == CustomerPayment.AllocationMode.SPECIFIC
+        else []
+    )
+
     payment = CustomerPayment.objects.create(
         payment_number=next_customer_payment_number(),
         customer=customer,
         payment_date=payment_date,
         kind=_payment_kind_for_components(normalized_components),
+        allocation_mode=allocation_mode,
         total_amount=total,
         reference=reference,
         notes=notes,
         created_by=user,
         updated_by=user,
     )
+
+    for target in normalized_targets:
+        CustomerPaymentTarget.objects.create(
+            payment=payment,
+            sale=target.get('sale'),
+            opening_balance=target.get('opening_balance'),
+            amount=target['amount'],
+            created_by=user,
+            updated_by=user,
+        )
 
     for data in normalized_components:
         method = data['method']
@@ -390,7 +580,10 @@ def record_customer_payment(*, user, customer, payment_date, components, referen
             created_by=user,
             updated_by=user,
         )
-        _allocate_component_to_oldest_sales(user=user, component=component)
+        if allocation_mode == CustomerPayment.AllocationMode.SPECIFIC:
+            _allocate_component_to_targets(user=user, component=component, targets=payment.targets.all())
+        else:
+            _allocate_component_to_oldest_receivables(user=user, component=component)
 
     AuditLog.objects.create(
         actor=user,
