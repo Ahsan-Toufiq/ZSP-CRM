@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Sum
+from django.utils import timezone
 from rest_framework import serializers
 
 from catalog.models import DropdownOption
@@ -12,6 +13,8 @@ from finance.models import (
     ChequeStatus,
     ChequeStatusHistory,
     Currency,
+    CurrencyCreditor,
+    CurrencyCreditorRepayment,
     CurrencyOpeningBalance,
     CurrencyPurchase,
     CurrencySpending,
@@ -25,8 +28,11 @@ from finance.services import (
     change_cheque_status,
     create_cheque,
     create_currency_opening_balance,
+    create_currency_creditor_repayment,
     create_currency_spending,
-    update_currency_acquisition,
+    resolve_currency_creditor,
+    update_currency_creditor_repayment,
+    update_currency_purchase,
     update_currency_opening_balance,
     record_customer_payment,
     resolve_currency,
@@ -380,10 +386,15 @@ class CurrencySerializer(serializers.ModelSerializer):
             purchased = sum((purchase.amount for purchase in purchases), Decimal('0.0000'))
             opening = sum((entry.amount for entry in openings), Decimal('0.0000'))
             currency_spent = sum((entry.amount for entry in spending_entries), Decimal('0.0000'))
-            acquisition_cost = sum((purchase.total_cost for purchase in purchases), Decimal('0.00'))
+            paid_purchases = [purchase for purchase in purchases if purchase.total_cost is not None]
+            repayments = [repayment for purchase in purchases for repayment in purchase.repayments.all()]
+            acquisition_cost = sum((purchase.total_cost for purchase in paid_purchases), Decimal('0.00'))
+            acquisition_cost += sum((repayment.total_cost for repayment in repayments), Decimal('0.00'))
             known_openings = [entry for entry in openings if entry.total_cost is not None]
             acquisition_cost += sum((entry.total_cost for entry in known_openings), Decimal('0.00'))
-            known_amount = purchased + sum((entry.amount for entry in known_openings), Decimal('0.0000'))
+            known_amount = sum((purchase.amount for purchase in paid_purchases), Decimal('0.0000'))
+            known_amount += sum((repayment.amount for repayment in repayments), Decimal('0.0000'))
+            known_amount += sum((entry.amount for entry in known_openings), Decimal('0.0000'))
             obj._currency_summary = {
                 'current': purchased + opening - currency_spent,
                 'purchased': purchased,
@@ -465,12 +476,19 @@ class CurrencyPurchaseSerializer(CurrencyReferenceSerializerMixin, serializers.M
     currency_code = serializers.CharField(source='currency.code', read_only=True)
     currency_name = serializers.CharField(source='currency.name', read_only=True)
     currency_symbol = serializers.CharField(source='currency.symbol', read_only=True)
+    creditor = serializers.PrimaryKeyRelatedField(queryset=CurrencyCreditor.objects.all(), required=False, allow_null=True)
+    creditor_input = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    creditor_name = serializers.CharField(source='creditor.name', read_only=True, allow_null=True)
+    repaid_amount = serializers.DecimalField(max_digits=18, decimal_places=4, read_only=True)
+    outstanding_amount = serializers.DecimalField(max_digits=18, decimal_places=4, read_only=True)
+    repayment_count = serializers.SerializerMethodField()
 
     class Meta:
         model = CurrencyPurchase
         fields = [
             'id', 'currency', 'currency_input', 'currency_code', 'currency_name', 'currency_symbol',
-            'purchase_date', 'amount', 'acquisition_rate', 'total_cost',
+            'purchase_type', 'creditor', 'creditor_input', 'creditor_name', 'purchase_date', 'due_date',
+            'amount', 'acquisition_rate', 'total_cost', 'repaid_amount', 'outstanding_amount', 'repayment_count',
             'source', 'reference', 'notes', 'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'currency_code', 'currency_name', 'currency_symbol', 'created_at', 'updated_at']
@@ -482,10 +500,21 @@ class CurrencyPurchaseSerializer(CurrencyReferenceSerializerMixin, serializers.M
     def validate(self, attrs):
         attrs = super().validate(attrs)
         amount = attrs.get('amount', getattr(self.instance, 'amount', None))
+        purchase_type = attrs.get('purchase_type', getattr(self.instance, 'purchase_type', CurrencyPurchase.PurchaseType.CASH))
         rate = attrs.get('acquisition_rate', getattr(self.instance, 'acquisition_rate', None))
         total = attrs.get('total_cost', getattr(self.instance, 'total_cost', None))
         if amount is None or amount <= 0:
             raise serializers.ValidationError({'amount': 'Amount must be greater than zero.'})
+        if purchase_type == CurrencyPurchase.PurchaseType.CREDIT:
+            creditor = attrs.get('creditor', getattr(self.instance, 'creditor', None))
+            creditor_input = str(attrs.get('creditor_input', '')).strip()
+            if creditor is None and not creditor_input:
+                raise serializers.ValidationError({'creditor_input': 'Select a creditor or enter a new creditor name.'})
+            attrs['acquisition_rate'] = None
+            attrs['total_cost'] = None
+            return attrs
+        attrs['creditor'] = None
+        attrs['due_date'] = None
         if not rate and not total:
             raise serializers.ValidationError({'acquisition_rate': 'Enter either acquisition rate or total purchase cost.'})
         if rate is not None and rate <= 0:
@@ -500,13 +529,154 @@ class CurrencyPurchaseSerializer(CurrencyReferenceSerializerMixin, serializers.M
 
     def create(self, validated_data):
         validated_data['currency'] = self._resolve_currency(validated_data)
+        creditor_input = validated_data.pop('creditor_input', '')
+        if validated_data.get('purchase_type') == CurrencyPurchase.PurchaseType.CREDIT:
+            validated_data['creditor'] = resolve_currency_creditor(
+                creditor=validated_data.get('creditor'),
+                creditor_input=creditor_input,
+                user=self.context['request'].user,
+            )
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
         currency = self._resolve_currency(validated_data)
+        creditor_input = validated_data.pop('creditor_input', '')
+        if validated_data.get('purchase_type', instance.purchase_type) == CurrencyPurchase.PurchaseType.CREDIT:
+            validated_data['creditor'] = resolve_currency_creditor(
+                creditor=validated_data.get('creditor', instance.creditor),
+                creditor_input=creditor_input,
+                user=self.context['request'].user,
+            )
         user = validated_data.pop('updated_by')
         try:
-            return update_currency_acquisition(instance=instance, user=user, currency=currency, **validated_data)
+            return update_currency_purchase(instance=instance, user=user, currency=currency, **validated_data)
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(error.message_dict) from error
+
+    def get_repayment_count(self, obj):
+        return obj.repayments.count()
+
+
+class CurrencyCreditorSerializer(serializers.ModelSerializer):
+    outstanding_by_currency = serializers.SerializerMethodField()
+    purchase_count = serializers.SerializerMethodField()
+    repayment_count = serializers.SerializerMethodField()
+    overdue_count = serializers.SerializerMethodField()
+    total_pkr_repaid = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CurrencyCreditor
+        fields = [
+            'id', 'name', 'phone', 'address', 'notes', 'is_active',
+            'outstanding_by_currency', 'purchase_count', 'repayment_count',
+            'overdue_count', 'total_pkr_repaid', 'created_at', 'updated_at',
+        ]
+        read_only_fields = [
+            'id', 'outstanding_by_currency', 'purchase_count', 'repayment_count',
+            'overdue_count', 'total_pkr_repaid', 'created_at', 'updated_at',
+        ]
+
+    def _summary(self, obj):
+        if not hasattr(obj, '_creditor_summary'):
+            today = timezone.localdate()
+            balances = {}
+            repayment_count = 0
+            total_pkr_repaid = Decimal('0.00')
+            overdue_count = 0
+            for purchase in obj.credit_purchases.all():
+                repayments = list(purchase.repayments.all())
+                repaid = sum((entry.amount for entry in repayments), Decimal('0.0000'))
+                outstanding = max(Decimal(purchase.amount) - repaid, Decimal('0.0000'))
+                code = purchase.currency.code
+                balances[code] = balances.get(code, Decimal('0.0000')) + outstanding
+                repayment_count += len(repayments)
+                total_pkr_repaid += sum((entry.total_cost for entry in repayments), Decimal('0.00'))
+                if purchase.due_date and purchase.due_date < today and outstanding > 0:
+                    overdue_count += 1
+            obj._creditor_summary = {
+                'balances': [
+                    {'currency_code': code, 'amount': amount}
+                    for code, amount in sorted(balances.items()) if amount > 0
+                ],
+                'purchase_count': len(obj.credit_purchases.all()),
+                'repayment_count': repayment_count,
+                'overdue_count': overdue_count,
+                'total_pkr_repaid': total_pkr_repaid,
+            }
+        return obj._creditor_summary
+
+    def get_outstanding_by_currency(self, obj):
+        return self._summary(obj)['balances']
+
+    def get_purchase_count(self, obj):
+        return self._summary(obj)['purchase_count']
+
+    def get_repayment_count(self, obj):
+        return self._summary(obj)['repayment_count']
+
+    def get_overdue_count(self, obj):
+        return self._summary(obj)['overdue_count']
+
+    def get_total_pkr_repaid(self, obj):
+        return self._summary(obj)['total_pkr_repaid']
+
+
+class CurrencyCreditorRepaymentSerializer(serializers.ModelSerializer):
+    purchase = serializers.PrimaryKeyRelatedField(queryset=CurrencyPurchase.objects.filter(purchase_type=CurrencyPurchase.PurchaseType.CREDIT))
+    creditor_id = serializers.UUIDField(source='purchase.creditor_id', read_only=True)
+    creditor_name = serializers.CharField(source='purchase.creditor.name', read_only=True)
+    currency_code = serializers.CharField(source='purchase.currency.code', read_only=True)
+    purchase_reference = serializers.CharField(source='purchase.reference', read_only=True)
+
+    class Meta:
+        model = CurrencyCreditorRepayment
+        fields = [
+            'id', 'purchase', 'purchase_reference', 'creditor_id', 'creditor_name',
+            'currency_code', 'repayment_date', 'amount', 'exchange_rate', 'total_cost',
+            'reference', 'notes', 'created_at', 'updated_at',
+        ]
+        read_only_fields = [
+            'id', 'purchase_reference', 'creditor_id', 'creditor_name', 'currency_code',
+            'created_at', 'updated_at',
+        ]
+        extra_kwargs = {
+            'exchange_rate': {'required': False, 'allow_null': True},
+            'total_cost': {'required': False, 'allow_null': True},
+        }
+
+    def validate(self, attrs):
+        amount = attrs.get('amount', getattr(self.instance, 'amount', None))
+        rate = attrs.get('exchange_rate', getattr(self.instance, 'exchange_rate', None))
+        total = attrs.get('total_cost', getattr(self.instance, 'total_cost', None))
+        if amount is None or amount <= 0:
+            raise serializers.ValidationError({'amount': 'Repayment amount must be greater than zero.'})
+        if not rate and not total:
+            raise serializers.ValidationError({'exchange_rate': 'Enter either the exchange rate or total PKR paid.'})
+        if rate is not None and rate <= 0:
+            raise serializers.ValidationError({'exchange_rate': 'Exchange rate must be greater than zero.'})
+        if total is not None and total <= 0:
+            raise serializers.ValidationError({'total_cost': 'Total PKR paid must be greater than zero.'})
+        if rate and not total:
+            attrs['total_cost'] = (amount * rate).quantize(Decimal('0.01'))
+        elif total and not rate:
+            attrs['exchange_rate'] = (total / amount).quantize(Decimal('0.000001'))
+        if self.instance and 'purchase' in attrs and attrs['purchase'].id != self.instance.purchase_id:
+            raise serializers.ValidationError({'purchase': 'The liability cannot change after a repayment is recorded.'})
+        return attrs
+
+    def create(self, validated_data):
+        user = validated_data.pop('created_by')
+        validated_data.pop('updated_by', None)
+        try:
+            return create_currency_creditor_repayment(user=user, **validated_data)
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(error.message_dict) from error
+
+    def update(self, instance, validated_data):
+        validated_data.pop('purchase', None)
+        user = validated_data.pop('updated_by')
+        try:
+            return update_currency_creditor_repayment(instance=instance, user=user, **validated_data)
         except DjangoValidationError as error:
             raise serializers.ValidationError(error.message_dict) from error
 

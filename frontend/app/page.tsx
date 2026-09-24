@@ -42,6 +42,8 @@ import type {
   CustomerReceivable,
   CustomerReceivableResponse,
   Currency,
+  CurrencyCreditor,
+  CurrencyCreditorRepayment,
   CurrencyOpeningBalance,
   CurrencyPurchase,
   CurrencySpending,
@@ -73,14 +75,19 @@ type ModalState =
   | { type: 'cheque'; cheque?: Cheque }
   | { type: 'customer-payment'; customer?: Customer }
   | { type: 'customer-details'; customer: Customer }
+  | { type: 'customer-report'; customer: Customer }
+  | { type: 'all-customer-report'; format: 'csv' | 'pdf' }
   | { type: 'currency'; currency?: Currency }
   | { type: 'currency-purchase'; purchase?: CurrencyPurchase }
   | { type: 'currency-opening'; opening?: CurrencyOpeningBalance }
   | { type: 'currency-spending'; spending?: CurrencySpending }
+  | { type: 'currency-creditor'; creditor?: CurrencyCreditor }
+  | { type: 'currency-repayment'; purchase: CurrencyPurchase }
   | { type: 'cheque-status' }
   | { type: 'dropdown-option'; group?: DropdownOption['group'] }
   | { type: 'user'; user?: ManagedUser }
   | { type: 'inventory-export' }
+  | { type: 'container-tracking-export' }
   | { type: 'change-password' }
   | null;
 
@@ -281,6 +288,8 @@ export default function Home() {
   const [currencyPurchases, setCurrencyPurchases] = useState<CurrencyPurchase[]>([]);
   const [currencyOpenings, setCurrencyOpenings] = useState<CurrencyOpeningBalance[]>([]);
   const [currencySpending, setCurrencySpending] = useState<CurrencySpending[]>([]);
+  const [currencyCreditors, setCurrencyCreditors] = useState<CurrencyCreditor[]>([]);
+  const [currencyRepayments, setCurrencyRepayments] = useState<CurrencyCreditorRepayment[]>([]);
 
   const availableBatches = useMemo<BatchWithPart[]>(() => parts.flatMap((part) => (part.batches ?? []).map((batch) => ({ ...batch, item_detail: part }))).filter((batch) => batch.available_quantity > 0), [parts]);
   const visibleTabs = useMemo(() => {
@@ -382,17 +391,21 @@ export default function Home() {
       }
 
       if (tab === 'currency') {
-        const [currencyData, purchaseData, openingData, spendingData] = await Promise.allSettled([
+        const [currencyData, purchaseData, openingData, spendingData, creditorData, repaymentData] = await Promise.allSettled([
           list<Currency>('/finance/currencies/?page_size=250'),
           list<CurrencyPurchase>('/finance/currency-purchases/?page_size=250'),
           list<CurrencyOpeningBalance>('/finance/currency-opening-balances/?page_size=250'),
           list<CurrencySpending>('/finance/currency-spending/?page_size=250'),
+          list<CurrencyCreditor>('/finance/currency-creditors/?page_size=250'),
+          list<CurrencyCreditorRepayment>('/finance/currency-creditor-repayments/?page_size=500'),
         ]);
         if (loadToken.current === token) {
           setCurrencies(valueOf(currencyData, emptyPage<Currency>()).results);
           setCurrencyPurchases(valueOf(purchaseData, emptyPage<CurrencyPurchase>()).results);
           setCurrencyOpenings(valueOf(openingData, emptyPage<CurrencyOpeningBalance>()).results);
           setCurrencySpending(valueOf(spendingData, emptyPage<CurrencySpending>()).results);
+          setCurrencyCreditors(valueOf(creditorData, emptyPage<CurrencyCreditor>()).results);
+          setCurrencyRepayments(valueOf(repaymentData, emptyPage<CurrencyCreditorRepayment>()).results);
         }
       }
 
@@ -635,18 +648,18 @@ export default function Home() {
     }
   }
 
-  async function downloadCreditReport(format: 'csv' | 'pdf') {
+  async function downloadCreditReport(format: 'csv' | 'pdf', section: 'summary' | 'aging' | 'outstanding' | 'combined') {
     await downloadBlob(
-      `/api/finance/credit-report/?export=${format}`,
-      `zsp-credit-aging-report.${format}`,
+      `/api/finance/credit-report/?export=${format}&section=${section}`,
+      `zsp-customer-${section}-report.${format}`,
       format === 'csv' ? 'Unable to download Spreadsheet report.' : 'Unable to download PDF report.',
     );
   }
 
-  async function downloadCustomerStatement(customer: Customer) {
+  async function downloadCustomerStatement(customer: Customer, report: 'aging' | 'transactions' | 'outstanding' | 'combined') {
     await downloadBlob(
-      `/api/finance/customers/${customer.id}/statement/`,
-      `zsp-customer-statement-${customer.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.pdf`,
+      `/api/finance/customers/${customer.id}/statement/?report=${report}`,
+      `zsp-customer-${report}-${customer.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.pdf`,
       'Unable to download customer statement.',
     );
   }
@@ -666,6 +679,30 @@ export default function Home() {
       `/api/operations/inventory-report/?${params.toString()}`,
       `zsp-available-inventory${containerId ? '-container' : ''}.${format}`,
       format === 'csv' ? 'Unable to download inventory Spreadsheet.' : 'Unable to download inventory PDF.',
+    );
+  }
+
+  async function downloadAuctionInventory(containerId: UUID) {
+    await downloadBlob(
+      `/api/operations/inventory-report/?export=pdf&report=auction&container=${containerId}`,
+      'zsp-auction-inventory-sheet.pdf',
+      'Unable to download the auction inventory sheet.',
+    );
+  }
+
+  async function downloadContainerTracking(format: 'pdf' | 'xlsx') {
+    await downloadBlob(
+      `/api/operations/container-tracking-report/?export=${format}`,
+      `zsp-container-tracking.${format}`,
+      `Unable to download the container tracking ${format === 'xlsx' ? 'Spreadsheet' : 'PDF'}.`,
+    );
+  }
+
+  async function downloadCurrencyCreditorStatement(creditor: CurrencyCreditor) {
+    await downloadBlob(
+      `/api/finance/currency-creditors/${creditor.id}/statement/`,
+      `zsp-currency-creditor-${creditor.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.pdf`,
+      'Unable to download the creditor statement.',
     );
   }
 
@@ -775,33 +812,38 @@ export default function Home() {
         {visibleTabs.length === 0 ? <div className="empty-state"><ShieldCheck size={22} /> No product tabs are enabled for this account.</div> : null}
         {loading ? <LoadingState label={`Loading ${currentTitle.toLowerCase()}...`} /> : null}
         {!loading && activeTab === 'dashboard' ? <Dashboard summary={summary} /> : null}
-        {!loading && activeTab === 'customers' ? <CustomersPanel canWrite={canWrite('customers')} customers={customers} creditReport={creditReport} onAdd={() => setModal({ type: 'customer' })} onEdit={(customer) => setModal({ type: 'customer', customer })} onDelete={(customer) => remove(`/operations/customers/${customer.id}/`)} onStatus={(customer) => quickPatch(`/operations/customers/${customer.id}/`, { is_active: !customer.is_active })} onDownloadReport={downloadCreditReport} onDownloadDailyReport={downloadDailyPaymentReport} onDownloadStatement={downloadCustomerStatement} onViewDetails={(customer) => setModal({ type: 'customer-details', customer })} onRecordPayment={(customer) => setModal({ type: 'customer-payment', customer })} onRecordPagePayment={() => setModal({ type: 'customer-payment' })} /> : null}
-        {!loading && activeTab === 'containers' ? <ContainersPanel canWrite={canWrite('containers')} containers={containers} items={items} itemsByContainer={itemsByContainer} parts={parts} expandedContainers={expandedContainers} expandedParts={expandedParts} inventoryPane={inventoryPane} onInventoryPaneChange={setInventoryPane} onToggleContainer={(id) => toggleSet(setExpandedContainers, id)} onTogglePart={(id) => toggleSet(setExpandedParts, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onDelete={(container) => remove(`/operations/containers/${container.id}/`)} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddSubparts={(item) => setModal({ type: 'subparts', parentItem: item })} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} onExport={() => setModal({ type: 'inventory-export' })} /> : null}
+        {!loading && activeTab === 'customers' ? <CustomersPanel canWrite={canWrite('customers')} customers={customers} creditReport={creditReport} onAdd={() => setModal({ type: 'customer' })} onEdit={(customer) => setModal({ type: 'customer', customer })} onDelete={(customer) => remove(`/operations/customers/${customer.id}/`)} onStatus={(customer) => quickPatch(`/operations/customers/${customer.id}/`, { is_active: !customer.is_active })} onDownloadReport={(format) => setModal({ type: 'all-customer-report', format })} onDownloadDailyReport={downloadDailyPaymentReport} onDownloadStatement={(customer) => setModal({ type: 'customer-report', customer })} onViewDetails={(customer) => setModal({ type: 'customer-details', customer })} onRecordPayment={(customer) => setModal({ type: 'customer-payment', customer })} onRecordPagePayment={() => setModal({ type: 'customer-payment' })} /> : null}
+        {!loading && activeTab === 'containers' ? <ContainersPanel canWrite={canWrite('containers')} containers={containers} items={items} itemsByContainer={itemsByContainer} parts={parts} expandedContainers={expandedContainers} expandedParts={expandedParts} inventoryPane={inventoryPane} onInventoryPaneChange={setInventoryPane} onToggleContainer={(id) => toggleSet(setExpandedContainers, id)} onTogglePart={(id) => toggleSet(setExpandedParts, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onDelete={(container) => remove(`/operations/containers/${container.id}/`)} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddSubparts={(item) => setModal({ type: 'subparts', parentItem: item })} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} onExport={() => setModal({ type: 'inventory-export' })} onTrackingExport={() => setModal({ type: 'container-tracking-export' })} /> : null}
         {!loading && activeTab === 'sales' ? <SalesPanel canWrite={canWrite('sales')} sales={sales} analytics={salesAnalytics} onLoadAnalytics={loadSalesAnalytics} onAdd={() => { setNewSaleCustomer(null); setModal({ type: 'sale' }); }} onEdit={(sale) => { setNewSaleCustomer(null); setModal({ type: 'sale', sale }); }} onPrint={printSaleGatePass} onDownloadInvoice={downloadSaleInvoice} onPrintInvoice={printSaleInvoice} onPrintThermalInvoice={printThermalInvoice} /> : null}
         {!loading && activeTab === 'cheques' ? <ChequesPanel canWrite={canWrite('cheques')} cheques={cheques} statuses={chequeStatuses} onAdd={() => setModal({ type: 'cheque' })} onEdit={(cheque) => setModal({ type: 'cheque', cheque })} onStatus={markChequeStatus} onAddStatus={() => setModal({ type: 'cheque-status' })} /> : null}
-        {!loading && activeTab === 'currency' ? <CurrencyPanel canWrite={canWrite('currency')} currencies={currencies} purchases={currencyPurchases} openings={currencyOpenings} spending={currencySpending} onAddOpening={() => setModal({ type: 'currency-opening' })} onEditCurrency={(currency) => setModal({ type: 'currency', currency })} onAddPurchase={() => setModal({ type: 'currency-purchase' })} onEditPurchase={(purchase) => setModal({ type: 'currency-purchase', purchase })} onAddSpending={() => setModal({ type: 'currency-spending' })} onEditOpening={(opening) => setModal({ type: 'currency-opening', opening })} onEditSpending={(entry) => setModal({ type: 'currency-spending', spending: entry })} /> : null}
+        {!loading && activeTab === 'currency' ? <CurrencyPanel canWrite={canWrite('currency')} currencies={currencies} purchases={currencyPurchases} openings={currencyOpenings} spending={currencySpending} creditors={currencyCreditors} repayments={currencyRepayments} onAddOpening={() => setModal({ type: 'currency-opening' })} onEditCurrency={(currency) => setModal({ type: 'currency', currency })} onAddPurchase={() => setModal({ type: 'currency-purchase' })} onEditPurchase={(purchase) => setModal({ type: 'currency-purchase', purchase })} onAddSpending={() => setModal({ type: 'currency-spending' })} onEditOpening={(opening) => setModal({ type: 'currency-opening', opening })} onEditSpending={(entry) => setModal({ type: 'currency-spending', spending: entry })} onAddCreditor={() => setModal({ type: 'currency-creditor' })} onEditCreditor={(creditor) => setModal({ type: 'currency-creditor', creditor })} onRepay={(purchase) => setModal({ type: 'currency-repayment', purchase })} onDownloadCreditor={downloadCurrencyCreditorStatement} /> : null}
         {!loading && activeTab === 'settings' ? <SettingsPanel canWrite={canWrite('settings')} options={dropdownOptions} chequeStatuses={chequeStatuses} onAdd={(group) => setModal({ type: 'dropdown-option', group })} onAddChequeStatus={() => setModal({ type: 'cheque-status' })} /> : null}
         {!loading && activeTab === 'users' ? <UsersPanel canWrite={canWrite('users')} users={managedUsers} currentUserId={currentUser?.id} deletingPath={deletingPath} onAdd={() => setModal({ type: 'user' })} onEdit={(user) => setModal({ type: 'user', user })} onDelete={(user) => remove(`/auth/users/${user.id}/`)} /> : null}
       </section>
       <ModalShell modal={modal} onClose={() => setModal(null)}>
         {message && !saleCustomerOverlayOpen ? <div className="alert modal-alert">{message}</div> : null}
         {modal?.type === 'customer' ? <CustomerForm customer={modal.customer} onSave={save} isSaving={saving} /> : null}
-        {modal?.type === 'container' ? <ContainerForm container={modal.container} onSave={save} isSaving={saving} /> : null}
+        {modal?.type === 'container' ? <ContainerForm container={modal.container} options={dropdownOptions} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'item' ? <ItemForm item={modal.item} containerId={modal.containerId} containers={containers} items={items} parts={parts} options={dropdownOptions} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'part' ? <PartForm part={modal.part} containers={containers} parts={parts} options={dropdownOptions} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'subparts' ? <SubpartForm parentItem={modal.parentItem} parts={parts} options={dropdownOptions} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'sale' ? <SaleForm sale={modal.sale} customers={customers} availableBatches={availableBatches} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} selectedCustomer={newSaleCustomer} onAddCustomer={() => setSaleCustomerOverlayOpen(true)} /> : null}
         {modal?.type === 'cheque' ? <ChequeForm cheque={modal.cheque} customers={customers} statuses={chequeStatuses} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'customer-payment' ? <CustomerPaymentForm customer={modal.customer} customers={customers} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} /> : null}
-        {modal?.type === 'customer-details' ? <CustomerDetails customer={modal.customer} entries={ledgerByCustomer.get(modal.customer.id) ?? []} payments={customerPayments.filter((payment) => payment.customer === modal.customer.id)} reportCustomer={creditReport?.customers.find((item) => item.id === modal.customer.id)} onDownloadStatement={downloadCustomerStatement} /> : null}
+        {modal?.type === 'customer-details' ? <CustomerDetails customer={modal.customer} entries={ledgerByCustomer.get(modal.customer.id) ?? []} payments={customerPayments.filter((payment) => payment.customer === modal.customer.id)} reportCustomer={creditReport?.customers.find((item) => item.id === modal.customer.id)} onDownloadStatement={(customer) => setModal({ type: 'customer-report', customer })} /> : null}
+        {modal?.type === 'customer-report' ? <CustomerReportDialog customer={modal.customer} onDownload={(report) => downloadCustomerStatement(modal.customer, report)} /> : null}
+        {modal?.type === 'all-customer-report' ? <AllCustomerReportDialog format={modal.format} onDownload={(section) => downloadCreditReport(modal.format, section)} /> : null}
         {modal?.type === 'currency' ? <CurrencyForm currency={modal.currency} onSave={save} isSaving={saving} /> : null}
-        {modal?.type === 'currency-purchase' ? <CurrencyPurchaseForm purchase={modal.purchase} currencies={currencies} onSave={save} isSaving={saving} /> : null}
+        {modal?.type === 'currency-purchase' ? <CurrencyPurchaseForm purchase={modal.purchase} currencies={currencies} creditors={currencyCreditors} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'currency-opening' ? <CurrencyOpeningBalanceForm opening={modal.opening} currencies={currencies} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'currency-spending' ? <CurrencySpendingForm spending={modal.spending} currencies={currencies} onSave={save} isSaving={saving} /> : null}
+        {modal?.type === 'currency-creditor' ? <CurrencyCreditorForm creditor={modal.creditor} onSave={save} isSaving={saving} /> : null}
+        {modal?.type === 'currency-repayment' ? <CurrencyRepaymentForm purchase={modal.purchase} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'cheque-status' ? <ChequeStatusForm onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'dropdown-option' ? <DropdownOptionForm group={modal.group} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'user' ? <UserForm user={modal.user} onSave={save} isSaving={saving} /> : null}
-        {modal?.type === 'inventory-export' ? <InventoryExportDialog containers={containers} parts={parts} onDownload={downloadInventoryReport} /> : null}
+        {modal?.type === 'inventory-export' ? <InventoryExportDialog containers={containers} parts={parts} onDownload={downloadInventoryReport} onDownloadAuction={downloadAuctionInventory} /> : null}
+        {modal?.type === 'container-tracking-export' ? <ContainerTrackingExportDialog onDownload={downloadContainerTracking} /> : null}
         {modal?.type === 'change-password' ? <ChangePasswordForm onSave={changePassword} isSaving={saving} /> : null}
       </ModalShell>
       {saleCustomerOverlayOpen ? <ModalShell modal={{ type: 'customer' }} onClose={() => setSaleCustomerOverlayOpen(false)}>{message ? <div className="alert modal-alert">{message}</div> : null}<CustomerForm onSave={saveSaleCustomer} isSaving={saving} /></ModalShell> : null}
@@ -1039,6 +1081,7 @@ function ContainersPanel({
   onEditPart,
   onDeletePart,
   onExport,
+  onTrackingExport,
 }: {
   containers: Container[];
   items: ContainerItem[];
@@ -1062,6 +1105,7 @@ function ContainersPanel({
   onEditPart: (part: PartInventory) => void;
   onDeletePart: (part: PartInventory) => void;
   onExport: () => void;
+  onTrackingExport: () => void;
 }) {
   const [partSearch, setPartSearch] = useState('');
   const [containerSearch, setContainerSearch] = useState('');
@@ -1075,7 +1119,7 @@ function ContainersPanel({
   });
   const filteredContainers = containers.filter((container) => {
     if (!containerQuery) return true;
-    return `${container.reference} ${container.origin_country} ${container.supplier_name} ${container.status}`.toLowerCase().includes(containerQuery);
+    return `${container.reference} ${container.origin_country} ${container.supplier_name} ${container.size_type} ${container.current_location} ${container.status}`.toLowerCase().includes(containerQuery);
   });
 
   return (
@@ -1086,6 +1130,7 @@ function ContainersPanel({
         </div>
         <div className="head-actions">
           <button className="btn" onClick={onExport}><FileDown size={18} /> Download inventory</button>
+          <button className="btn" onClick={onTrackingExport}><FileDown size={18} /> Container tracking</button>
           <div className="segmented-control" role="tablist" aria-label="Inventory views">
             <button
               type="button"
@@ -1237,7 +1282,7 @@ function ContainersPanel({
                   <div className="container-top">
                     <button className="record-main compact-main" onClick={() => onToggleContainer(container.id)}>
                       {expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
-                      <div><strong>{container.reference}</strong><span>{container.origin_country || 'Origin not set'} · {container.supplier_name || 'Supplier not set'}</span></div>
+                      <div><strong>{container.reference}</strong><span>{container.current_location || container.origin_country || 'Location not set'} · {container.supplier_name || 'Agent not set'} · {container.size_type || 'Size not set'}</span></div>
                     </button>
                     <span className={statusClass(container.status)}>{statusLabel(container.status)}</span>
                   </div>
@@ -1246,7 +1291,7 @@ function ContainersPanel({
                     <span>{parentItems.length} manifest items</span>
                     <span>{containerItems.length - parentItems.length} child parts</span>
                     <span>Raw parts: <strong>{money(container.raw_parts_cost)}</strong></span>
-                    <span>Added cost: <strong>{money(container.added_cost)}</strong></span>
+                    <span>Clearing Fee: <strong>{money(container.added_cost)}</strong></span>
                     <span>Total cost: <strong>{money(container.total_container_cost)}</strong></span>
                   </div>
                   {canWrite ? (
@@ -1260,7 +1305,7 @@ function ContainersPanel({
                     <>
                     <SearchField compact label={`Search parts inside ${container.reference}`} value={containerItemSearch[container.id] || ''} onChange={(value) => setContainerItemSearch((previous) => ({ ...previous, [container.id]: value }))} />
                     <DataTable
-                      headers={['Part', 'Part number', 'Category', 'Qty', 'Raw unit', 'Raw total', 'Added share', 'Net unit', 'Net total', 'Actions']}
+                      headers={['Part', 'Part number', 'Category', 'Qty', 'Raw unit', 'Raw total', 'Clearing Fee share', 'Net unit', 'Net total', 'Actions']}
                       rows={itemRows}
                     />
                     </>
@@ -1275,13 +1320,14 @@ function ContainersPanel({
   );
 }
 
-function InventoryExportDialog({ containers, parts, onDownload }: { containers: Container[]; parts: PartInventory[]; onDownload: (format: 'csv' | 'pdf', containerId?: UUID) => void }) {
-  const [scope, setScope] = useState<'all' | 'container'>('all');
+function InventoryExportDialog({ containers, parts, onDownload, onDownloadAuction }: { containers: Container[]; parts: PartInventory[]; onDownload: (format: 'csv' | 'pdf', containerId?: UUID) => void; onDownloadAuction: (containerId: UUID) => void }) {
+  const [scope, setScope] = useState<'all' | 'container' | 'auction'>('all');
   const [containerId, setContainerId] = useState('');
   const containersWithStock = useMemo(() => {
     const stockContainerIds = new Set(parts.flatMap((part) => (part.batches ?? []).filter((batch) => batch.available_quantity > 0 && batch.container).map((batch) => batch.container as UUID)));
     return containers.filter((container) => stockContainerIds.has(container.id));
   }, [containers, parts]);
+  const auctionContainers = containers.filter((container) => container.status === 'ready_for_auction');
   const selectedContainer = scope === 'container' ? containerId : undefined;
   const canDownload = scope === 'all' || Boolean(selectedContainer);
   return (
@@ -1290,11 +1336,15 @@ function InventoryExportDialog({ containers, parts, onDownload }: { containers: 
       <div className="export-choice-grid">
         <button type="button" className={scope === 'all' ? 'export-choice active' : 'export-choice'} onClick={() => setScope('all')}>
           <strong>All available inventory</strong>
-          <span>Every in-stock part source with raw cost, added-cost share, net cost, and source container.</span>
+          <span>Every in-stock part source with raw cost, Clearing Fee share, net cost, and source container.</span>
         </button>
         <button type="button" className={scope === 'container' ? 'export-choice active' : 'export-choice'} onClick={() => setScope('container')}>
           <strong>Specific container inventory</strong>
           <span>Only available stock from one selected source container.</span>
+        </button>
+        <button type="button" className={scope === 'auction' ? 'export-choice active' : 'export-choice'} onClick={() => { setScope('auction'); setContainerId(''); }}>
+          <strong>Auction inventory sheet</strong>
+          <span>A simple printable sheet with blank selling-price space for a Ready for Auction container.</span>
         </button>
       </div>
       {scope === 'container' ? (
@@ -1307,13 +1357,48 @@ function InventoryExportDialog({ containers, parts, onDownload }: { containers: 
           required
         />
       ) : null}
+      {scope === 'auction' ? (
+        <Select
+          name="auction_export_container"
+          label="Ready for Auction container"
+          value={containerId}
+          onChange={setContainerId}
+          options={auctionContainers.map((container) => [container.id, `${container.reference}${container.current_location ? ` - ${container.current_location}` : ''}`])}
+          required
+        />
+      ) : null}
       <div className="download-format-grid">
-        <button type="button" className="btn primary" disabled={!canDownload} onClick={() => onDownload('pdf', selectedContainer)}><FileDown size={18} /> PDF</button>
-        <button type="button" className="btn" disabled={!canDownload} onClick={() => onDownload('csv', selectedContainer)}><FileDown size={18} /> Spreadsheet</button>
+        {scope === 'auction' ? <button type="button" className="btn primary" disabled={!containerId} onClick={() => onDownloadAuction(containerId)}><FileDown size={18} /> PDF</button> : null}
+        {scope !== 'auction' ? <button type="button" className="btn primary" disabled={!canDownload} onClick={() => onDownload('pdf', selectedContainer)}><FileDown size={18} /> PDF</button> : null}
+        {scope !== 'auction' ? <button type="button" className="btn" disabled={!canDownload} onClick={() => onDownload('csv', selectedContainer)}><FileDown size={18} /> Spreadsheet</button> : null}
       </div>
       {scope === 'container' && containersWithStock.length === 0 ? <div className="empty-state"><Boxes size={22} /> No containers currently have available stock.</div> : null}
     </div>
   );
+}
+
+function ContainerTrackingExportDialog({ onDownload }: { onDownload: (format: 'pdf' | 'xlsx') => void }) {
+  return <div className="modal-form"><h2>Container tracking report</h2><p className="muted">Export the operational container register with number, size, current location, agent, and notes.</p><div className="download-format-grid"><button type="button" className="btn primary" onClick={() => onDownload('pdf')}><FileDown size={18} /> PDF</button><button type="button" className="btn" onClick={() => onDownload('xlsx')}><FileDown size={18} /> Spreadsheet</button></div></div>;
+}
+
+function CustomerReportDialog({ customer, onDownload }: { customer: Customer; onDownload: (report: 'aging' | 'transactions' | 'outstanding' | 'combined') => void }) {
+  const choices: { id: 'aging' | 'transactions' | 'outstanding' | 'combined'; title: string; detail: string }[] = [
+    { id: 'aging', title: 'Aging Report', detail: 'Current amount due grouped by age.' },
+    { id: 'transactions', title: 'Transaction History', detail: 'Full debit, credit, payment, cheque, and adjustment activity.' },
+    { id: 'outstanding', title: 'Outstanding Balance Report', detail: 'Only sales and opening balances that remain payable.' },
+    { id: 'combined', title: 'Combined Report', detail: 'Aging, outstanding balances, and complete transaction history.' },
+  ];
+  return <div className="modal-form"><h2>Download report</h2><p className="muted">{customer.name} · PDF</p><div className="export-choice-grid">{choices.map((choice) => <button type="button" className="export-choice" key={choice.id} onClick={() => onDownload(choice.id)}><strong>{choice.title}</strong><span>{choice.detail}</span></button>)}</div></div>;
+}
+
+function AllCustomerReportDialog({ format, onDownload }: { format: 'csv' | 'pdf'; onDownload: (section: 'summary' | 'aging' | 'outstanding' | 'combined') => void }) {
+  const choices: { id: 'summary' | 'aging' | 'outstanding' | 'combined'; title: string; detail: string }[] = [
+    { id: 'summary', title: 'Customer Summary', detail: 'Customer contact, current balance, and last payment.' },
+    { id: 'aging', title: 'Aging Report', detail: 'Outstanding balances grouped by age for every customer.' },
+    { id: 'outstanding', title: 'Per-Customer Outstanding Balance Breakdown', detail: 'Every currently unpaid sale or opening balance.' },
+    { id: 'combined', title: 'Combined Report', detail: 'All customer summary, aging, and outstanding sections.' },
+  ];
+  return <div className="modal-form"><h2>Download {format === 'csv' ? 'Spreadsheet' : 'PDF'} report</h2><div className="export-choice-grid">{choices.map((choice) => <button type="button" className="export-choice" key={choice.id} onClick={() => onDownload(choice.id)}><strong>{choice.title}</strong><span>{choice.detail}</span></button>)}</div></div>;
 }
 
 function SalesPanel({ sales, analytics, canWrite, onLoadAnalytics, onAdd, onEdit, onPrint, onDownloadInvoice, onPrintInvoice, onPrintThermalInvoice }: { sales: AuctionSale[]; analytics: SalesAnalytics | null; canWrite: boolean; onLoadAnalytics: (params?: { start?: string; end?: string; granularity?: 'day' | 'month' | 'year' }) => Promise<void>; onAdd: () => void; onEdit: (sale: AuctionSale) => void; onPrint: (sale: AuctionSale) => void; onDownloadInvoice: (sale: AuctionSale) => void; onPrintInvoice: (sale: AuctionSale) => void; onPrintThermalInvoice: (sale: AuctionSale) => void }) {
@@ -1474,25 +1559,33 @@ function ChequesPanel({ cheques, statuses, canWrite, onAdd, onEdit, onStatus, on
   return <section className="panel"><div className="section-head"><div><h2>Cheque control</h2><p className="muted">Receivables reduce only when a cheque reaches a settlement status.</p></div>{canWrite ? <div className="head-actions"><button className="btn" onClick={onAddStatus}><Plus size={18} /> Status</button><button className="btn primary" onClick={onAdd}><Plus size={18} /> Cheque</button></div> : null}</div><DataTable headers={['Cheque', 'Customer', 'Name on cheque', 'Bank', 'Amount', 'Dates', 'Status', 'Actions']} rows={cheques.map((cheque) => ({ className: chequeRowClass(cheque), cells: [cheque.cheque_number, cheque.customer_name, cheque.name_on_cheque || '-', cheque.bank_name, money(cheque.amount), <div key="dates">Cheque: {cheque.cheque_date}<span className="cell-note">Expiry: {cheque.expiry_date}</span></div>, canWrite ? <Select key="status" compact name={`cheque-status-${cheque.id}`} label="Status" value={cheque.status} onChange={(value) => onStatus(cheque, value)} options={statusOptions} /> : <span key="status" className={statusClass(cheque.status_name)}>{cheque.status_name}</span>, canWrite ? <button className="icon-btn" key="edit" onClick={() => onEdit(cheque)} aria-label={`Edit ${cheque.cheque_number}`}><Pencil size={16} /></button> : <span className="muted" key="view">View only</span>] }))} /></section>;
 }
 
-function CurrencyPanel({ currencies, purchases, openings, spending, canWrite, onAddOpening, onEditCurrency, onAddPurchase, onEditPurchase, onAddSpending, onEditOpening, onEditSpending }: { currencies: Currency[]; purchases: CurrencyPurchase[]; openings: CurrencyOpeningBalance[]; spending: CurrencySpending[]; canWrite: boolean; onAddOpening: () => void; onEditCurrency: (currency: Currency) => void; onAddPurchase: () => void; onEditPurchase: (purchase: CurrencyPurchase) => void; onAddSpending: () => void; onEditOpening: (opening: CurrencyOpeningBalance) => void; onEditSpending: (entry: CurrencySpending) => void }) {
+function CurrencyPanel({ currencies, purchases, openings, spending, creditors, repayments, canWrite, onAddOpening, onEditCurrency, onAddPurchase, onEditPurchase, onAddSpending, onEditOpening, onEditSpending, onAddCreditor, onEditCreditor, onRepay, onDownloadCreditor }: { currencies: Currency[]; purchases: CurrencyPurchase[]; openings: CurrencyOpeningBalance[]; spending: CurrencySpending[]; creditors: CurrencyCreditor[]; repayments: CurrencyCreditorRepayment[]; canWrite: boolean; onAddOpening: () => void; onEditCurrency: (currency: Currency) => void; onAddPurchase: () => void; onEditPurchase: (purchase: CurrencyPurchase) => void; onAddSpending: () => void; onEditOpening: (opening: CurrencyOpeningBalance) => void; onEditSpending: (entry: CurrencySpending) => void; onAddCreditor: () => void; onEditCreditor: (creditor: CurrencyCreditor) => void; onRepay: (purchase: CurrencyPurchase) => void; onDownloadCreditor: (creditor: CurrencyCreditor) => void }) {
+  const [pane, setPane] = useState<'holdings' | 'creditors'>('holdings');
+  const [selectedCreditorId, setSelectedCreditorId] = useState('');
   const portfolioCurrencies = currencies
     .filter((currency) => currency.has_activity)
     .sort((first, second) => Number(second.current_amount) - Number(first.current_amount) || first.code.localeCompare(second.code));
   const totalAcquisitionCost = portfolioCurrencies.reduce((sum, currency) => sum + Number(currency.total_acquisition_cost || 0), 0);
   const movements = [
-    ...purchases.map((purchase) => ({ id: purchase.id, date: purchase.purchase_date, type: 'Purchase', currency: purchase.currency_code, amount: purchase.amount, rate: purchase.acquisition_rate, cost: purchase.total_cost, detail: purchase.source || purchase.reference || purchase.notes || '-', tone: 'money-good', edit: () => onEditPurchase(purchase) })),
+    ...purchases.map((purchase) => ({ id: purchase.id, date: purchase.purchase_date, type: purchase.purchase_type === 'credit' ? 'Credit purchase' : 'Paid purchase', currency: purchase.currency_code, amount: purchase.amount, rate: purchase.acquisition_rate, cost: purchase.total_cost, detail: purchase.creditor_name || purchase.source || purchase.reference || purchase.notes || '-', tone: 'money-good', edit: () => onEditPurchase(purchase) })),
     ...openings.map((opening) => ({ id: opening.id, date: opening.entry_date, type: 'Opening balance', currency: opening.currency_code, amount: opening.amount, rate: opening.acquisition_rate, cost: opening.total_cost, detail: opening.source || opening.reference || opening.notes || 'Existing holding recorded', tone: 'money-good', edit: () => onEditOpening(opening) })),
     ...spending.map((entry) => ({ id: entry.id, date: entry.spending_date, type: 'Spending', currency: entry.currency_code, amount: entry.amount, rate: null, cost: null, detail: entry.purpose || entry.reference || entry.notes || '-', tone: 'money-bad', edit: () => onEditSpending(entry) })),
   ].sort((first, second) => second.date.localeCompare(first.date));
+  const creditPurchases = purchases.filter((purchase) => purchase.purchase_type === 'credit');
+  const selectedCreditor = creditors.find((creditor) => creditor.id === selectedCreditorId);
+  const selectedPurchases = selectedCreditor ? creditPurchases.filter((purchase) => purchase.creditor === selectedCreditor.id) : [];
+  const selectedPurchaseIds = new Set(selectedPurchases.map((purchase) => purchase.id));
+  const selectedRepayments = repayments.filter((repayment) => selectedPurchaseIds.has(repayment.purchase));
   return (
     <section className="panel">
       <div className="section-head currency-header">
         <div>
-          <h2>Currency portfolio</h2>
-          <p className="muted">Track acquisitions, opening holdings, and spending while preserving every historical entry.</p>
+          <h2>{pane === 'holdings' ? 'Currency portfolio' : 'Currency creditors'}</h2>
+          <p className="muted">{pane === 'holdings' ? 'Track held currency and every acquisition or spending movement.' : 'Monitor multi-currency liabilities and every partial repayment.'}</p>
         </div>
-        {canWrite ? <div className="head-actions currency-actions"><button className="btn" onClick={onAddOpening}><Plus size={18} /> Opening balance</button><button className="btn" onClick={onAddSpending}><Plus size={18} /> Spending</button><button className="btn primary" onClick={onAddPurchase}><Plus size={18} /> Purchase</button></div> : null}
+        <div className="head-actions currency-actions"><div className="segmented-control" role="tablist" aria-label="Currency portfolio views"><button type="button" role="tab" className={pane === 'holdings' ? 'active' : ''} aria-selected={pane === 'holdings'} onClick={() => setPane('holdings')}>Holdings</button><button type="button" role="tab" className={pane === 'creditors' ? 'active' : ''} aria-selected={pane === 'creditors'} onClick={() => setPane('creditors')}>Creditors</button></div>{canWrite && pane === 'holdings' ? <><button className="btn" onClick={onAddOpening}><Plus size={18} /> Opening balance</button><button className="btn" onClick={onAddSpending}><Plus size={18} /> Spending</button><button className="btn primary" onClick={onAddPurchase}><Plus size={18} /> Purchase</button></> : null}{canWrite && pane === 'creditors' ? <button className="btn primary" onClick={onAddCreditor}><Plus size={18} /> Creditor</button> : null}</div>
       </div>
+      {pane === 'holdings' ? <>
       <div className="report-summary">
         <Metric compact label="Currencies held" value={portfolioCurrencies.filter((currency) => Number(currency.current_amount) > 0).length} tone="success" />
         <Metric compact label="Acquisition cost on record" value={money(totalAcquisitionCost)} tone="cash" />
@@ -1529,12 +1622,17 @@ function CurrencyPanel({ currencies, purchases, openings, spending, canWrite, on
         movement.detail,
         canWrite ? <button className="icon-btn" key="edit" onClick={movement.edit} aria-label={`Edit ${movement.currency} ${movement.type.toLowerCase()}`}><Pencil size={16} /></button> : <span className="muted" key="view">View only</span>,
       ])} />
+      </> : <>
+      <div className="report-summary"><Metric compact label="Creditors" value={creditors.length} /><Metric compact label="Open liabilities" value={creditPurchases.filter((purchase) => Number(purchase.outstanding_amount) > 0).length} tone="warning" /><Metric compact label="Overdue liabilities" value={creditors.reduce((sum, creditor) => sum + creditor.overdue_count, 0)} tone="warning" /><Metric compact label="PKR repaid" value={money(creditors.reduce((sum, creditor) => sum + Number(creditor.total_pkr_repaid), 0))} tone="cash" /></div>
+      <DataTable headers={['Creditor', 'Outstanding currencies', 'Credit purchases', 'Repayments', 'Overdue', 'Actions']} rows={creditors.map((creditor) => [<div key="creditor"><strong>{creditor.name}</strong><span className="cell-note">{creditor.phone || 'No contact number'}</span></div>, <div className="chips" key="balances">{creditor.outstanding_by_currency.length ? creditor.outstanding_by_currency.map((balance) => <span className="chip" key={balance.currency_code}>{Number(balance.amount).toLocaleString('en-PK', { maximumFractionDigits: 4 })} {balance.currency_code}</span>) : <span className="badge good">Settled</span>}</div>, creditor.purchase_count, creditor.repayment_count, <span className={creditor.overdue_count ? 'badge bad' : 'badge good'} key="overdue">{creditor.overdue_count}</span>, <div className="table-actions" key="actions"><button className="icon-btn" onClick={() => setSelectedCreditorId(creditor.id)} aria-label={`View ${creditor.name} liabilities`}><Eye size={16} /></button><button className="icon-btn" onClick={() => onDownloadCreditor(creditor)} aria-label={`Download ${creditor.name} statement`}><FileDown size={16} /></button>{canWrite ? <button className="icon-btn" onClick={() => onEditCreditor(creditor)} aria-label={`Edit ${creditor.name}`}><Pencil size={16} /></button> : null}</div>])} />
+      {selectedCreditor ? <section className="creditor-detail"><div className="section-head slim"><div><h3>{selectedCreditor.name}</h3><p className="muted">Credit purchases and repayment history by currency.</p></div><button type="button" className="icon-btn" onClick={() => setSelectedCreditorId('')} aria-label="Close creditor details"><X size={16} /></button></div><DataTable headers={['Purchase date', 'Currency liability', 'Due date', 'Repaid', 'Outstanding', 'Status', 'Actions']} rows={selectedPurchases.map((purchase) => [shortDate(purchase.purchase_date), `${Number(purchase.amount).toLocaleString('en-PK', { maximumFractionDigits: 4 })} ${purchase.currency_code}`, shortDate(purchase.due_date), `${Number(purchase.repaid_amount).toLocaleString('en-PK', { maximumFractionDigits: 4 })} ${purchase.currency_code}`, <strong className={Number(purchase.outstanding_amount) > 0 ? 'money-bad' : 'money-good'} key="outstanding">{Number(purchase.outstanding_amount).toLocaleString('en-PK', { maximumFractionDigits: 4 })} {purchase.currency_code}</strong>, <span className={Number(purchase.outstanding_amount) > 0 ? 'badge warn' : 'badge good'} key="status">{Number(purchase.outstanding_amount) > 0 ? 'Outstanding' : 'Settled'}</span>, <div className="table-actions" key="actions">{canWrite && Number(purchase.outstanding_amount) > 0 ? <button className="btn small" onClick={() => onRepay(purchase)}><Banknote size={15} /> Repay</button> : null}{canWrite ? <button className="icon-btn" onClick={() => onEditPurchase(purchase)} aria-label="Edit credit purchase"><Pencil size={16} /></button> : null}</div>])} /><h3>Repayment history</h3><DataTable headers={['Date', 'Currency amount', 'Exchange rate', 'PKR paid', 'Reference']} rows={selectedRepayments.map((repayment) => [shortDate(repayment.repayment_date), `${Number(repayment.amount).toLocaleString('en-PK', { maximumFractionDigits: 4 })} ${repayment.currency_code}`, Number(repayment.exchange_rate).toLocaleString('en-PK', { maximumFractionDigits: 6 }), money(repayment.total_cost), repayment.reference || repayment.notes || '-'])} /></section> : null}
+      </>}
     </section>
   );
 }
 
 function SettingsPanel({ options, chequeStatuses, canWrite, onAdd, onAddChequeStatus }: { options: DropdownOption[]; chequeStatuses: ChequeStatus[]; canWrite: boolean; onAdd: (group?: DropdownOption['group']) => void; onAddChequeStatus: () => void }) {
-  const groups: DropdownOption['group'][] = ['bank', 'part_name', 'item_category', 'item_unit'];
+  const groups: DropdownOption['group'][] = ['bank', 'part_name', 'item_category', 'item_unit', 'container_size_type'];
   return <section className="panel"><div className="section-head"><div><h2>Dropdown settings</h2><p className="muted">Persisted values here appear in future entry dialogs for all users.</p></div>{canWrite ? <button className="btn primary" onClick={() => onAdd()}><Plus size={18} /> Dropdown value</button> : null}</div><div className="settings-grid">{groups.map((group) => <article className="option-card" key={group}><div className="section-head slim"><h3>{group.replace('_', ' ')}</h3>{canWrite ? <button className="icon-btn" onClick={() => onAdd(group)} aria-label={`Add ${group}`}><Plus size={16} /></button> : null}</div><div className="chips">{options.filter((option) => option.group === group && option.is_active).map((option) => <span className="chip" key={option.id}>{option.label}</span>)}</div></article>)}<article className="option-card"><div className="section-head slim"><h3>cheque statuses</h3>{canWrite ? <button className="icon-btn" onClick={onAddChequeStatus} aria-label="Add cheque status"><Plus size={16} /></button> : null}</div><div className="chips">{chequeStatuses.filter((status) => status.is_active).map((status) => <span className="chip" key={status.id}>{status.name}<small>{status.balance_effect.replaceAll('_', ' ')}</small></span>)}</div></article></div></section>;
 }
 
@@ -1567,8 +1665,8 @@ function CustomerForm({ customer, onSave, isSaving }: { customer?: Customer; onS
   );
 }
 
-function ContainerForm({ container, onSave, isSaving }: { container?: Container; onSave: SaveHandler; isSaving: boolean }) {
-  return <FormFrame title={container ? 'Edit container' : 'Add container'} isSaving={isSaving} onSubmit={(form) => onSave(container ? `/operations/containers/${container.id}/` : '/operations/containers/', { ...form, added_cost: form.added_cost || '0.00' }, container ? 'patch' : 'post')}><Field name="reference" label="Container reference" defaultValue={container?.reference} required /><Field name="origin_country" label="Origin country" defaultValue={container?.origin_country} /><Field name="supplier_name" label="Supplier" defaultValue={container?.supplier_name} /><Field name="arrival_date" label="Arrival date" type="date" defaultValue={container?.arrival_date || ''} /><Field name="added_cost" label="Added container cost" type="number" defaultValue={container?.added_cost || '0.00'} min="0" step="0.01" /><Select name="status" label="Status" defaultValue={container?.status || 'container_bought'} options={containerStatusOptions} required /><Field name="manifest_notes" label="Manifest notes" defaultValue={container?.manifest_notes} textarea /></FormFrame>;
+function ContainerForm({ container, options, onSave, isSaving }: { container?: Container; options: DropdownOption[]; onSave: SaveHandler; isSaving: boolean }) {
+  return <FormFrame title={container ? 'Edit container' : 'Add container'} isSaving={isSaving} onSubmit={(form) => onSave(container ? `/operations/containers/${container.id}/` : '/operations/containers/', { ...form, added_cost: form.added_cost || '0.00' }, container ? 'patch' : 'post')}><Field name="reference" label="Container number" defaultValue={container?.reference} required /><Field name="origin_country" label="Origin country" defaultValue={container?.origin_country} /><Field name="supplier_name" label="Agent" defaultValue={container?.supplier_name} /><OptionText name="size_type" label="Size / Type" defaultValue={container?.size_type} options={optionLabels(options, 'container_size_type')} /><Field name="current_location" label="Current location" defaultValue={container?.current_location} /><Field name="arrival_date" label="Arrival date" type="date" defaultValue={container?.arrival_date || ''} /><Field name="added_cost" label="Clearing Fee" type="number" defaultValue={container?.added_cost || '0.00'} min="0" step="0.01" /><Select name="status" label="Status" defaultValue={container?.status || 'container_bought'} options={containerStatusOptions} required /><Field name="notes" label="Notes" defaultValue={container?.notes} textarea /></FormFrame>;
 }
 
 function PartIdentityFields({ parts, options, defaults, prefix = '', onChange }: { parts: PartInventory[]; options: DropdownOption[]; defaults?: Partial<Pick<PartInventory, 'part_name' | 'part_number' | 'category'>>; prefix?: string; onChange?: (updates: Partial<SubpartDraft>) => void }) {
@@ -2024,7 +2122,8 @@ function CurrencyInput({ currencies, defaultCode, defaultName, helper }: { curre
   return <ComboBox name="currency_input" label="Currency" options={options} defaultValue={defaultValue} required allowCustom helper={helper} />;
 }
 
-function CurrencyPurchaseForm({ purchase, currencies, onSave, isSaving }: { purchase?: CurrencyPurchase; currencies: Currency[]; onSave: SaveHandler; isSaving: boolean }) {
+function CurrencyPurchaseForm({ purchase, currencies, creditors, onSave, isSaving }: { purchase?: CurrencyPurchase; currencies: Currency[]; creditors: CurrencyCreditor[]; onSave: SaveHandler; isSaving: boolean }) {
+  const [purchaseType, setPurchaseType] = useState<'cash' | 'credit'>(purchase?.purchase_type || 'cash');
   const [amount, setAmount] = useState(purchase?.amount || '');
   const [rate, setRate] = useState(purchase?.acquisition_rate || '');
   const [total, setTotal] = useState(purchase?.total_cost || '');
@@ -2040,7 +2139,21 @@ function CurrencyPurchaseForm({ purchase, currencies, onSave, isSaving }: { purc
     setTotal(value);
     if (amount && Number(amount) > 0) setRate((Number(value || 0) / Number(amount)).toFixed(6));
   }
-  return <FormFrame title={purchase ? 'Edit currency purchase' : 'Record currency purchase'} isSaving={isSaving} onSubmit={(form) => onSave(purchase ? `/finance/currency-purchases/${purchase.id}/` : '/finance/currency-purchases/', { ...form, amount, acquisition_rate: rate || null, total_cost: total || null }, purchase ? 'patch' : 'post')}><CurrencyInput currencies={currencies} defaultCode={purchase?.currency_code} defaultName={purchase?.currency_name} /><Field name="purchase_date" label="Purchase date" type="date" defaultValue={purchase?.purchase_date || pakistanLocalDate()} required /><Field name="amount" label="Amount purchased" type="number" value={amount} onChange={updateAmount} min="0.0001" step="0.0001" required /><Field name="acquisition_rate" label="Acquisition rate" type="number" value={rate} onChange={updateRate} min="0.000001" step="0.000001" /><Field name="total_cost" label="Total amount paid" type="number" value={total} onChange={updateTotal} min="0.01" step="0.01" /><Field name="source" label="Source / dealer" defaultValue={purchase?.source} /><Field name="reference" label="Reference" defaultValue={purchase?.reference} /><Field name="notes" label="Notes" defaultValue={purchase?.notes} textarea /></FormFrame>;
+  return <FormFrame title={purchase ? 'Edit currency purchase' : 'Record currency purchase'} isSaving={isSaving} onSubmit={(form) => onSave(purchase ? `/finance/currency-purchases/${purchase.id}/` : '/finance/currency-purchases/', { ...form, purchase_type: purchaseType, amount, acquisition_rate: purchaseType === 'cash' ? rate || null : null, total_cost: purchaseType === 'cash' ? total || null : null }, purchase ? 'patch' : 'post')}><Select name="purchase_type" label="Purchase type" value={purchaseType} onChange={(value) => setPurchaseType(value as 'cash' | 'credit')} options={[['cash', 'Paid purchase'], ['credit', 'Credit purchase']]} required /><CurrencyInput currencies={currencies} defaultCode={purchase?.currency_code} defaultName={purchase?.currency_name} /><Field name="purchase_date" label="Purchase date" type="date" defaultValue={purchase?.purchase_date || pakistanLocalDate()} required /><Field name="amount" label="Amount purchased" type="number" value={amount} onChange={updateAmount} min="0.0001" step="0.0001" required />{purchaseType === 'cash' ? <><Field key="acquisition-rate" name="acquisition_rate" label="Acquisition rate" type="number" value={rate} onChange={updateRate} min="0.000001" step="0.000001" /><Field key="purchase-total" name="total_cost" label="Total amount paid" type="number" value={total} onChange={updateTotal} min="0.01" step="0.01" /></> : <><OptionText key="purchase-creditor" name="creditor_input" label="Creditor" options={creditors.filter((creditor) => creditor.is_active || creditor.id === purchase?.creditor).map((creditor) => creditor.name)} defaultValue={purchase?.creditor_name || ''} required /><Field key="purchase-due-date" name="due_date" label="Payment due date (optional)" type="date" defaultValue={purchase?.due_date || ''} /></>}<Field name="source" label="Source / dealer" defaultValue={purchase?.source} /><Field name="reference" label="Reference" defaultValue={purchase?.reference} /><Field name="notes" label="Notes" defaultValue={purchase?.notes} textarea />{purchase?.repayment_count ? <div className="alert full-span">Currency, creditor, and purchase type are locked because repayment history exists.</div> : null}</FormFrame>;
+}
+
+function CurrencyCreditorForm({ creditor, onSave, isSaving }: { creditor?: CurrencyCreditor; onSave: SaveHandler; isSaving: boolean }) {
+  return <FormFrame title={creditor ? 'Edit currency creditor' : 'Add currency creditor'} isSaving={isSaving} onSubmit={(form) => onSave(creditor ? `/finance/currency-creditors/${creditor.id}/` : '/finance/currency-creditors/', { ...form, is_active: form.is_active === 'true' }, creditor ? 'patch' : 'post')}><Field name="name" label="Creditor name" defaultValue={creditor?.name} required /><Field name="phone" label="Contact number" defaultValue={creditor?.phone} /><Select name="is_active" label="Status" defaultValue={String(creditor?.is_active ?? true)} options={[['true', 'Active'], ['false', 'Inactive']]} required /><Field name="address" label="Address" defaultValue={creditor?.address} textarea /><Field name="notes" label="Notes" defaultValue={creditor?.notes} textarea /></FormFrame>;
+}
+
+function CurrencyRepaymentForm({ purchase, onSave, isSaving }: { purchase: CurrencyPurchase; onSave: SaveHandler; isSaving: boolean }) {
+  const [amount, setAmount] = useState('');
+  const [rate, setRate] = useState('');
+  const [total, setTotal] = useState('');
+  function updateAmount(value: string) { setAmount(value); if (rate) setTotal((Number(value || 0) * Number(rate || 0)).toFixed(2)); }
+  function updateRate(value: string) { setRate(value); if (amount) setTotal((Number(amount || 0) * Number(value || 0)).toFixed(2)); }
+  function updateTotal(value: string) { setTotal(value); if (amount && Number(amount) > 0) setRate((Number(value || 0) / Number(amount)).toFixed(6)); }
+  return <FormFrame title="Record creditor repayment" isSaving={isSaving} onSubmit={(form) => onSave('/finance/currency-creditor-repayments/', { ...form, purchase: purchase.id, amount, exchange_rate: rate || null, total_cost: total || null })}><div className="context-banner full-span"><strong>{purchase.creditor_name}</strong><span>{Number(purchase.outstanding_amount).toLocaleString('en-PK', { maximumFractionDigits: 4 })} {purchase.currency_code} outstanding</span></div><Field name="repayment_date" label="Repayment date" type="date" defaultValue={pakistanLocalDate()} required /><Field name="amount" label={`Amount repaid (${purchase.currency_code})`} type="number" value={amount} onChange={updateAmount} min="0.0001" max={purchase.outstanding_amount} step="0.0001" required /><Field name="exchange_rate" label="Exchange rate" type="number" value={rate} onChange={updateRate} min="0.000001" step="0.000001" /><Field name="total_cost" label="Total PKR paid" type="number" value={total} onChange={updateTotal} min="0.01" step="0.01" /><Field name="reference" label="Reference" /><Field name="notes" label="Notes" textarea /></FormFrame>;
 }
 
 function CurrencyOpeningBalanceForm({ opening, currencies, onSave, isSaving }: { opening?: CurrencyOpeningBalance; currencies: Currency[]; onSave: SaveHandler; isSaving: boolean }) {
@@ -2092,7 +2205,7 @@ function ChequeStatusForm({ onSave, isSaving }: { onSave: SaveHandler; isSaving:
 }
 
 function DropdownOptionForm({ group, onSave, isSaving }: { group?: DropdownOption['group']; onSave: SaveHandler; isSaving: boolean }) {
-  return <FormFrame title="Add dropdown value" isSaving={isSaving} onSubmit={(form) => onSave('/catalog/dropdown-options/', { ...form, sort_order: Number(form.sort_order || 100) })}><Select name="group" label="Dropdown" defaultValue={group} options={[['bank', 'Bank'], ['part_name', 'Part name'], ['item_category', 'Item category'], ['item_unit', 'Item unit']]} required /><Field name="label" label="Value" required /><Field name="sort_order" label="Sort order" type="number" defaultValue="100" /></FormFrame>;
+  return <FormFrame title="Add dropdown value" isSaving={isSaving} onSubmit={(form) => onSave('/catalog/dropdown-options/', { ...form, sort_order: Number(form.sort_order || 100) })}><Select name="group" label="Dropdown" defaultValue={group} options={[['bank', 'Bank'], ['part_name', 'Part name'], ['item_category', 'Item category'], ['item_unit', 'Item unit'], ['container_size_type', 'Container size / type']]} required /><Field name="label" label="Value" required /><Field name="sort_order" label="Sort order" type="number" defaultValue="100" /></FormFrame>;
 }
 
 function UserForm({ user, onSave, isSaving }: { user?: ManagedUser; onSave: SaveHandler; isSaving: boolean }) {
@@ -2243,7 +2356,18 @@ function ComboBox({
   const [activeIndex, setActiveIndex] = useState(0);
   const fieldRef = useRef<HTMLDivElement>(null);
   const displayQuery = !allowCustom && value !== undefined && !open ? selectedLabel : query;
-  const filtered = normalizedOptions.filter((option) => `${option.label} ${option.meta ?? ''}`.toLowerCase().includes(displayQuery.toLowerCase()));
+  const normalizedQuery = displayQuery.trim().toLowerCase();
+  const relevance = (option: ComboOption) => {
+    const label = option.label.toLowerCase();
+    const searchable = `${option.label} ${option.meta ?? ''}`.toLowerCase();
+    if (!normalizedQuery) return option.featured ? 0 : option.meta ? 1 : 2;
+    if (label === normalizedQuery) return -4;
+    if (label.startsWith(normalizedQuery)) return -3;
+    if (label.includes(normalizedQuery)) return -2;
+    if (searchable.includes(normalizedQuery)) return -1;
+    return option.featured ? 1 : option.meta ? 2 : 3;
+  };
+  const filtered = [...normalizedOptions].sort((first, second) => relevance(first) - relevance(second) || first.label.localeCompare(second.label));
   const exactCustomMatch = normalizedOptions.some((option) => option.label.toLowerCase() === displayQuery.trim().toLowerCase());
   const hiddenValue = allowCustom ? displayQuery.trim() : selectedValue;
 
@@ -2317,6 +2441,9 @@ function ComboBox({
       </div>
       {open ? (
         <div className="combobox-menu" id={`${name}-options`} role="listbox">
+          {allowCustom && displayQuery.trim() && !exactCustomMatch ? (
+            <button type="button" className="add-new" onMouseDown={(event) => event.preventDefault()} onClick={() => commit(displayQuery.trim(), displayQuery.trim())}>+ Add &quot;{displayQuery.trim()}&quot;</button>
+          ) : null}
           {filtered.map((option, index) => (
             <button
               type="button"
@@ -2331,10 +2458,7 @@ function ComboBox({
               {option.meta ? <small>{option.meta}</small> : null}
             </button>
           ))}
-          {allowCustom && displayQuery.trim() && !exactCustomMatch ? (
-            <button type="button" className="add-new" onMouseDown={(event) => event.preventDefault()} onClick={() => commit(displayQuery.trim(), displayQuery.trim())}>+ Add &quot;{displayQuery.trim()}&quot;</button>
-          ) : null}
-          {filtered.length === 0 && (!allowCustom || !displayQuery.trim()) ? <span className="combobox-empty">No matching options</span> : null}
+          {filtered.length === 0 && (!allowCustom || !displayQuery.trim()) ? <span className="combobox-empty">No options available</span> : null}
         </div>
       ) : null}
       {helper ? <span className="help-text">{helper}</span> : null}
@@ -2359,6 +2483,7 @@ function escapeHtml(value: unknown) {
 }
 
 function gatePassPrintHtml(gatePass: GatePass) {
-  const copies = [1, 2].map((copy) => `<section class="copy"><header><div><h1>ZSP Gate Pass</h1><p>Digi7 controlled inventory release</p></div><strong>${escapeHtml(gatePass.gate_pass_number)}</strong></header><div class="grid"><p><b>Issued to</b><span>${escapeHtml(gatePass.issued_to_name)}</span></p><p><b>Phone</b><span>${escapeHtml(gatePass.issued_to_phone || '-')}</span></p><p><b>Vehicle</b><span>${escapeHtml(gatePass.vehicle_number || '-')}</span></p><p><b>Driver</b><span>${escapeHtml(gatePass.driver_name || '-')}</span></p><p><b>Copy</b><span>${copy} of 2</span></p><p><b>Issued at</b><span>${escapeHtml(new Date(gatePass.issued_at).toLocaleString())}</span></p></div><table><thead><tr><th>Part</th><th>Part number</th><th>Category</th><th>Qty</th><th>Unit price</th><th>Total</th></tr></thead><tbody>${gatePass.lines.map((line) => `<tr><td>${escapeHtml(line.sale_line.item.part_name)}</td><td>${escapeHtml(line.sale_line.item.part_number || '-')}</td><td>${escapeHtml(line.sale_line.item.category || '-')}</td><td>${escapeHtml(line.sale_line.quantity)} ${escapeHtml(line.sale_line.item.unit)}</td><td>${escapeHtml(money(line.sale_line.sold_price))}</td><td>${escapeHtml(money(line.sale_line.line_total))}</td></tr>`).join('')}</tbody></table><footer><div><span></span><b>Issued by</b></div><div class="stamp"><span></span><b>Authorisation stamp</b></div><div><span></span><b>Gatekeeper</b></div></footer></section>`).join('');
-  return `<!doctype html><html><head><title>${escapeHtml(gatePass.gate_pass_number)}</title><style>body{font-family:Arial,sans-serif;margin:0;color:#111827;background:#fff}.copy{page-break-after:always;padding:28px;min-height:92vh;border:2px solid #111827;margin:18px}header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111827;padding-bottom:16px}h1{margin:0;font-size:28px}p{margin:0}header p{color:#4b5563;margin-top:4px}header strong{font-size:20px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:22px 0}.grid p{border:1px solid #d1d5db;padding:10px}.grid b{display:block;font-size:11px;text-transform:uppercase;color:#4b5563}.grid span{display:block;margin-top:5px;font-size:15px}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{border:1px solid #111827;padding:10px;text-align:left}th{background:#f3f4f6}footer{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-top:60px}footer span{display:block;height:72px;border:1px dashed #6b7280;margin-bottom:8px}.stamp span{height:96px}footer b{font-size:12px;text-transform:uppercase;color:#374151}@media print{.copy{margin:0;border:2px solid #111827}.copy:last-child{page-break-after:auto}}</style></head><body>${copies}</body></html>`;
+  const logoUrl = `${window.location.origin}/digi7-logo.png`;
+  const copies = [1, 2].map((copy) => `<section class="copy"><header><div class="brand"><img src="${escapeHtml(logoUrl)}" alt=""/><div><h1>Syed Zulfiqar Old Spare Parts</h1><p>Gate Pass · Digi7 controlled inventory release</p></div></div><strong>${escapeHtml(gatePass.gate_pass_number)}</strong></header><div class="grid"><p><b>Issued to</b><span>${escapeHtml(gatePass.issued_to_name)}</span></p><p><b>Phone</b><span>${escapeHtml(gatePass.issued_to_phone || '-')}</span></p><p><b>Vehicle</b><span>${escapeHtml(gatePass.vehicle_number || '-')}</span></p><p><b>Driver</b><span>${escapeHtml(gatePass.driver_name || '-')}</span></p><p><b>Copy</b><span>${copy} of 2</span></p><p><b>Issued on</b><span>${escapeHtml(new Date(gatePass.issued_at).toLocaleString())}</span></p></div><table><thead><tr><th>Part</th><th>Part number</th><th>Category</th><th>Quantity</th></tr></thead><tbody>${gatePass.lines.map((line) => `<tr><td>${escapeHtml(line.sale_line.item.part_name)}</td><td>${escapeHtml(line.sale_line.item.part_number || '-')}</td><td>${escapeHtml(line.sale_line.item.category || '-')}</td><td>${escapeHtml(line.sale_line.quantity)} ${escapeHtml(line.sale_line.item.unit)}</td></tr>`).join('')}</tbody></table><footer><div><span></span><b>Issued by</b></div><div class="stamp"><span></span><b>Authorisation stamp</b></div><div><span></span><b>Gatekeeper</b></div></footer></section>`).join('');
+  return `<!doctype html><html><head><title>${escapeHtml(gatePass.gate_pass_number)}</title><style>body{font-family:Arial,sans-serif;margin:0;color:#111827;background:#fff}.copy{page-break-after:always;padding:28px;min-height:92vh;border:2px solid #111827;margin:18px}header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111827;padding-bottom:16px}.brand{display:flex;align-items:center;gap:12px;max-width:72%}.brand img{width:62px;height:62px;object-fit:contain;flex:0 0 auto}h1{margin:0;font-size:22px;line-height:1.15}p{margin:0}header p{color:#4b5563;margin-top:5px}header>strong{font-size:18px;white-space:nowrap}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:22px 0}.grid p{border:1px solid #d1d5db;padding:10px}.grid b{display:block;font-size:11px;text-transform:uppercase;color:#4b5563}.grid span{display:block;margin-top:5px;font-size:15px}table{width:100%;border-collapse:collapse;margin-top:16px;table-layout:fixed}th,td{border:1px solid #111827;padding:10px;text-align:left;overflow-wrap:anywhere}th{background:#f3f4f6}footer{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-top:60px}footer span{display:block;height:72px;border:1px dashed #6b7280;margin-bottom:8px}.stamp span{height:96px}footer b{font-size:12px;text-transform:uppercase;color:#374151}@media print{.copy{margin:0;border:2px solid #111827}.copy:last-child{page-break-after:auto}}</style></head><body>${copies}</body></html>`;
 }

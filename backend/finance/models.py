@@ -332,12 +332,43 @@ class Currency(UserStampedModel):
         return f'{self.code} - {self.name}'
 
 
+class CurrencyCreditor(UserStampedModel):
+    name = models.CharField(max_length=180)
+    phone = models.CharField(max_length=40, blank=True)
+    address = models.TextField(blank=True)
+    notes = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['name']
+        indexes = [
+            models.Index(fields=['name']),
+            models.Index(fields=['is_active']),
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+
 class CurrencyPurchase(UserStampedModel):
+    class PurchaseType(models.TextChoices):
+        CASH = 'cash', 'Paid purchase'
+        CREDIT = 'credit', 'Credit purchase'
+
     currency = models.ForeignKey(Currency, on_delete=models.PROTECT, related_name='purchases')
+    purchase_type = models.CharField(max_length=12, choices=PurchaseType.choices, default=PurchaseType.CASH)
+    creditor = models.ForeignKey(
+        CurrencyCreditor,
+        on_delete=models.PROTECT,
+        related_name='credit_purchases',
+        null=True,
+        blank=True,
+    )
     purchase_date = models.DateField()
+    due_date = models.DateField(null=True, blank=True)
     amount = models.DecimalField(max_digits=18, decimal_places=4)
-    acquisition_rate = models.DecimalField(max_digits=18, decimal_places=6)
-    total_cost = models.DecimalField(max_digits=18, decimal_places=2)
+    acquisition_rate = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
+    total_cost = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
     source = models.CharField(max_length=160, blank=True)
     reference = models.CharField(max_length=120, blank=True)
     notes = models.TextField(blank=True)
@@ -346,16 +377,64 @@ class CurrencyPurchase(UserStampedModel):
         ordering = ['-purchase_date', '-created_at']
         constraints = [
             models.CheckConstraint(condition=models.Q(amount__gt=0), name='currency_purchase_amount_positive'),
-            models.CheckConstraint(condition=models.Q(acquisition_rate__gt=0), name='currency_purchase_rate_positive'),
-            models.CheckConstraint(condition=models.Q(total_cost__gt=0), name='currency_purchase_total_positive'),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        purchase_type='cash', creditor__isnull=True,
+                        acquisition_rate__gt=0, total_cost__gt=0,
+                    )
+                    | models.Q(
+                        purchase_type='credit', creditor__isnull=False,
+                        acquisition_rate__isnull=True, total_cost__isnull=True,
+                    )
+                ),
+                name='currency_purchase_financial_fields_match_type',
+            ),
         ]
         indexes = [
             models.Index(fields=['currency', 'purchase_date']),
+            models.Index(fields=['creditor', 'purchase_type']),
+            models.Index(fields=['due_date']),
             models.Index(fields=['source']),
         ]
 
     def __str__(self) -> str:
         return f'{self.currency.code} {self.amount} on {self.purchase_date}'
+
+    @property
+    def repaid_amount(self) -> Decimal:
+        return self.repayments.aggregate(total=models.Sum('amount'))['total'] or Decimal('0.0000')
+
+    @property
+    def outstanding_amount(self) -> Decimal:
+        if self.purchase_type != self.PurchaseType.CREDIT:
+            return Decimal('0.0000')
+        return max(Decimal(self.amount) - self.repaid_amount, Decimal('0.0000'))
+
+
+class CurrencyCreditorRepayment(UserStampedModel):
+    purchase = models.ForeignKey(CurrencyPurchase, on_delete=models.PROTECT, related_name='repayments')
+    repayment_date = models.DateField()
+    amount = models.DecimalField(max_digits=18, decimal_places=4)
+    exchange_rate = models.DecimalField(max_digits=18, decimal_places=6)
+    total_cost = models.DecimalField(max_digits=18, decimal_places=2)
+    reference = models.CharField(max_length=120, blank=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['-repayment_date', '-created_at']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(amount__gt=0), name='currency_repayment_amount_positive'),
+            models.CheckConstraint(condition=models.Q(exchange_rate__gt=0), name='currency_repayment_rate_positive'),
+            models.CheckConstraint(condition=models.Q(total_cost__gt=0), name='currency_repayment_total_positive'),
+        ]
+        indexes = [
+            models.Index(fields=['purchase', 'repayment_date']),
+            models.Index(fields=['repayment_date']),
+        ]
+
+    def __str__(self) -> str:
+        return f'{self.purchase.creditor} repaid {self.amount} {self.purchase.currency.code}'
 
 
 class CurrencyOpeningBalance(UserStampedModel):

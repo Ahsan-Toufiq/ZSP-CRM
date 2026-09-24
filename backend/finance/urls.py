@@ -5,6 +5,8 @@ from finance.views import (
     ChequeStatusViewSet,
     ChequeViewSet,
     CurrencyPurchaseViewSet,
+    CurrencyCreditorViewSet,
+    CurrencyCreditorRepaymentViewSet,
     CurrencyOpeningBalanceViewSet,
     CurrencySpendingViewSet,
     CurrencyViewSet,
@@ -26,6 +28,8 @@ router.register('ledger', LedgerEntryViewSet, basename='ledger')
 router.register('customer-balances', CustomerBalanceViewSet, basename='customer-balance')
 router.register('currencies', CurrencyViewSet, basename='currency')
 router.register('currency-purchases', CurrencyPurchaseViewSet, basename='currency-purchase')
+router.register('currency-creditors', CurrencyCreditorViewSet, basename='currency-creditor')
+router.register('currency-creditor-repayments', CurrencyCreditorRepaymentViewSet, basename='currency-creditor-repayment')
 router.register('currency-opening-balances', CurrencyOpeningBalanceViewSet, basename='currency-opening-balance')
 router.register('currency-spending', CurrencySpendingViewSet, basename='currency-spending')
 

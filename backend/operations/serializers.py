@@ -160,7 +160,7 @@ class ContainerSerializer(serializers.ModelSerializer):
         model = Container
         fields = [
             'id', 'reference', 'origin_country', 'supplier_name', 'arrival_date',
-            'manifest_notes', 'status', 'added_cost', 'item_count',
+            'size_type', 'current_location', 'notes', 'status', 'added_cost', 'item_count',
             'raw_parts_cost', 'total_container_cost', 'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'item_count', 'raw_parts_cost', 'total_container_cost', 'created_at', 'updated_at']
@@ -175,11 +175,21 @@ class ContainerSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         instance = super().create(validated_data)
+        ensure_dropdown_option(
+            group=DropdownOption.Group.CONTAINER_SIZE_TYPE,
+            label=instance.size_type,
+            user=self.context['request'].user,
+        )
         return instance
 
     def update(self, instance, validated_data):
         previous_status = instance.status
         instance = super().update(instance, validated_data)
+        ensure_dropdown_option(
+            group=DropdownOption.Group.CONTAINER_SIZE_TYPE,
+            label=instance.size_type,
+            user=self.context['request'].user,
+        )
         moved_to_recalculating_state = previous_status in {Container.Status.READY_FOR_AUCTION, Container.Status.CLOSED} and not is_container_cost_locked(instance)
         cost_sensitive_change = 'added_cost' in validated_data or 'status' in validated_data
         if cost_sensitive_change and (not is_container_cost_locked(instance) or moved_to_recalculating_state):

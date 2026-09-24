@@ -41,7 +41,9 @@ export interface Container {
   origin_country: string;
   supplier_name: string;
   arrival_date: string | null;
-  manifest_notes: string;
+  size_type: string;
+  current_location: string;
+  notes: string;
   status: string;
   added_cost: string;
   raw_parts_cost: string;
@@ -397,7 +399,7 @@ export interface DashboardCheque {
 
 export interface DropdownOption {
   id: UUID;
-  group: 'bank' | 'part_name' | 'item_category' | 'item_unit';
+  group: 'bank' | 'part_name' | 'item_category' | 'item_unit' | 'container_size_type';
   label: string;
   value: string;
   is_system: boolean;
@@ -475,11 +477,47 @@ export interface CurrencyPurchase {
   currency_code: string;
   currency_name: string;
   currency_symbol: string;
+  purchase_type: 'cash' | 'credit';
+  creditor: UUID | null;
+  creditor_name: string | null;
   purchase_date: string;
+  due_date: string | null;
   amount: string;
-  acquisition_rate: string;
-  total_cost: string;
+  acquisition_rate: string | null;
+  total_cost: string | null;
+  repaid_amount: string;
+  outstanding_amount: string;
+  repayment_count: number;
   source: string;
+  reference: string;
+  notes: string;
+}
+
+export interface CurrencyCreditor {
+  id: UUID;
+  name: string;
+  phone: string;
+  address: string;
+  notes: string;
+  is_active: boolean;
+  outstanding_by_currency: { currency_code: string; amount: string }[];
+  purchase_count: number;
+  repayment_count: number;
+  overdue_count: number;
+  total_pkr_repaid: string;
+}
+
+export interface CurrencyCreditorRepayment {
+  id: UUID;
+  purchase: UUID;
+  purchase_reference: string;
+  creditor_id: UUID;
+  creditor_name: string;
+  currency_code: string;
+  repayment_date: string;
+  amount: string;
+  exchange_rate: string;
+  total_cost: string;
   reference: string;
   notes: string;
 }

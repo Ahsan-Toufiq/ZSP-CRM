@@ -1,5 +1,6 @@
 from decimal import Decimal
 from datetime import timedelta
+from io import BytesIO
 
 import pytest
 from django.contrib.auth.models import User
@@ -296,6 +297,53 @@ def test_inventory_report_spreadsheet_excludes_zero_available_batches(api_client
     assert 'Report light' in body
     assert 'Sold out report part' not in body
     assert 'Available quantity' in body
+
+
+@pytest.mark.django_db
+def test_container_tracking_fields_and_reports(api_client, admin_user):
+    response = api_client.post(
+        '/api/operations/containers/',
+        {
+            'reference': 'TRACK-CNT-001',
+            'supplier_name': 'Test Agent',
+            'size_type': '45 ft Custom',
+            'current_location': 'Karachi Port',
+            'notes': 'Tracking notes that must remain visible.',
+            'status': Container.Status.READY_FOR_AUCTION,
+            'added_cost': '5000.00',
+        },
+        format='json',
+    )
+    assert response.status_code == 201
+    assert response.data['notes'] == 'Tracking notes that must remain visible.'
+
+    pdf = api_client.get('/api/operations/container-tracking-report/?export=pdf')
+    spreadsheet = api_client.get('/api/operations/container-tracking-report/?export=xlsx')
+    assert pdf.status_code == 200
+    assert pdf.content.startswith(b'%PDF')
+    assert spreadsheet.status_code == 200
+
+    from openpyxl import load_workbook
+    workbook = load_workbook(BytesIO(spreadsheet.content))
+    sheet = workbook['Container Tracking']
+    assert [sheet.cell(row=4, column=index).value for index in range(1, 7)] == [
+        'Serial No.', 'Container Number', 'Size / Type', 'Current Location', 'Agent', 'Notes',
+    ]
+    assert sheet['B5'].value == 'TRACK-CNT-001'
+
+
+@pytest.mark.django_db
+def test_auction_inventory_sheet_requires_ready_container(api_client, admin_user):
+    ready = Container.objects.create(reference='AUCTION-CNT', status=Container.Status.READY_FOR_AUCTION, created_by=admin_user, updated_by=admin_user)
+    not_ready = Container.objects.create(reference='LOADING-CNT', status=Container.Status.GODOWN_LOADING, created_by=admin_user, updated_by=admin_user)
+    item = PartInventory.objects.create(part_name='Auction engine', category='Engine', quantity=2, unit='piece')
+    InventoryBatch.objects.create(item=item, container=ready, quantity=2, raw_unit_cost=Decimal('1000.00'), net_unit_cost=Decimal('1200.00'))
+
+    response = api_client.get(f'/api/operations/inventory-report/?report=auction&export=pdf&container={ready.id}')
+    rejected = api_client.get(f'/api/operations/inventory-report/?report=auction&export=pdf&container={not_ready.id}')
+    assert response.status_code == 200
+    assert response.content.startswith(b'%PDF')
+    assert rejected.status_code == 404
 
 
 @pytest.mark.django_db

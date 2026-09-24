@@ -54,7 +54,9 @@ class Container(UserStampedModel):
     origin_country = models.CharField(max_length=80, blank=True)
     supplier_name = models.CharField(max_length=180, blank=True)
     arrival_date = models.DateField(null=True, blank=True)
-    manifest_notes = models.TextField(blank=True)
+    size_type = models.CharField(max_length=120, blank=True)
+    current_location = models.CharField(max_length=180, blank=True)
+    notes = models.TextField(blank=True)
     status = models.CharField(max_length=30, choices=Status.choices, default=Status.CONTAINER_BOUGHT)
     added_cost = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
 

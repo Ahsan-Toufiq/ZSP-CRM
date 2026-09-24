@@ -12,7 +12,7 @@ from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from django.utils import timezone
 
-from finance.models import ChequeSettlementAllocation, CustomerLedgerEntry, CustomerPayment, CustomerPaymentAllocation
+from finance.models import ChequeSettlementAllocation, CurrencyCreditor, CustomerLedgerEntry, CustomerPayment, CustomerPaymentAllocation
 from operations.models import AuctionSale, AuctionSaleLine, Customer
 
 
@@ -186,6 +186,26 @@ def build_credit_report() -> CreditReport:
             })
 
         positive_balance = max(balance, Decimal('0.00'))
+        itemized_outstanding = sum(
+            (row['outstanding_amount'] for row in sale_breakdown),
+            Decimal('0.00'),
+        )
+        unapplied_credit = max(itemized_outstanding - positive_balance, Decimal('0.00'))
+        if unapplied_credit:
+            # Historical account-level credits may predate explicit allocation rows.
+            # Reconcile them oldest-first for reporting without mutating ledger history.
+            for row in sale_breakdown:
+                if unapplied_credit <= 0:
+                    break
+                applied = min(unapplied_credit, row['outstanding_amount'])
+                row['settled_amount'] += applied
+                row['outstanding_amount'] -= applied
+                unapplied_credit -= applied
+            sale_breakdown = [row for row in sale_breakdown if row['outstanding_amount'] > 0]
+
+        aging = {key: Decimal('0.00') for key, *_ in AGING_BUCKETS}
+        for row in sale_breakdown:
+            aging[row['aging_bucket']] += row['outstanding_amount']
         for key in aging:
             total_aging[key] += aging[key]
         total_outstanding += positive_balance
@@ -428,51 +448,54 @@ def credit_report_payload(report: CreditReport) -> dict:
     }
 
 
-def credit_report_csv_response(report: CreditReport) -> HttpResponse:
+def credit_report_csv_response(report: CreditReport, *, section='combined') -> HttpResponse:
     buffer = StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(['ZSP Credit, Aging, And Customer Balance Report'])
-    writer.writerow(['Generated at', report.generated_at.strftime('%Y-%m-%d %H:%M:%S %Z')])
+    titles = {
+        'summary': 'ZSP Customer Summary',
+        'aging': 'ZSP Customer Aging Report',
+        'outstanding': 'ZSP Per-Customer Outstanding Balance Breakdown',
+        'combined': 'ZSP Customer Credit And Aging Report',
+    }
+    writer.writerow([titles[section]])
+    writer.writerow(['Prepared on', report.generated_at.strftime('%Y-%m-%d %H:%M:%S %Z')])
     writer.writerow([])
-    writer.writerow(['Summary'])
-    writer.writerow(['Creditors', report.totals['creditor_count']])
-    writer.writerow(['Total outstanding', report.totals['total_outstanding']])
-    writer.writerow(['Customer credit balance', report.totals['customer_credit_balance']])
-    for key, label, *_ in AGING_BUCKETS:
-        writer.writerow([label, report.totals['aging'][key]])
-    writer.writerow([])
-    writer.writerow(['Customer', 'Contact Number', 'Remaining Balance', 'Last Payment Date', *[label for _key, label, *_ in AGING_BUCKETS]])
-    for row in report.customers:
-        writer.writerow([
-            row['name'],
-            row['phone'],
-            row['remaining_balance'],
-            row['last_payment_date'] or '',
-            *[row['aging'][key] for key, *_ in AGING_BUCKETS],
-        ])
-    writer.writerow([])
-    writer.writerow(['Per Customer Sale Breakdown'])
-    writer.writerow(['Customer', 'Sale Number', 'Sale Date', 'Days Old', 'Sale Total', 'Settled', 'Outstanding', 'Aging Bucket', 'Items'])
-    for row in report.customers:
-        for sale in row['sale_breakdown']:
-            writer.writerow([
-                row['name'],
-                sale['sale_number'],
-                sale['sale_date'],
-                sale['days_old'],
-                sale['total_amount'],
-                sale['settled_amount'],
-                sale['outstanding_amount'],
-                sale['aging_bucket'],
-                '; '.join(f"{item['quantity']} x {item['part_name']}" for item in sale['items']),
-            ])
+    if section in {'summary', 'combined'}:
+        writer.writerow(['Customer Summary'])
+        writer.writerow(['Customers with outstanding balance', report.totals['creditor_count']])
+        writer.writerow(['Total outstanding', report.totals['total_outstanding']])
+        writer.writerow(['Customer credit balance', report.totals['customer_credit_balance']])
+        writer.writerow([])
+        writer.writerow(['Customer', 'Contact Number', 'Remaining Balance', 'Last Payment Date'])
+        for row in report.customers:
+            writer.writerow([row['name'], row['phone'], row['remaining_balance'], row['last_payment_date'] or ''])
+        writer.writerow([])
+    if section in {'aging', 'combined'}:
+        writer.writerow(['Aging Report'])
+        for key, label, *_ in AGING_BUCKETS:
+            writer.writerow([label, report.totals['aging'][key]])
+        writer.writerow([])
+        writer.writerow(['Customer', 'Contact Number', 'Outstanding Balance', *[label for _key, label, *_ in AGING_BUCKETS]])
+        for row in report.customers:
+            writer.writerow([row['name'], row['phone'], max(row['remaining_balance'], Decimal('0.00')), *[row['aging'][key] for key, *_ in AGING_BUCKETS]])
+        writer.writerow([])
+    if section in {'outstanding', 'combined'}:
+        writer.writerow(['Per-Customer Outstanding Balance Breakdown'])
+        writer.writerow(['Customer', 'Sale / Balance', 'Date', 'Days Old', 'Original Amount', 'Settled', 'Outstanding', 'Aging Bucket', 'Items'])
+        for row in report.customers:
+            for sale in row['sale_breakdown']:
+                writer.writerow([
+                    row['name'], sale['sale_number'], sale['sale_date'], sale['days_old'],
+                    sale['total_amount'], sale['settled_amount'], sale['outstanding_amount'],
+                    sale['aging_bucket'], '; '.join(f"{item['quantity']} x {item['part_name']}" for item in sale['items']),
+                ])
 
     response = HttpResponse(buffer.getvalue(), content_type='text/csv')
     response['Content-Disposition'] = 'attachment; filename="zsp-credit-aging-report.csv"'
     return response
 
 
-def credit_report_pdf_response(report: CreditReport) -> HttpResponse:
+def credit_report_pdf_response(report: CreditReport, *, section='combined') -> HttpResponse:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -491,8 +514,14 @@ def credit_report_pdf_response(report: CreditReport) -> HttpResponse:
         header_data.append(Image(str(logo_path), width=0.62 * inch, height=0.62 * inch))
     else:
         header_data.append(Paragraph('ZSP', styles['Title']))
-    header_data.append(Paragraph('<b>ZSP Credit, Aging, And Customer Balance Report</b><br/>Generated by Digi7', styles['Title']))
-    header_data.append(Paragraph(f"Generated at<br/><b>{report.generated_at.strftime('%Y-%m-%d %H:%M:%S %Z')}</b>", styles['Normal']))
+    titles = {
+        'summary': 'ZSP Customer Summary',
+        'aging': 'ZSP Customer Aging Report',
+        'outstanding': 'ZSP Per-Customer Outstanding Balance Report',
+        'combined': 'ZSP Customer Credit And Aging Report',
+    }
+    header_data.append(Paragraph(f"<b>{titles[section]}</b><br/>Prepared through Digi7", styles['Title']))
+    header_data.append(Paragraph(f"Prepared on<br/><b>{report.generated_at.strftime('%Y-%m-%d %H:%M:%S %Z')}</b>", styles['Normal']))
     header = Table([header_data], colWidths=[0.8 * inch, 6.6 * inch, 3.2 * inch])
     header.setStyle(TableStyle([
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -515,14 +544,15 @@ def credit_report_pdf_response(report: CreditReport) -> HttpResponse:
         ('FONTSIZE', (0, 0), (-1, -1), 8),
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f7fbf9')]),
     ]))
-    story.extend([Paragraph('<b>Summary</b>', styles['Heading2']), summary, Spacer(1, 12)])
+    if section in {'summary', 'combined'}:
+        story.extend([Paragraph('<b>Summary</b>', styles['Heading2']), summary, Spacer(1, 12)])
 
-    customer_rows = [['Customer', 'Contact', 'Balance', 'Last Payment', *[label for _key, label, *_ in AGING_BUCKETS]]]
+    customer_rows = [['Customer', 'Contact', 'Outstanding', 'Last Payment', *[label for _key, label, *_ in AGING_BUCKETS]]]
     for row in report.customers:
         customer_rows.append([
-            row['name'],
-            row['phone'],
-            _whole_money(row['remaining_balance']),
+            Paragraph(escape(row['name']), detail_style),
+            Paragraph(escape(row['phone']), detail_style),
+            _whole_money(max(row['remaining_balance'], Decimal('0.00'))),
             str(row['last_payment_date'] or '-'),
             *[_whole_money(row['aging'][key]) for key, *_ in AGING_BUCKETS],
         ])
@@ -533,9 +563,31 @@ def credit_report_pdf_response(report: CreditReport) -> HttpResponse:
         ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#d1d5db')),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, -1), 7.2),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
     ]))
-    story.extend([Paragraph('<b>Total Credit Report And Aging</b>', styles['Heading2']), customer_table, Spacer(1, 12)])
+    if section in {'aging', 'combined'}:
+        story.extend([Paragraph('<b>Aging Report</b>', styles['Heading2']), customer_table, Spacer(1, 12)])
+    elif section == 'summary':
+        summary_rows = [['Customer', 'Contact', 'Balance', 'Last Payment']]
+        for row in report.customers:
+            summary_rows.append([
+                Paragraph(escape(row['name']), detail_style),
+                Paragraph(escape(row['phone']), detail_style),
+                _whole_money(row['remaining_balance']),
+                str(row['last_payment_date'] or '-'),
+            ])
+        summary_table = Table(summary_rows, repeatRows=1, colWidths=[3.5 * inch, 2.3 * inch, 2.0 * inch, 2.1 * inch])
+        summary_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#111827')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#d1d5db')),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
+        ]))
+        story.extend([Paragraph('<b>Customer Summary</b>', styles['Heading2']), summary_table])
 
     detail_rows = [['Customer', 'Sale', 'Date', 'Days', 'Total', 'Settled', 'Outstanding', 'Items']]
     for row in report.customers:
@@ -562,7 +614,8 @@ def credit_report_pdf_response(report: CreditReport) -> HttpResponse:
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
     ]))
-    story.extend([Paragraph('<b>Per Customer Credit Balance Breakdown</b>', styles['Heading2']), detail_table])
+    if section in {'outstanding', 'combined'}:
+        story.extend([Paragraph('<b>Per-Customer Outstanding Balance Breakdown</b>', styles['Heading2']), detail_table])
     doc.build(story)
 
     response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
@@ -570,7 +623,7 @@ def credit_report_pdf_response(report: CreditReport) -> HttpResponse:
     return response
 
 
-def customer_statement_pdf_response(statement: CustomerStatement) -> HttpResponse:
+def customer_statement_pdf_response(statement: CustomerStatement, *, report_type='combined', credit_row=None) -> HttpResponse:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -589,7 +642,13 @@ def customer_statement_pdf_response(statement: CustomerStatement) -> HttpRespons
         header_data.append(Image(str(logo_path), width=0.62 * inch, height=0.62 * inch))
     else:
         header_data.append(Paragraph('ZSP', styles['Title']))
-    header_data.append(Paragraph(f'<b>Customer Statement</b><br/>{escape(statement.customer.name)}', styles['Title']))
+    titles = {
+        'aging': 'Customer Aging Report',
+        'transactions': 'Customer Transaction History',
+        'outstanding': 'Customer Outstanding Balance Report',
+        'combined': 'Combined Customer Report',
+    }
+    header_data.append(Paragraph(f"<b>{titles[report_type]}</b><br/>{escape(statement.customer.name)}", styles['Title']))
     header_data.append(Paragraph(f"Statement date<br/><b>{statement.generated_at.strftime('%Y-%m-%d %H:%M:%S %Z')}</b>", styles['Normal']))
     header = Table([header_data], colWidths=[0.8 * inch, 4.0 * inch, 2.3 * inch])
     header.setStyle(TableStyle([
@@ -601,9 +660,15 @@ def customer_statement_pdf_response(statement: CustomerStatement) -> HttpRespons
     story.extend([header, Spacer(1, 12)])
 
     customer_info = Table([
-        ['Customer', statement.customer.name, 'Phone', statement.customer.phone],
+        [
+            'Customer', Paragraph(escape(statement.customer.name), ledger_style),
+            'Phone', Paragraph(escape(statement.customer.phone), ledger_style),
+        ],
         ['Status', 'Active' if statement.customer.is_active else 'Inactive', 'Type', statement.customer.get_customer_type_display()],
-        ['Address', statement.customer.address or '-', 'Notes', statement.customer.notes or '-'],
+        [
+            'Address', Paragraph(escape(statement.customer.address or '-'), ledger_style),
+            'Notes', Paragraph(escape(statement.customer.notes or '-'), ledger_style),
+        ],
     ], colWidths=[0.9 * inch, 2.5 * inch, 0.8 * inch, 2.5 * inch])
     customer_info.setStyle(TableStyle([
         ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#d1d5db')),
@@ -629,7 +694,52 @@ def customer_statement_pdf_response(statement: CustomerStatement) -> HttpRespons
         ('FONTSIZE', (0, 0), (-1, -1), 8),
         ('INNERPADDING', (0, 0), (-1, -1), 7),
     ]))
-    story.extend([summary, Spacer(1, 12)])
+    if report_type in {'transactions', 'combined'}:
+        story.extend([summary, Spacer(1, 12)])
+
+    if report_type in {'aging', 'combined'}:
+        aging = (credit_row or {}).get('aging', {})
+        aging_rows = [['Current Outstanding', *[label for _key, label, *_ in AGING_BUCKETS]]]
+        aging_rows.append([
+            _whole_money(max(statement.totals['balance'], Decimal('0.00'))),
+            *[_whole_money(aging.get(key, Decimal('0.00'))) for key, *_ in AGING_BUCKETS],
+        ])
+        aging_table = Table(aging_rows, colWidths=[1.45 * inch] * 5)
+        aging_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#111827')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#d1d5db')),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('INNERPADDING', (0, 0), (-1, -1), 7),
+        ]))
+        story.extend([Paragraph('<b>Aging Summary</b>', styles['Heading2']), aging_table, Spacer(1, 12)])
+
+    if report_type in {'outstanding', 'combined'}:
+        outstanding_rows = [['Sale / Balance', 'Date', 'Original Amount', 'Settled', 'Amount Due']]
+        for item in (credit_row or {}).get('sale_breakdown', []):
+            outstanding_rows.append([
+                Paragraph(escape(item['sale_number']), ledger_style),
+                item['sale_date'].strftime('%d %b %Y'),
+                _whole_money(item['total_amount']),
+                _whole_money(item['settled_amount']),
+                _whole_money(item['outstanding_amount']),
+            ])
+        if len(outstanding_rows) == 1:
+            outstanding_rows.append(['No outstanding amounts', '', '', '', ''])
+        outstanding_table = Table(outstanding_rows, repeatRows=1, colWidths=[1.9 * inch, 1.1 * inch, 1.4 * inch, 1.3 * inch, 1.4 * inch])
+        outstanding_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#111827')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#d1d5db')),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 7.5),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('ALIGN', (2, 1), (-1, -1), 'RIGHT'),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
+        ]))
+        story.extend([Paragraph('<b>Amounts Currently Due</b>', styles['Heading2']), outstanding_table, Spacer(1, 12)])
 
     ledger_rows = [['Date', 'Type', 'Description', 'Reference', 'Debit', 'Credit', 'Balance']]
     for row in statement.ledger_rows:
@@ -657,7 +767,8 @@ def customer_statement_pdf_response(statement: CustomerStatement) -> HttpRespons
         ('RIGHTPADDING', (4, 1), (6, -1), 4),
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
     ]))
-    story.extend([Paragraph('<b>Balance Activity</b>', styles['Heading2']), ledger_table, Spacer(1, 12)])
+    if report_type in {'transactions', 'combined'}:
+        story.extend([Paragraph('<b>Balance Activity</b>', styles['Heading2']), ledger_table, Spacer(1, 12)])
 
     payment_rows = [['Date', 'Payment', 'Method', 'Amount', 'Applied to', 'Cheque / Ref', 'Status']]
     for row in statement.payment_rows:
@@ -682,14 +793,103 @@ def customer_statement_pdf_response(statement: CustomerStatement) -> HttpRespons
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
     ]))
-    story.extend([Paragraph('<b>Payment Details</b>', styles['Heading2']), payment_table])
-    story.append(Spacer(1, 12))
+    if report_type in {'transactions', 'combined'}:
+        story.extend([Paragraph('<b>Payment Details</b>', styles['Heading2']), payment_table])
+        story.append(Spacer(1, 12))
     story.append(Paragraph('Positive balance means the customer still owes ZSP. Negative balance means the customer has an advance or credit with ZSP.', styles['BodyText']))
     doc.build(story)
 
     response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
     safe_name = ''.join(ch if ch.isalnum() else '-' for ch in statement.customer.name.lower()).strip('-') or 'customer'
     response['Content-Disposition'] = f'attachment; filename="zsp-customer-statement-{safe_name}.pdf"'
+    return response
+
+
+def currency_creditor_statement_pdf_response(creditor: CurrencyCreditor) -> HttpResponse:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    creditor = (
+        CurrencyCreditor.objects
+        .prefetch_related('credit_purchases__currency', 'credit_purchases__repayments')
+        .get(pk=creditor.pk)
+    )
+    prepared_on = timezone.localtime()
+    styles = getSampleStyleSheet()
+    cell_style = ParagraphStyle('CreditorCell', parent=styles['BodyText'], fontSize=7.2, leading=9)
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=24, leftMargin=24, topMargin=22, bottomMargin=24)
+    story = []
+    logo_path = Path(settings.BASE_DIR) / 'static' / 'branding' / 'digi7-logo.png'
+    logo = Image(str(logo_path), width=0.62 * inch, height=0.62 * inch) if logo_path.exists() else Paragraph('<b>ZSP</b>', styles['Title'])
+    header = Table([[
+        logo,
+        Paragraph(f'<b>Currency Creditor Statement</b><br/>{escape(creditor.name)}', styles['Title']),
+        Paragraph(f"Prepared on<br/><b>{prepared_on.strftime('%d %B %Y, %I:%M %p')}</b>", styles['Normal']),
+    ]], colWidths=[0.8 * inch, 6.7 * inch, 3.3 * inch])
+    header.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f3faf7')),
+        ('BOX', (0, 0), (-1, -1), 0.8, colors.HexColor('#0f766e')),
+        ('INNERPADDING', (0, 0), (-1, -1), 8),
+    ]))
+    story.extend([header, Spacer(1, 12)])
+    liabilities = [['Purchase Date', 'Currency', 'Original Liability', 'Due Date', 'Repaid', 'Outstanding', 'Reference']]
+    repayments = [['Date', 'Currency', 'Foreign Amount', 'Exchange Rate', 'PKR Paid', 'Purchase Reference', 'Reference / Notes']]
+    outstanding_by_currency = {}
+    total_pkr_repaid = Decimal('0.00')
+    for purchase in creditor.credit_purchases.all():
+        purchase_repayments = list(purchase.repayments.all())
+        repaid = sum((entry.amount for entry in purchase_repayments), Decimal('0.0000'))
+        outstanding = max(Decimal(purchase.amount) - repaid, Decimal('0.0000'))
+        outstanding_by_currency[purchase.currency.code] = outstanding_by_currency.get(purchase.currency.code, Decimal('0.0000')) + outstanding
+        liabilities.append([
+            purchase.purchase_date.strftime('%d %b %Y'), purchase.currency.code,
+            f'{purchase.amount:,.4f}', purchase.due_date.strftime('%d %b %Y') if purchase.due_date else '-',
+            f'{repaid:,.4f}', f'{outstanding:,.4f}', Paragraph(escape(purchase.reference or purchase.notes or '-'), cell_style),
+        ])
+        for repayment in purchase_repayments:
+            total_pkr_repaid += repayment.total_cost
+            repayments.append([
+                repayment.repayment_date.strftime('%d %b %Y'), purchase.currency.code,
+                f'{repayment.amount:,.4f}', f'{repayment.exchange_rate:,.6f}', _whole_money(repayment.total_cost),
+                Paragraph(escape(purchase.reference or '-'), cell_style),
+                Paragraph(escape(repayment.reference or repayment.notes or '-'), cell_style),
+            ])
+    summary_text = ' · '.join(f'{amount:,.4f} {code}' for code, amount in sorted(outstanding_by_currency.items()) if amount > 0) or 'All liabilities settled'
+    summary = Table([['Outstanding', Paragraph(escape(summary_text), cell_style), 'Total PKR repaid', _whole_money(total_pkr_repaid)]], colWidths=[1.0 * inch, 5.4 * inch, 1.3 * inch, 2.4 * inch])
+    summary.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#0f766e')),
+        ('TEXTCOLOR', (0, 0), (-1, -1), colors.white),
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('INNERPADDING', (0, 0), (-1, -1), 7),
+    ]))
+    story.extend([summary, Spacer(1, 12)])
+    for title, rows, widths in [
+        ('Credit Purchases And Outstanding Liabilities', liabilities, [1.1, 0.65, 1.25, 1.05, 1.1, 1.15, 3.7]),
+        ('Repayment History', repayments, [1.05, 0.65, 1.15, 1.15, 1.15, 2.0, 3.0]),
+    ]:
+        if len(rows) == 1:
+            rows.append(['No records', '', '', '', '', '', ''])
+        table = Table(rows, repeatRows=1, colWidths=[width * inch for width in widths])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#111827')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#d1d5db')),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 7.2),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
+        ]))
+        story.extend([Paragraph(f'<b>{title}</b>', styles['Heading2']), table, Spacer(1, 12)])
+    doc.build(story)
+    response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
+    safe_name = ''.join(ch if ch.isalnum() else '-' for ch in creditor.name.lower()).strip('-') or 'creditor'
+    response['Content-Disposition'] = f'attachment; filename="zsp-currency-creditor-{safe_name}.pdf"'
     return response
 
 

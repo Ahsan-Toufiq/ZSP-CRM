@@ -30,6 +30,8 @@ VIEW_TAB_MAP = {
     'CustomerBalanceViewSet': 'customers',
     'CurrencyViewSet': 'currency',
     'CurrencyPurchaseViewSet': 'currency',
+    'CurrencyCreditorViewSet': 'currency',
+    'CurrencyCreditorRepaymentViewSet': 'currency',
     'CurrencyOpeningBalanceViewSet': 'currency',
     'CurrencySpendingViewSet': 'currency',
     'DropdownOptionViewSet': 'settings',

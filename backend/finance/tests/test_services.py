@@ -206,3 +206,30 @@ def test_credit_report_includes_aging_and_last_payment_date(user, customer):
     assert row['aging']['days_31_60'] == first_sale.total_amount
     assert row['aging']['over_90'] == Decimal('3000.00')
     assert report.totals['creditor_count'] == 1
+
+
+@pytest.mark.django_db
+def test_credit_report_reconciles_unallocated_credits_oldest_first(customer):
+    old_date = timezone.localdate() - timedelta(days=95)
+    recent_date = timezone.localdate() - timedelta(days=10)
+    CustomerLedgerEntry.objects.create(
+        customer=customer,
+        entry_date=old_date,
+        entry_type=CustomerLedgerEntry.EntryType.ADJUSTMENT,
+        description='Opening balance',
+        debit=Decimal('1000.00'),
+    )
+    CustomerLedgerEntry.objects.create(
+        customer=customer,
+        entry_date=recent_date,
+        entry_type=CustomerLedgerEntry.EntryType.PAYMENT,
+        description='Historical unallocated payment',
+        credit=Decimal('300.00'),
+    )
+
+    report = build_credit_report()
+    row = next(customer_row for customer_row in report.customers if customer_row['id'] == str(customer.id))
+
+    assert row['remaining_balance'] == Decimal('700.00')
+    assert row['aging']['over_90'] == Decimal('700.00')
+    assert sum(item['outstanding_amount'] for item in row['sale_breakdown']) == Decimal('700.00')

@@ -11,7 +11,7 @@ from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from django.utils import timezone
 
-from operations.models import AuctionSale, InventoryBatch
+from operations.models import AuctionSale, Container, InventoryBatch
 
 
 @dataclass(frozen=True)
@@ -35,7 +35,7 @@ def _content_disposition(filename: str, *, inline: bool = False) -> str:
     return f'{disposition}; filename="{filename}"'
 
 
-def _report_header(story, styles, title: str, subtitle: str, generated_at, *, generated_label='Generated at'):
+def _report_header(story, styles, title: str, subtitle: str, generated_at, *, generated_label='Prepared on', compact=False):
     from reportlab.lib import colors
     from reportlab.lib.units import inch
     from reportlab.platypus import Image, Paragraph, Spacer, Table, TableStyle
@@ -48,7 +48,8 @@ def _report_header(story, styles, title: str, subtitle: str, generated_at, *, ge
         header_data.append(Paragraph('<b>ZSP</b>', styles['Title']))
     header_data.append(Paragraph(f'<b>{title}</b><br/><font size="9">{subtitle}</font>', styles['Title']))
     header_data.append(Paragraph(f'{generated_label}<br/><b>{generated_at.strftime("%Y-%m-%d %H:%M:%S %Z")}</b>', styles['Normal']))
-    header = Table([header_data], colWidths=[0.8 * inch, 6.7 * inch, 3.3 * inch])
+    widths = [0.75 * inch, 4.15 * inch, 2.25 * inch] if compact else [0.8 * inch, 6.7 * inch, 3.3 * inch]
+    header = Table([header_data], colWidths=widths)
     header.setStyle(TableStyle([
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f3faf7')),
@@ -133,13 +134,13 @@ def inventory_report_csv_response(report: InventoryReport) -> HttpResponse:
     writer.writerow(['Rows', report.totals['row_count']])
     writer.writerow(['Available quantity', report.totals['available_quantity']])
     writer.writerow(['Raw total', report.totals['raw_total']])
-    writer.writerow(['Added cost share', report.totals['added_cost_share_total']])
+    writer.writerow(['Clearing fee allocation', report.totals['added_cost_share_total']])
     writer.writerow(['Net total', report.totals['net_total']])
     writer.writerow([])
     writer.writerow([
         'Part name', 'Part number', 'Category', 'Unit', 'Source container', 'Container status',
-        'Batch quantity', 'Sold quantity', 'Available quantity', 'Raw unit cost', 'Added share / unit',
-        'Net unit cost', 'Raw total', 'Added share total', 'Net total', 'Notes',
+        'Batch quantity', 'Sold quantity', 'Available quantity', 'Raw unit cost', 'Clearing fee / unit',
+        'Net unit cost', 'Raw total', 'Clearing fee allocation', 'Net total', 'Notes',
     ])
     for row in report.rows:
         writer.writerow([
@@ -184,8 +185,8 @@ def inventory_report_pdf_response(report: InventoryReport) -> HttpResponse:
     story.extend([summary, Spacer(1, 10)])
 
     rows = [[
-        'Part', 'No.', 'Category', 'Source', 'Avail', 'Raw Unit', 'Add/Unit',
-        'Net Unit', 'Raw Total', 'Add Total', 'Net Total',
+        'Part', 'No.', 'Category', 'Source', 'Avail', 'Raw Unit', 'Fee/Unit',
+        'Net Unit', 'Raw Total', 'Fee Share', 'Net Total',
     ]]
     for row in report.rows:
         rows.append([
@@ -226,10 +227,195 @@ def inventory_report_pdf_response(report: InventoryReport) -> HttpResponse:
     return response
 
 
+def auction_inventory_sheet_pdf_response(container: Container) -> HttpResponse:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    report = build_inventory_report(container_id=container.id)
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=28, leftMargin=28, topMargin=24, bottomMargin=28)
+    styles = getSampleStyleSheet()
+    cell_style = ParagraphStyle('AuctionInventoryCell', parent=styles['BodyText'], fontSize=8.5, leading=11)
+    story = []
+    _report_header(
+        story, styles, 'ZSP Auction Inventory Sheet',
+        f'Container {escape(container.reference)}', report.generated_at, compact=True,
+    )
+    details = Table([
+        ['Container Number', Paragraph(escape(container.reference), cell_style), 'Size / Type', Paragraph(escape(container.size_type or '-'), cell_style)],
+        ['Current Location', Paragraph(escape(container.current_location or '-'), cell_style), 'Agent', Paragraph(escape(container.supplier_name or '-'), cell_style)],
+    ], colWidths=[1.2 * inch, 2.35 * inch, 1.15 * inch, 2.4 * inch])
+    details.setStyle(TableStyle([
+        ('GRID', (0, 0), (-1, -1), 0.35, colors.HexColor('#d1d5db')),
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f3faf7')),
+        ('BACKGROUND', (2, 0), (2, -1), colors.HexColor('#f3faf7')),
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTNAME', (2, 0), (2, -1), 'Helvetica-Bold'),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('INNERPADDING', (0, 0), (-1, -1), 7),
+    ]))
+    story.extend([details, Spacer(1, 12)])
+
+    rows = [['Item / Part Name', 'Category', 'Quantity', 'Selling Price']]
+    for row in report.rows:
+        rows.append([
+            Paragraph(escape(row['part_name']), cell_style),
+            Paragraph(escape(row['category'] or '-'), cell_style),
+            f"{row['available_quantity']} {row['unit']}",
+            '',
+        ])
+    if len(rows) == 1:
+        rows.append(['No available inventory', '', '', ''])
+    table = Table(rows, repeatRows=1, colWidths=[2.65 * inch, 1.65 * inch, 1.0 * inch, 1.8 * inch])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#111827')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('GRID', (0, 0), (-1, -1), 0.45, colors.HexColor('#9ca3af')),
+        ('FONTSIZE', (0, 0), (-1, -1), 8.5),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ('TOPPADDING', (0, 1), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 1), (-1, -1), 10),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
+    ]))
+    story.append(table)
+    doc.build(story)
+    response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
+    response['Content-Disposition'] = _content_disposition(f'zsp-auction-inventory-{container.reference}.pdf')
+    return response
+
+
+def _tracking_rows(containers):
+    return [
+        {
+            'serial': index,
+            'reference': container.reference,
+            'size_type': container.size_type or '',
+            'current_location': container.current_location or '',
+            'agent': container.supplier_name or '',
+            'notes': container.notes or '',
+        }
+        for index, container in enumerate(containers, start=1)
+    ]
+
+
+def container_tracking_pdf_response(containers) -> HttpResponse:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Table, TableStyle
+
+    generated_at = timezone.localtime()
+    rows_data = _tracking_rows(containers)
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=24, leftMargin=24, topMargin=22, bottomMargin=24)
+    styles = getSampleStyleSheet()
+    cell_style = ParagraphStyle('TrackingCell', parent=styles['BodyText'], fontSize=7.5, leading=9.5)
+    story = []
+    _report_header(story, styles, 'ZSP Container Tracking Report', 'Container movement and status register', generated_at)
+    rows = [['Serial No.', 'Container Number', 'Size / Type', 'Current Location', 'Agent', 'Notes']]
+    for row in rows_data:
+        rows.append([
+            row['serial'],
+            Paragraph(escape(row['reference']), cell_style),
+            Paragraph(escape(row['size_type'] or '-'), cell_style),
+            Paragraph(escape(row['current_location'] or '-'), cell_style),
+            Paragraph(escape(row['agent'] or '-'), cell_style),
+            Paragraph(escape(row['notes'] or '-'), cell_style),
+        ])
+    if len(rows) == 1:
+        rows.append(['No containers recorded', '', '', '', '', ''])
+    table = Table(rows, repeatRows=1, colWidths=[0.62 * inch, 1.55 * inch, 1.25 * inch, 1.75 * inch, 1.75 * inch, 3.65 * inch])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#111827')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('GRID', (0, 0), (-1, -1), 0.3, colors.HexColor('#d1d5db')),
+        ('FONTSIZE', (0, 0), (-1, -1), 7.5),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('INNERPADDING', (0, 0), (-1, -1), 6),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
+    ]))
+    story.append(table)
+    doc.build(story)
+    response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
+    response['Content-Disposition'] = _content_disposition('zsp-container-tracking.pdf')
+    return response
+
+
+def container_tracking_xlsx_response(containers) -> HttpResponse:
+    from openpyxl import Workbook
+    from openpyxl.drawing.image import Image as WorkbookImage
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    rows = _tracking_rows(containers)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = 'Container Tracking'
+    sheet.sheet_view.showGridLines = False
+    sheet.merge_cells('B1:F1')
+    sheet['B1'] = 'ZSP Container Tracking Report'
+    sheet['B1'].font = Font(size=18, bold=True, color='111827')
+    sheet['B1'].alignment = Alignment(vertical='center')
+    sheet.merge_cells('B2:F2')
+    sheet['B2'] = f"Prepared on {timezone.localtime().strftime('%d %B %Y, %I:%M %p')}"
+    sheet['B2'].font = Font(size=10, color='4B5563')
+    logo_path = _logo_path()
+    if logo_path.exists():
+        logo = WorkbookImage(str(logo_path))
+        logo.width = 64
+        logo.height = 64
+        sheet.add_image(logo, 'A1')
+    sheet.row_dimensions[1].height = 34
+    sheet.row_dimensions[2].height = 22
+    headers = ['Serial No.', 'Container Number', 'Size / Type', 'Current Location', 'Agent', 'Notes']
+    header_row = 4
+    for column, label in enumerate(headers, start=1):
+        cell = sheet.cell(row=header_row, column=column, value=label)
+        cell.font = Font(bold=True, color='FFFFFF')
+        cell.fill = PatternFill('solid', fgColor='111827')
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    thin = Side(style='thin', color='D1D5DB')
+    for row_index, row in enumerate(rows, start=header_row + 1):
+        values = [row['serial'], row['reference'], row['size_type'], row['current_location'], row['agent'], row['notes']]
+        for column, value in enumerate(values, start=1):
+            cell = sheet.cell(row=row_index, column=column, value=value)
+            cell.alignment = Alignment(vertical='top', wrap_text=True)
+            cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+            if row_index % 2 == 0:
+                cell.fill = PatternFill('solid', fgColor='F8FAFC')
+        sheet.row_dimensions[row_index].height = 34
+    for cell in sheet[header_row]:
+        cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    widths = {'A': 12, 'B': 24, 'C': 18, 'D': 28, 'E': 26, 'F': 58}
+    for column, width in widths.items():
+        sheet.column_dimensions[column].width = width
+    sheet.freeze_panes = 'A5'
+    sheet.auto_filter.ref = f'A4:F{max(header_row, header_row + len(rows))}'
+    sheet.print_title_rows = '1:4'
+    sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    sheet.page_setup.fitToWidth = 1
+    sheet.page_setup.fitToHeight = 0
+    buffer = BytesIO()
+    workbook.save(buffer)
+    response = HttpResponse(
+        buffer.getvalue(),
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    response['Content-Disposition'] = _content_disposition('zsp-container-tracking.xlsx')
+    return response
+
+
 def sale_invoice_pdf_response(sale: AuctionSale, *, inline: bool = False) -> HttpResponse:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import inch
     from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
@@ -243,8 +429,12 @@ def sale_invoice_pdf_response(sale: AuctionSale, *, inline: bool = False) -> Htt
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=26, bottomMargin=26)
     styles = getSampleStyleSheet()
+    meta_style = ParagraphStyle('InvoiceMetaCell', parent=styles['BodyText'], fontSize=8, leading=10)
     story = []
-    _report_header(story, styles, 'ZSP Sales Invoice', f'Invoice {sale.sale_number}', generated_at, generated_label='Date / time')
+    _report_header(
+        story, styles, 'Syed Zulfiqar Old Spare Parts',
+        f'Sales Invoice {sale.sale_number}', generated_at, generated_label='Date / time', compact=True,
+    )
 
     customer_name = sale.customer.name if sale.customer_id else 'Cash customer'
     customer_phone = sale.customer.phone if sale.customer_id else '-'
@@ -253,9 +443,9 @@ def sale_invoice_pdf_response(sale: AuctionSale, *, inline: bool = False) -> Htt
     except AuctionSale.gate_pass.RelatedObjectDoesNotExist:
         gate_pass_number = '-'
     invoice_meta = Table([
-        ['Invoice #', sale.sale_number, 'Date', str(sale.sale_date)],
-        ['Customer', customer_name, 'Contact', customer_phone],
-        ['Payment', sale.get_payment_type_display(), 'Gate pass', gate_pass_number],
+        ['Invoice #', Paragraph(escape(sale.sale_number), meta_style), 'Date', str(sale.sale_date)],
+        ['Customer', Paragraph(escape(customer_name), meta_style), 'Contact', Paragraph(escape(customer_phone), meta_style)],
+        ['Payment', Paragraph(escape(sale.get_payment_type_display()), meta_style), 'Gate pass', Paragraph(escape(gate_pass_number), meta_style)],
     ], colWidths=[1.2 * inch, 2.4 * inch, 1.2 * inch, 2.1 * inch])
     invoice_meta.setStyle(TableStyle([
         ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#d1d5db')),
@@ -264,6 +454,7 @@ def sale_invoice_pdf_response(sale: AuctionSale, *, inline: bool = False) -> Htt
         ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
         ('FONTNAME', (2, 0), (2, -1), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, -1), 8.5),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('INNERPADDING', (0, 0), (-1, -1), 8),
     ]))
     story.extend([invoice_meta, Spacer(1, 14)])
@@ -310,7 +501,7 @@ def sale_invoice_pdf_response(sale: AuctionSale, *, inline: bool = False) -> Htt
         ('INNERPADDING', (0, 0), (-1, -1), 7),
     ]))
     story.extend([totals, Spacer(1, 18)])
-    story.append(Paragraph('Thank you for your business. This invoice was generated by ZSP through Digi7.', styles['BodyText']))
+    story.append(Paragraph('Thank you for your business. This invoice was issued by Syed Zulfiqar Old Spare Parts through Digi7.', styles['BodyText']))
     doc.build(story)
 
     response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
@@ -351,7 +542,7 @@ def sale_thermal_invoice_pdf_response(sale: AuctionSale, *, inline: bool = False
         logo.hAlign = 'CENTER'
         story.append(logo)
     story.extend([
-        Paragraph('<b>ZSP SALES INVOICE</b>', title_style),
+        Paragraph('<b>SYED ZULFIQAR OLD SPARE PARTS</b>', title_style),
         Paragraph('Spare Parts Auction', center_style),
         Spacer(1, 3 * mm),
     ])
@@ -422,7 +613,7 @@ def sale_thermal_invoice_pdf_response(sale: AuctionSale, *, inline: bool = False
         totals,
         Spacer(1, 4 * mm),
         Paragraph('Thank you for your business.', center_style),
-        Paragraph('ZSP powered by Digi7', center_style),
+        Paragraph('Syed Zulfiqar Old Spare Parts powered by Digi7', center_style),
     ])
     doc.build(story)
 

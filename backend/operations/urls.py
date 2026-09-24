@@ -9,6 +9,7 @@ from operations.views import (
     GatePassViewSet,
     InventoryBatchViewSet,
     inventory_report,
+    container_tracking_report,
     PartInventoryViewSet,
 )
 
@@ -24,4 +25,5 @@ router.register('gate-passes', GatePassViewSet, basename='gate-pass')
 urlpatterns = [
     *router.urls,
     path('inventory-report/', inventory_report, name='inventory-report'),
+    path('container-tracking-report/', container_tracking_report, name='container-tracking-report'),
 ]

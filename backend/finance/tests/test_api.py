@@ -11,7 +11,10 @@ from accounts.permissions import AccessLevel, full_tab_permissions
 from finance.models import (
     ChequeStatus,
     Currency,
+    CurrencyCreditor,
+    CurrencyCreditorRepayment,
     CurrencyOpeningBalance,
+    CurrencyPurchase,
     CurrencySpending,
     CustomerLedgerEntry,
     CustomerPayment,
@@ -47,10 +50,91 @@ def test_credit_report_exports_json_csv_and_pdf(api_client):
     assert 'generated_at' in json_response.data
     assert csv_response.status_code == 200
     assert csv_response['Content-Type'].startswith('text/csv')
-    assert b'ZSP Credit, Aging, And Customer Balance Report' in csv_response.content
+    assert b'ZSP Customer Credit And Aging Report' in csv_response.content
     assert pdf_response.status_code == 200
     assert pdf_response['Content-Type'] == 'application/pdf'
     assert pdf_response.content.startswith(b'%PDF')
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('section', ['summary', 'aging', 'outstanding', 'combined'])
+def test_credit_report_exports_each_requested_section(api_client, section):
+    csv_response = api_client.get(f'/api/finance/credit-report/?export=csv&section={section}')
+    pdf_response = api_client.get(f'/api/finance/credit-report/?export=pdf&section={section}')
+    assert csv_response.status_code == 200
+    assert pdf_response.status_code == 200
+    assert pdf_response.content.startswith(b'%PDF')
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('report_type', ['aging', 'transactions', 'outstanding', 'combined'])
+def test_individual_customer_report_types(api_client, report_type):
+    customer = Customer.objects.create(name='Report Customer', phone='+923001234567')
+    response = api_client.get(f'/api/finance/customers/{customer.id}/statement/?report={report_type}')
+    assert response.status_code == 200
+    assert response.content.startswith(b'%PDF')
+
+
+@pytest.mark.django_db
+def test_credit_currency_purchase_and_partial_repayments(api_client):
+    currency = Currency.objects.get(code='USD')
+    purchase_response = api_client.post(
+        '/api/finance/currency-purchases/',
+        {
+            'currency': str(currency.id),
+            'purchase_type': 'credit',
+            'creditor_input': 'Tokyo Test Creditor',
+            'purchase_date': str(timezone.localdate()),
+            'due_date': str(timezone.localdate() + timedelta(days=30)),
+            'amount': '1000.0000',
+        },
+        format='json',
+    )
+    assert purchase_response.status_code == 201
+    purchase = CurrencyPurchase.objects.get(pk=purchase_response.data['id'])
+    assert purchase.creditor.name == 'Tokyo Test Creditor'
+    assert purchase.acquisition_rate is None
+    assert purchase.total_cost is None
+
+    first = api_client.post(
+        '/api/finance/currency-creditor-repayments/',
+        {
+            'purchase': str(purchase.id),
+            'repayment_date': str(timezone.localdate()),
+            'amount': '300.0000',
+            'exchange_rate': '280.000000',
+        },
+        format='json',
+    )
+    second = api_client.post(
+        '/api/finance/currency-creditor-repayments/',
+        {
+            'purchase': str(purchase.id),
+            'repayment_date': str(timezone.localdate()),
+            'amount': '200.0000',
+            'total_cost': '57000.00',
+        },
+        format='json',
+    )
+    overpayment = api_client.post(
+        '/api/finance/currency-creditor-repayments/',
+        {
+            'purchase': str(purchase.id),
+            'repayment_date': str(timezone.localdate()),
+            'amount': '501.0000',
+            'exchange_rate': '281.000000',
+        },
+        format='json',
+    )
+    assert first.status_code == 201
+    assert first.data['total_cost'] == '84000.00'
+    assert second.status_code == 201
+    assert second.data['exchange_rate'] == '285.000000'
+    assert overpayment.status_code == 400
+    assert CurrencyCreditorRepayment.objects.filter(purchase=purchase).count() == 2
+    creditor_response = api_client.get('/api/finance/currency-creditors/')
+    creditor = next(item for item in creditor_response.data['results'] if item['name'] == 'Tokyo Test Creditor')
+    assert creditor['outstanding_by_currency'] == [{'currency_code': 'USD', 'amount': Decimal('500.0000')}]
 
 
 @pytest.mark.django_db

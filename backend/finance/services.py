@@ -14,7 +14,10 @@ from finance.models import (
     ChequeStatus,
     ChequeStatusHistory,
     Currency,
+    CurrencyCreditor,
+    CurrencyCreditorRepayment,
     CurrencyOpeningBalance,
+    CurrencyPurchase,
     CurrencySpending,
     CustomerLedgerEntry,
     CustomerPayment,
@@ -43,6 +46,22 @@ def resolve_currency(*, currency=None, currency_input='', user=None) -> Currency
         currency.updated_by = user
         currency.save(update_fields=['is_active', 'updated_by', 'updated_at'])
     return currency
+
+
+def resolve_currency_creditor(*, creditor=None, creditor_input='', user=None) -> CurrencyCreditor:
+    if creditor is not None:
+        return creditor
+    name = str(creditor_input or '').strip()
+    if not name:
+        raise ValidationError({'creditor_input': 'Select a creditor or enter a new creditor name.'})
+    existing = CurrencyCreditor.objects.filter(name__iexact=name).first()
+    if existing is not None:
+        if not existing.is_active:
+            existing.is_active = True
+            existing.updated_by = user
+            existing.save(update_fields=['is_active', 'updated_by', 'updated_at'])
+        return existing
+    return CurrencyCreditor.objects.create(name=name, created_by=user, updated_by=user)
 
 
 def currency_balance(currency: Currency, *, exclude_spending_id=None) -> Decimal:
@@ -88,6 +107,78 @@ def delete_currency_acquisition(*, instance) -> None:
             'detail': f'This entry cannot be deleted while it supports recorded {locked_currency.code} spending.',
         })
     instance.delete()
+
+
+@transaction.atomic
+def update_currency_purchase(*, instance, user, currency, **data) -> CurrencyPurchase:
+    instance = CurrencyPurchase.objects.select_for_update().get(pk=instance.pk)
+    repaid = instance.repayments.aggregate(total=Sum('amount'))['total'] or Decimal('0.0000')
+    next_type = data.get('purchase_type', instance.purchase_type)
+    next_creditor = data.get('creditor', instance.creditor)
+    next_amount = Decimal(data.get('amount', instance.amount))
+    if repaid > 0:
+        identity_changed = (
+            currency.id != instance.currency_id
+            or next_type != instance.purchase_type
+            or getattr(next_creditor, 'id', None) != instance.creditor_id
+        )
+        if identity_changed:
+            raise ValidationError({'detail': 'Currency, purchase type, and creditor cannot change after repayments are recorded.'})
+        if next_amount < repaid:
+            raise ValidationError({'amount': f'Amount cannot be lower than the {repaid:.4f} already repaid.'})
+    return update_currency_acquisition(instance=instance, user=user, currency=currency, **data)
+
+
+@transaction.atomic
+def delete_currency_purchase(*, instance) -> None:
+    instance = CurrencyPurchase.objects.select_for_update().get(pk=instance.pk)
+    if instance.repayments.exists():
+        raise ValidationError({'detail': 'A credit purchase with repayment history cannot be deleted.'})
+    delete_currency_acquisition(instance=instance)
+
+
+def _purchase_repaid_amount(purchase: CurrencyPurchase, *, exclude_repayment_id=None) -> Decimal:
+    queryset = purchase.repayments.all()
+    if exclude_repayment_id:
+        queryset = queryset.exclude(pk=exclude_repayment_id)
+    return queryset.aggregate(total=Sum('amount'))['total'] or Decimal('0.0000')
+
+
+@transaction.atomic
+def create_currency_creditor_repayment(*, user, purchase, **data) -> CurrencyCreditorRepayment:
+    purchase = CurrencyPurchase.objects.select_for_update().select_related('currency').get(pk=purchase.pk)
+    if purchase.purchase_type != CurrencyPurchase.PurchaseType.CREDIT:
+        raise ValidationError({'purchase': 'Repayments can only be recorded against credit currency purchases.'})
+    amount = Decimal(data['amount'])
+    outstanding = Decimal(purchase.amount) - _purchase_repaid_amount(purchase)
+    if amount > outstanding:
+        raise ValidationError({'amount': f'Only {outstanding:.4f} {purchase.currency.code} remains outstanding.'})
+    return CurrencyCreditorRepayment.objects.create(
+        purchase=purchase,
+        created_by=user,
+        updated_by=user,
+        **data,
+    )
+
+
+@transaction.atomic
+def update_currency_creditor_repayment(*, instance, user, **data) -> CurrencyCreditorRepayment:
+    instance = CurrencyCreditorRepayment.objects.select_for_update().select_related('purchase__currency').get(pk=instance.pk)
+    purchase = CurrencyPurchase.objects.select_for_update().get(pk=instance.purchase_id)
+    amount = Decimal(data.get('amount', instance.amount))
+    outstanding_before_this_entry = Decimal(purchase.amount) - _purchase_repaid_amount(
+        purchase,
+        exclude_repayment_id=instance.id,
+    )
+    if amount > outstanding_before_this_entry:
+        raise ValidationError({
+            'amount': f'Only {outstanding_before_this_entry:.4f} {instance.purchase.currency.code} is available for this repayment.',
+        })
+    instance.updated_by = user
+    for field, value in data.items():
+        setattr(instance, field, value)
+    instance.save()
+    return instance
 
 
 @transaction.atomic

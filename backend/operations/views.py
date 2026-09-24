@@ -6,6 +6,7 @@ from django.db.models.deletion import ProtectedError
 from django.db.models.functions import Coalesce, TruncDate, TruncMonth, TruncYear
 from django.utils import timezone
 from django.utils.dateparse import parse_date
+from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -19,6 +20,9 @@ from operations.reporting import (
     build_inventory_report,
     inventory_report_csv_response,
     inventory_report_pdf_response,
+    auction_inventory_sheet_pdf_response,
+    container_tracking_pdf_response,
+    container_tracking_xlsx_response,
     sale_invoice_pdf_response,
     sale_thermal_invoice_pdf_response,
 )
@@ -121,7 +125,7 @@ class ContainerViewSet(UserStampedMixin, viewsets.ModelViewSet):
     serializer_class = ContainerSerializer
     permission_classes = [OperationsPermission]
     filterset_fields = ['status', 'origin_country']
-    search_fields = ['reference', 'supplier_name', 'manifest_notes']
+    search_fields = ['reference', 'supplier_name', 'size_type', 'current_location', 'notes']
     ordering_fields = ['arrival_date', 'created_at', 'reference']
 
     def get_queryset(self):
@@ -448,6 +452,14 @@ def inventory_report(request):
     if not has_tab_access(request.user, 'containers'):
         raise PermissionDenied('You do not have access to inventory reports.')
     container_id = request.query_params.get('container') or None
+    report_type = request.query_params.get('report', 'available').lower()
+    if report_type == 'auction':
+        if not container_id:
+            raise ValidationError({'container': 'Select a Ready for Auction container.'})
+        container = get_object_or_404(Container, id=container_id, status=Container.Status.READY_FOR_AUCTION)
+        if request.query_params.get('export', 'pdf').lower() != 'pdf':
+            raise ValidationError({'export': 'Auction inventory sheets are available as PDF only.'})
+        return auction_inventory_sheet_pdf_response(container)
     report = build_inventory_report(container_id=container_id)
     export_format = request.query_params.get('export', 'pdf').lower()
     if export_format == 'csv':
@@ -455,3 +467,16 @@ def inventory_report(request):
     if export_format == 'pdf':
         return inventory_report_pdf_response(report)
     raise ValidationError({'export': 'Supported export formats are pdf and csv.'})
+
+
+@api_view(['GET'])
+def container_tracking_report(request):
+    if not has_tab_access(request.user, 'containers'):
+        raise PermissionDenied('You do not have access to container tracking reports.')
+    containers = Container.objects.order_by('-arrival_date', '-created_at', 'reference')
+    export_format = request.query_params.get('export', 'pdf').lower()
+    if export_format == 'pdf':
+        return container_tracking_pdf_response(containers)
+    if export_format == 'xlsx':
+        return container_tracking_xlsx_response(containers)
+    raise ValidationError({'export': 'Supported export formats are pdf and xlsx.'})

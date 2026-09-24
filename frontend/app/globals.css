@@ -1650,6 +1650,36 @@ td select {
   gap: 12px;
 }
 
+.creditor-detail {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbfa;
+}
+
+.creditor-detail > h3 {
+  margin: 8px 0 0;
+}
+
+.context-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid rgba(19, 127, 116, 0.25);
+  border-radius: 8px;
+  background: #f0faf7;
+}
+
+.context-banner span {
+  color: var(--muted);
+  text-align: right;
+}
+
 .payment-builder {
   display: grid;
   gap: 16px;

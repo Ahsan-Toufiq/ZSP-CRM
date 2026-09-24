@@ -14,6 +14,8 @@ from finance.models import (
     Cheque,
     ChequeStatus,
     Currency,
+    CurrencyCreditor,
+    CurrencyCreditorRepayment,
     CurrencyOpeningBalance,
     CurrencyPurchase,
     CurrencySpending,
@@ -123,7 +125,7 @@ class Command(BaseCommand):
             ('ZSP-CNT-004', 'Malaysia', 'Penang Dismantlers', 2, 'Fresh receiving container.', '165000.00'),
         ]
         containers = {}
-        for reference, origin, supplier, days_ago, notes, added_cost in container_specs:
+        for index, (reference, origin, supplier, days_ago, notes, added_cost) in enumerate(container_specs):
             container, _ = Container.objects.update_or_create(
                 reference=reference,
                 defaults={
@@ -131,7 +133,9 @@ class Command(BaseCommand):
                     'supplier_name': supplier,
                     'arrival_date': today - timedelta(days=days_ago),
                     'status': Container.Status.READY_FOR_AUCTION if reference != 'ZSP-CNT-004' else Container.Status.GODOWN_LOADING,
-                    'manifest_notes': notes,
+                    'size_type': ['40 ft High Cube', '40 ft Standard', '20 ft Standard', '40 ft High Cube'][index],
+                    'current_location': ['Karachi Godown', 'Port Qasim', 'Karachi Port', 'Godown Loading Bay'][index],
+                    'notes': notes,
                     'added_cost': Decimal(added_cost),
                     'created_by': admin,
                     'updated_by': admin,
@@ -528,6 +532,7 @@ class Command(BaseCommand):
             ],
             DropdownOption.Group.ITEM_CATEGORY: ['Body parts', 'Electrical', 'Engine', 'Interior', 'Lights', 'Suspension', 'Transmission'],
             DropdownOption.Group.ITEM_UNIT: ['piece', 'set', 'pair', 'kg', 'box'],
+            DropdownOption.Group.CONTAINER_SIZE_TYPE: ['20 ft Standard', '40 ft Standard', '40 ft High Cube'],
         }
         for group, labels in option_groups.items():
             for index, label in enumerate(labels):
@@ -677,6 +682,63 @@ class Command(BaseCommand):
                     'total_cost': (amount_value * rate_value).quantize(Decimal('0.01')),
                     'source': source,
                     'notes': 'Seeded local currency acquisition lot.',
+                    'created_by': admin,
+                    'updated_by': admin,
+                },
+            )
+
+        creditor, _ = CurrencyCreditor.objects.get_or_create(
+            name='Tokyo Parts Credit Co.',
+            defaults={
+                'phone': '+81355501234',
+                'address': 'Tokyo, Japan',
+                'notes': 'Demo multi-currency creditor with partial repayments.',
+                'created_by': admin,
+                'updated_by': admin,
+            },
+        )
+        credit_purchases = {}
+        for code, reference, days_ago, amount, due_date in [
+            ('USD', 'DEMO-FX-CREDIT-USD-001', 16, '3000.0000', today + timedelta(days=14)),
+            ('AED', 'DEMO-FX-CREDIT-AED-001', 40, '5000.0000', today - timedelta(days=5)),
+        ]:
+            currency = currencies.get(code)
+            if currency is None:
+                continue
+            purchase, _ = CurrencyPurchase.objects.get_or_create(
+                reference=reference,
+                defaults={
+                    'currency': currency,
+                    'purchase_type': CurrencyPurchase.PurchaseType.CREDIT,
+                    'creditor': creditor,
+                    'purchase_date': today - timedelta(days=days_ago),
+                    'due_date': due_date,
+                    'amount': Decimal(amount),
+                    'notes': 'Seeded credit currency purchase.',
+                    'created_by': admin,
+                    'updated_by': admin,
+                },
+            )
+            credit_purchases[code] = purchase
+        for code, reference, days_ago, amount, rate in [
+            ('USD', 'DEMO-FX-REPAY-USD-001', 9, '750.0000', '280.000000'),
+            ('USD', 'DEMO-FX-REPAY-USD-002', 3, '500.0000', '281.250000'),
+            ('AED', 'DEMO-FX-REPAY-AED-001', 12, '1000.0000', '76.200000'),
+        ]:
+            purchase = credit_purchases.get(code)
+            if purchase is None:
+                continue
+            amount_value = Decimal(amount)
+            rate_value = Decimal(rate)
+            CurrencyCreditorRepayment.objects.get_or_create(
+                reference=reference,
+                defaults={
+                    'purchase': purchase,
+                    'repayment_date': today - timedelta(days=days_ago),
+                    'amount': amount_value,
+                    'exchange_rate': rate_value,
+                    'total_cost': (amount_value * rate_value).quantize(Decimal('0.01')),
+                    'notes': 'Seeded partial creditor repayment.',
                     'created_by': admin,
                     'updated_by': admin,
                 },

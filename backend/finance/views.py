@@ -18,6 +18,8 @@ from finance.models import (
     ChequeSettlementAllocation,
     ChequeStatus,
     Currency,
+    CurrencyCreditor,
+    CurrencyCreditorRepayment,
     CurrencyOpeningBalance,
     CurrencyPurchase,
     CurrencySpending,
@@ -33,16 +35,19 @@ from finance.reporting import (
     credit_report_payload,
     credit_report_pdf_response,
     customer_statement_pdf_response,
+    currency_creditor_statement_pdf_response,
     daily_payment_report_payload,
     daily_payment_report_pdf_response,
 )
-from finance.services import customer_receivables, delete_currency_acquisition
+from finance.services import customer_receivables, delete_currency_acquisition, delete_currency_purchase
 from finance.serializers import (
     ChequeSerializer,
     ChequeStatusChangeSerializer,
     ChequeStatusHistorySerializer,
     ChequeStatusSerializer,
     CurrencyPurchaseSerializer,
+    CurrencyCreditorSerializer,
+    CurrencyCreditorRepaymentSerializer,
     CurrencySerializer,
     CurrencyOpeningBalanceSerializer,
     CurrencySpendingSerializer,
@@ -182,23 +187,70 @@ class CurrencyViewSet(UserStampedMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         return Currency.objects.prefetch_related(
-            'purchases', 'opening_balances', 'spending_entries',
+            'purchases__repayments', 'opening_balances', 'spending_entries',
         ).order_by('code')
+
+
+class CurrencyCreditorViewSet(UserStampedMixin, viewsets.ModelViewSet):
+    serializer_class = CurrencyCreditorSerializer
+    permission_classes = [FinancePermission]
+    filterset_fields = ['is_active']
+    search_fields = ['name', 'phone', 'address', 'notes']
+    ordering_fields = ['name', 'created_at']
+
+    def get_queryset(self):
+        repayment_queryset = CurrencyCreditorRepayment.objects.order_by('repayment_date', 'created_at')
+        purchase_queryset = (
+            CurrencyPurchase.objects
+            .filter(purchase_type=CurrencyPurchase.PurchaseType.CREDIT)
+            .select_related('currency')
+            .prefetch_related(Prefetch('repayments', queryset=repayment_queryset))
+            .order_by('purchase_date', 'created_at')
+        )
+        return CurrencyCreditor.objects.prefetch_related(
+            Prefetch('credit_purchases', queryset=purchase_queryset),
+        ).order_by('name')
+
+    def destroy(self, request, *args, **kwargs):
+        creditor = self.get_object()
+        if creditor.credit_purchases.exists():
+            return Response(
+                {'detail': 'This creditor has currency purchase history and cannot be deleted. Mark it inactive instead.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=['get'], url_path='statement')
+    def statement(self, request, pk=None):
+        return currency_creditor_statement_pdf_response(self.get_object())
+
+
+class CurrencyCreditorRepaymentViewSet(UserStampedMixin, viewsets.ModelViewSet):
+    serializer_class = CurrencyCreditorRepaymentSerializer
+    permission_classes = [FinancePermission]
+    filterset_fields = ['purchase', 'purchase__creditor', 'purchase__currency', 'repayment_date']
+    search_fields = ['purchase__creditor__name', 'purchase__currency__code', 'reference', 'notes']
+    ordering_fields = ['repayment_date', 'amount', 'total_cost', 'exchange_rate']
+
+    def get_queryset(self):
+        return CurrencyCreditorRepayment.objects.select_related(
+            'purchase', 'purchase__creditor', 'purchase__currency',
+        ).order_by('-repayment_date', '-created_at')
 
 
 class CurrencyPurchaseViewSet(UserStampedMixin, viewsets.ModelViewSet):
     serializer_class = CurrencyPurchaseSerializer
     permission_classes = [FinancePermission]
-    filterset_fields = ['currency', 'purchase_date']
-    search_fields = ['currency__code', 'currency__name', 'source', 'reference', 'notes']
+    filterset_fields = ['currency', 'purchase_type', 'creditor', 'purchase_date', 'due_date']
+    search_fields = ['currency__code', 'currency__name', 'creditor__name', 'source', 'reference', 'notes']
     ordering_fields = ['purchase_date', 'amount', 'total_cost', 'acquisition_rate']
 
     def get_queryset(self):
-        return CurrencyPurchase.objects.select_related('currency').order_by('-purchase_date', '-created_at')
+        return CurrencyPurchase.objects.select_related('currency', 'creditor').prefetch_related('repayments').order_by('-purchase_date', '-created_at')
 
     def perform_destroy(self, instance):
         try:
-            delete_currency_acquisition(instance=instance)
+            delete_currency_purchase(instance=instance)
         except DjangoValidationError as error:
             raise DRFValidationError(error.message_dict) from error
 
@@ -303,10 +355,13 @@ def credit_report(request):
         raise PermissionDenied('You do not have access to customer balance reports.')
     report = build_credit_report()
     export_format = request.query_params.get('export', 'json').lower()
+    section = request.query_params.get('section', 'combined').lower()
+    if section not in {'summary', 'aging', 'outstanding', 'combined'}:
+        raise DRFValidationError({'section': 'Choose summary, aging, outstanding, or combined.'})
     if export_format == 'csv':
-        return credit_report_csv_response(report)
+        return credit_report_csv_response(report, section=section)
     if export_format == 'pdf':
-        return credit_report_pdf_response(report)
+        return credit_report_pdf_response(report, section=section)
     return Response(credit_report_payload(report))
 
 
@@ -315,7 +370,12 @@ def customer_statement(request, customer_id):
     if not has_tab_access(request.user, 'customers'):
         raise PermissionDenied('You do not have access to customer statements.')
     report = build_customer_statement(customer_id=customer_id)
-    return customer_statement_pdf_response(report)
+    report_type = request.query_params.get('report', 'combined').lower()
+    if report_type not in {'aging', 'transactions', 'outstanding', 'combined'}:
+        raise DRFValidationError({'report': 'Choose aging, transactions, outstanding, or combined.'})
+    credit_report_data = build_credit_report()
+    credit_row = next((row for row in credit_report_data.customers if row['id'] == str(customer_id)), None)
+    return customer_statement_pdf_response(report, report_type=report_type, credit_row=credit_row)
 
 
 @api_view(['GET'])
