@@ -37,11 +37,19 @@ from operations.serializers import (
     GatePassCreateSerializer,
     GatePassSerializer,
     GatePassUpdateSerializer,
+    GeneralInventoryBatchWriteSerializer,
     InventoryBatchSerializer,
     PartInventorySerializer,
     SubpartCreateSerializer,
 )
-from operations.services import apply_container_inventory_delta, is_container_cost_locked, mark_gate_pass_printed, recalculate_container_net_costs, sold_quantity_for_item
+from operations.services import (
+    apply_container_inventory_delta,
+    delete_general_inventory_batch,
+    is_container_cost_locked,
+    mark_gate_pass_printed,
+    recalculate_container_net_costs,
+    sold_quantity_for_item,
+)
 
 
 raw_item_cost_expression = ExpressionWrapper(
@@ -259,12 +267,16 @@ class PartInventoryViewSet(UserStampedMixin, viewsets.ModelViewSet):
         instance.delete()
 
 
-class InventoryBatchViewSet(viewsets.ReadOnlyModelViewSet):
-    serializer_class = InventoryBatchSerializer
+class InventoryBatchViewSet(viewsets.ModelViewSet):
     permission_classes = [OperationsPermission]
     filterset_fields = ['item', 'container']
     search_fields = ['item__part_name', 'item__part_number', 'container__reference', 'source_label']
     ordering_fields = ['created_at', 'quantity', 'raw_unit_cost']
+
+    def get_serializer_class(self):
+        if self.action in {'create', 'update', 'partial_update'}:
+            return GeneralInventoryBatchWriteSerializer
+        return InventoryBatchSerializer
 
     def get_queryset(self):
         return (
@@ -282,6 +294,12 @@ class InventoryBatchViewSet(viewsets.ReadOnlyModelViewSet):
             )
             .order_by('item__part_name', 'container__reference', 'source_label')
         )
+
+    def perform_destroy(self, instance):
+        try:
+            delete_general_inventory_batch(user=self.request.user, batch=instance)
+        except DjangoValidationError as error:
+            raise ValidationError(error.message_dict) from error
 
 
 class AuctionSaleViewSet(viewsets.ModelViewSet):

@@ -88,7 +88,7 @@ def build_inventory_report(*, container_id=None) -> InventoryReport:
             'part_number': batch.item.part_number or '',
             'category': batch.item.category or '',
             'unit': batch.item.unit or 'piece',
-            'container_reference': batch.container.reference if batch.container_id else batch.source_label or 'Manual',
+            'container_reference': batch.container.reference if batch.container_id else batch.source_label or 'General inventory',
             'container_status': batch.container.get_status_display() if batch.container_id else '',
             'source_label': batch.source_label or '',
             'batch_quantity': batch.quantity,

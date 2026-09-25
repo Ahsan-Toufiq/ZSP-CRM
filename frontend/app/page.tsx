@@ -70,6 +70,7 @@ type ModalState =
   | { type: 'container'; container?: Container }
   | { type: 'item'; item?: ContainerItem; containerId?: UUID }
   | { type: 'part'; part?: PartInventory }
+  | { type: 'general-batch'; part: PartInventory; batch?: InventoryBatch }
   | { type: 'subparts'; parentItem: ContainerItem }
   | { type: 'sale'; sale?: AuctionSale }
   | { type: 'cheque'; cheque?: Cheque }
@@ -103,7 +104,9 @@ type SaleLineDraft = {
 type BatchWithPart = InventoryBatch & { item_detail: PartInventory };
 type PartSourceDraft = {
   key: string;
+  source_type: 'container' | 'general';
   container: string;
+  source_label: string;
   quantity: number;
   raw_unit_cost: string;
   description: string;
@@ -813,7 +816,7 @@ export default function Home() {
         {loading ? <LoadingState label={`Loading ${currentTitle.toLowerCase()}...`} /> : null}
         {!loading && activeTab === 'dashboard' ? <Dashboard summary={summary} /> : null}
         {!loading && activeTab === 'customers' ? <CustomersPanel canWrite={canWrite('customers')} customers={customers} creditReport={creditReport} onAdd={() => setModal({ type: 'customer' })} onEdit={(customer) => setModal({ type: 'customer', customer })} onDelete={(customer) => remove(`/operations/customers/${customer.id}/`)} onStatus={(customer) => quickPatch(`/operations/customers/${customer.id}/`, { is_active: !customer.is_active })} onDownloadReport={(format) => setModal({ type: 'all-customer-report', format })} onDownloadDailyReport={downloadDailyPaymentReport} onDownloadStatement={(customer) => setModal({ type: 'customer-report', customer })} onViewDetails={(customer) => setModal({ type: 'customer-details', customer })} onRecordPayment={(customer) => setModal({ type: 'customer-payment', customer })} onRecordPagePayment={() => setModal({ type: 'customer-payment' })} /> : null}
-        {!loading && activeTab === 'containers' ? <ContainersPanel canWrite={canWrite('containers')} containers={containers} items={items} itemsByContainer={itemsByContainer} parts={parts} expandedContainers={expandedContainers} expandedParts={expandedParts} inventoryPane={inventoryPane} onInventoryPaneChange={setInventoryPane} onToggleContainer={(id) => toggleSet(setExpandedContainers, id)} onTogglePart={(id) => toggleSet(setExpandedParts, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onDelete={(container) => remove(`/operations/containers/${container.id}/`)} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddSubparts={(item) => setModal({ type: 'subparts', parentItem: item })} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} onExport={() => setModal({ type: 'inventory-export' })} onTrackingExport={() => setModal({ type: 'container-tracking-export' })} /> : null}
+        {!loading && activeTab === 'containers' ? <ContainersPanel canWrite={canWrite('containers')} containers={containers} items={items} itemsByContainer={itemsByContainer} parts={parts} expandedContainers={expandedContainers} expandedParts={expandedParts} inventoryPane={inventoryPane} onInventoryPaneChange={setInventoryPane} onToggleContainer={(id) => toggleSet(setExpandedContainers, id)} onTogglePart={(id) => toggleSet(setExpandedParts, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onDelete={(container) => remove(`/operations/containers/${container.id}/`)} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddSubparts={(item) => setModal({ type: 'subparts', parentItem: item })} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} onAddGeneralStock={(part) => setModal({ type: 'general-batch', part })} onEditGeneralBatch={(part, batch) => setModal({ type: 'general-batch', part, batch })} onDeleteGeneralBatch={(batch) => remove(`/operations/inventory-batches/${batch.id}/`)} onExport={() => setModal({ type: 'inventory-export' })} onTrackingExport={() => setModal({ type: 'container-tracking-export' })} /> : null}
         {!loading && activeTab === 'sales' ? <SalesPanel canWrite={canWrite('sales')} sales={sales} analytics={salesAnalytics} onLoadAnalytics={loadSalesAnalytics} onAdd={() => { setNewSaleCustomer(null); setModal({ type: 'sale' }); }} onEdit={(sale) => { setNewSaleCustomer(null); setModal({ type: 'sale', sale }); }} onPrint={printSaleGatePass} onDownloadInvoice={downloadSaleInvoice} onPrintInvoice={printSaleInvoice} onPrintThermalInvoice={printThermalInvoice} /> : null}
         {!loading && activeTab === 'cheques' ? <ChequesPanel canWrite={canWrite('cheques')} cheques={cheques} statuses={chequeStatuses} onAdd={() => setModal({ type: 'cheque' })} onEdit={(cheque) => setModal({ type: 'cheque', cheque })} onStatus={markChequeStatus} onAddStatus={() => setModal({ type: 'cheque-status' })} /> : null}
         {!loading && activeTab === 'currency' ? <CurrencyPanel canWrite={canWrite('currency')} currencies={currencies} purchases={currencyPurchases} openings={currencyOpenings} spending={currencySpending} creditors={currencyCreditors} repayments={currencyRepayments} onAddOpening={() => setModal({ type: 'currency-opening' })} onEditCurrency={(currency) => setModal({ type: 'currency', currency })} onAddPurchase={() => setModal({ type: 'currency-purchase' })} onEditPurchase={(purchase) => setModal({ type: 'currency-purchase', purchase })} onAddSpending={() => setModal({ type: 'currency-spending' })} onEditOpening={(opening) => setModal({ type: 'currency-opening', opening })} onEditSpending={(entry) => setModal({ type: 'currency-spending', spending: entry })} onAddCreditor={() => setModal({ type: 'currency-creditor' })} onEditCreditor={(creditor) => setModal({ type: 'currency-creditor', creditor })} onRepay={(purchase) => setModal({ type: 'currency-repayment', purchase })} onDownloadCreditor={downloadCurrencyCreditorStatement} /> : null}
@@ -826,6 +829,7 @@ export default function Home() {
         {modal?.type === 'container' ? <ContainerForm container={modal.container} options={dropdownOptions} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'item' ? <ItemForm item={modal.item} containerId={modal.containerId} containers={containers} items={items} parts={parts} options={dropdownOptions} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'part' ? <PartForm part={modal.part} containers={containers} parts={parts} options={dropdownOptions} onSave={save} isSaving={saving} /> : null}
+        {modal?.type === 'general-batch' ? <GeneralInventoryBatchForm part={modal.part} batch={modal.batch} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'subparts' ? <SubpartForm parentItem={modal.parentItem} parts={parts} options={dropdownOptions} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'sale' ? <SaleForm sale={modal.sale} customers={customers} availableBatches={availableBatches} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} selectedCustomer={newSaleCustomer} onAddCustomer={() => setSaleCustomerOverlayOpen(true)} /> : null}
         {modal?.type === 'cheque' ? <ChequeForm cheque={modal.cheque} customers={customers} statuses={chequeStatuses} banks={optionLabels(dropdownOptions, 'bank')} onSave={save} isSaving={saving} /> : null}
@@ -1080,6 +1084,9 @@ function ContainersPanel({
   onAddPart,
   onEditPart,
   onDeletePart,
+  onAddGeneralStock,
+  onEditGeneralBatch,
+  onDeleteGeneralBatch,
   onExport,
   onTrackingExport,
 }: {
@@ -1104,6 +1111,9 @@ function ContainersPanel({
   onAddPart: () => void;
   onEditPart: (part: PartInventory) => void;
   onDeletePart: (part: PartInventory) => void;
+  onAddGeneralStock: (part: PartInventory) => void;
+  onEditGeneralBatch: (part: PartInventory, batch: InventoryBatch) => void;
+  onDeleteGeneralBatch: (batch: InventoryBatch) => void;
   onExport: () => void;
   onTrackingExport: () => void;
 }) {
@@ -1159,7 +1169,7 @@ function ContainersPanel({
           <div className="section-head pane-head">
             <div>
               <h3>Parts inventory</h3>
-              <p className="muted">Aggregate sellable stock. Expand a part to see the container cost layers behind it.</p>
+              <p className="muted">Consolidated sellable stock. Expand a part to manage its container and general-stock cost batches.</p>
             </div>
             {canWrite ? <button className="btn primary" onClick={onAddPart}><Plus size={18} /> Part</button> : null}
           </div>
@@ -1182,6 +1192,7 @@ function ContainersPanel({
                   </button>
                   {canWrite ? (
                     <div className="record-actions">
+                      <button className="btn small" onClick={() => onAddGeneralStock(part)}><Plus size={16} /> General stock</button>
                       <button className="icon-btn" onClick={() => onEditPart(part)} aria-label={`Edit ${part.part_name}`}><Pencil size={16} /></button>
                       <button className="icon-btn danger" onClick={() => onDeletePart(part)} aria-label={`Delete ${part.part_name}`} disabled={part.sold_quantity > 0} title={part.sold_quantity > 0 ? 'Parts with sale history cannot be deleted.' : `Delete ${part.part_name}`}><Trash2 size={16} /></button>
                     </div>
@@ -1190,13 +1201,15 @@ function ContainersPanel({
                     <DataTable
                       headers={['Source', 'Raw unit cost', 'Net unit cost', 'Batch quantity', 'Available', 'Actions']}
                       rows={(part.batches ?? []).map((batch) => [
-                        <div key={batch.id}><strong>{batch.container_reference || batch.source_label || 'Manual adjustment'}</strong><span className="cell-note">{batch.notes || 'No notes'}</span></div>,
+                        <div key={batch.id}><strong>{batch.container_reference || batch.source_label || 'General inventory'}</strong><span className="cell-note">{batch.container ? 'Container stock' : 'General stock'} · {batch.notes || 'No notes'}</span></div>,
                         money(batch.raw_unit_cost),
                         money(batch.net_unit_cost),
                         `${batch.quantity} ${batch.unit}`,
                         <strong key="available">{batch.available_quantity} {batch.unit}</strong>,
                         <div className="table-actions" key="actions">
-                          {canWrite && batch.container_item ? <button className="icon-btn" onClick={() => { const source = items.find((item) => item.id === batch.container_item); if (source) onEditItem(source); }} aria-label={`Edit source for ${part.part_name}`}><Pencil size={16} /></button> : <span className="muted">Source locked</span>}
+                          {canWrite && batch.container_item ? <button className="icon-btn" onClick={() => { const source = items.find((item) => item.id === batch.container_item); if (source) onEditItem(source); }} aria-label={`Edit source for ${part.part_name}`}><Pencil size={16} /></button> : null}
+                          {canWrite && !batch.container ? <button className="icon-btn" onClick={() => onEditGeneralBatch(part, batch)} aria-label={`Edit general stock for ${part.part_name}`}><Pencil size={16} /></button> : null}
+                          {canWrite && !batch.container ? <button className="icon-btn danger" onClick={() => onDeleteGeneralBatch(batch)} aria-label={`Delete general stock batch for ${part.part_name}`} disabled={batch.sold_quantity > 0} title={batch.sold_quantity > 0 ? 'A batch with sales history cannot be deleted.' : 'Delete general stock batch'}><Trash2 size={16} /></button> : null}
                         </div>,
                       ])}
                     />
@@ -1336,7 +1349,7 @@ function InventoryExportDialog({ containers, parts, onDownload, onDownloadAuctio
       <div className="export-choice-grid">
         <button type="button" className={scope === 'all' ? 'export-choice active' : 'export-choice'} onClick={() => setScope('all')}>
           <strong>All available inventory</strong>
-          <span>Every in-stock part source with raw cost, Clearing Fee share, net cost, and source container.</span>
+          <span>Every in-stock container and general-stock batch with its source and costing.</span>
         </button>
         <button type="button" className={scope === 'container' ? 'export-choice active' : 'export-choice'} onClick={() => setScope('container')}>
           <strong>Specific container inventory</strong>
@@ -1722,15 +1735,18 @@ function ItemForm({ item, containerId, containers, items, parts, options, onSave
 }
 
 function PartForm({ part, containers, parts, options, onSave, isSaving }: { part?: PartInventory; containers: Container[]; parts: PartInventory[]; options: DropdownOption[]; onSave: SaveHandler; isSaving: boolean }) {
-  const [sourceRows, setSourceRows] = useState<PartSourceDraft[]>([{ key: crypto.randomUUID(), container: '', quantity: 1, raw_unit_cost: '0.00', description: '' }]);
+  const newSource = (): PartSourceDraft => ({ key: crypto.randomUUID(), source_type: 'container', container: '', source_label: '', quantity: 1, raw_unit_cost: '0.00', description: '' });
+  const [sourceRows, setSourceRows] = useState<PartSourceDraft[]>([newSource()]);
   const updateSource = (key: string, updates: Partial<PartSourceDraft>) => setSourceRows((rows) => rows.map((row) => row.key === key ? { ...row, ...updates } : row));
-  const addSource = () => setSourceRows((rows) => [...rows, { key: crypto.randomUUID(), container: '', quantity: 1, raw_unit_cost: '0.00', description: '' }]);
+  const addSource = () => setSourceRows((rows) => [...rows, newSource()]);
   const removeSource = (key: string) => setSourceRows((rows) => rows.length === 1 ? rows : rows.filter((row) => row.key !== key));
   return <FormFrame title={part ? 'Edit parts inventory' : 'Add parts inventory'} isSaving={isSaving} onSubmit={(form, raw) => {
     const payload: Record<string, unknown> = { ...form };
     if (!part) {
       payload.sources = sourceRows.map((source) => ({
-        container: source.container,
+        source_type: source.source_type,
+        container: source.source_type === 'container' ? source.container : null,
+        source_label: source.source_type === 'general' ? String(raw.get(`source_label_${source.key}`) || '') : '',
         quantity: Number(raw.get(`source_quantity_${source.key}`) || 1),
         raw_unit_cost: String(raw.get(`source_raw_${source.key}`) || '0.00'),
         description: String(raw.get(`source_description_${source.key}`) || ''),
@@ -1738,7 +1754,35 @@ function PartForm({ part, containers, parts, options, onSave, isSaving }: { part
       payload.quantity = sourceRows.reduce((total, source) => total + Number(raw.get(`source_quantity_${source.key}`) || 0), 0);
     }
     onSave(part ? `/operations/parts/${part.id}/` : '/operations/parts/', payload, part ? 'patch' : 'post');
-  }}><PartIdentityFields parts={parts} options={options} defaults={part} /><OptionText name="unit" label="Unit" defaultValue={part?.unit || 'piece'} options={optionLabels(options, 'item_unit')} required />{part ? <div className="locked-row">Stock quantity is controlled from individual source rows.</div> : <div className="subform full-span"><div className="inline-between"><h3>Source containers</h3><button type="button" className="btn small" onClick={addSource}><Plus size={16} /> Source</button></div>{sourceRows.map((source) => <div className="source-line-grid" key={source.key}><Select name={`source_container_${source.key}`} label="Container" value={source.container} onChange={(value) => updateSource(source.key, { container: value })} options={containers.map((container) => [container.id, container.reference])} required /><Field name={`source_quantity_${source.key}`} label="Quantity" type="number" defaultValue={source.quantity} min="1" /><Field name={`source_raw_${source.key}`} label="Raw unit cost" type="number" defaultValue={source.raw_unit_cost} min="0" step="0.01" /><Field name={`source_description_${source.key}`} label="Source note" defaultValue={source.description} /><button type="button" className="icon-btn danger" onClick={() => removeSource(source.key)} aria-label="Remove source"><Trash2 size={16} /></button></div>)}</div>}<Field name="description" label="Description" defaultValue={part?.description} textarea /></FormFrame>;
+  }}><PartIdentityFields parts={parts} options={options} defaults={part} /><OptionText name="unit" label="Unit" defaultValue={part?.unit || 'piece'} options={optionLabels(options, 'item_unit')} required />{part ? <div className="locked-row">Part identity is shared by all sources. Add or edit quantities from the source rows in Parts Inventory.</div> : <div className="subform full-span"><div className="inline-between"><h3>Inventory sources</h3><button type="button" className="btn small" onClick={addSource}><Plus size={16} /> Source</button></div>{sourceRows.map((source) => <div className="source-line-grid" key={source.key}><Select name={`source_type_${source.key}`} label="Stock source" value={source.source_type} onChange={(value) => updateSource(source.key, { source_type: value as 'container' | 'general', container: value === 'general' ? '' : source.container })} options={[["container", "Container inventory"], ["general", "General inventory"]]} required />{source.source_type === 'container' ? <Select name={`source_container_${source.key}`} label="Container" value={source.container} onChange={(value) => updateSource(source.key, { container: value })} options={containers.map((container) => [container.id, container.reference])} required /> : <Field name={`source_label_${source.key}`} label="Source / acquisition reference" defaultValue={source.source_label} placeholder="General inventory" />}<Field name={`source_quantity_${source.key}`} label="Quantity" type="number" defaultValue={source.quantity} min="1" required /><Field name={`source_raw_${source.key}`} label="Raw unit cost" type="number" defaultValue={source.raw_unit_cost} min="0" step="0.01" required /><Field name={`source_description_${source.key}`} label="Source note" defaultValue={source.description} /><button type="button" className="icon-btn danger" onClick={() => removeSource(source.key)} aria-label="Remove source"><Trash2 size={16} /></button></div>)}</div>}<Field name="description" label="Description" defaultValue={part?.description} textarea /></FormFrame>;
+}
+
+function GeneralInventoryBatchForm({ part, batch, onSave, isSaving }: { part: PartInventory; batch?: InventoryBatch; onSave: SaveHandler; isSaving: boolean }) {
+  const sold = batch?.sold_quantity ?? 0;
+  return (
+    <FormFrame
+      title={batch ? 'Edit general stock batch' : 'Add general stock'}
+      isSaving={isSaving}
+      onSubmit={(form) => onSave(
+        batch ? `/operations/inventory-batches/${batch.id}/` : '/operations/inventory-batches/',
+        {
+          ...form,
+          item: part.id,
+          quantity: Number(form.quantity || 0),
+          raw_unit_cost: form.raw_unit_cost || '0.00',
+          merge_matching: !batch,
+        },
+        batch ? 'patch' : 'post',
+      )}
+    >
+      <div className="context-banner full-span"><strong>{part.part_name}</strong><span>{part.part_number || 'No part number'} · {part.category || 'No category'} · General inventory</span></div>
+      <Field name="source_label" label="Source / acquisition reference" defaultValue={batch?.source_label || 'General inventory'} />
+      <Field name="quantity" label="Batch quantity" type="number" defaultValue={String(batch?.quantity ?? 1)} min={String(Math.max(sold, 1))} required />
+      <Field name="raw_unit_cost" label="Raw unit cost" type="number" defaultValue={batch?.raw_unit_cost || '0.00'} min="0" step="0.01" required />
+      <Field name="notes" label="Notes" defaultValue={batch?.notes} textarea />
+      {batch && sold > 0 ? <div className="locked-row">{sold} unit{sold === 1 ? '' : 's'} already sold. Batch quantity cannot be reduced below this amount.</div> : null}
+    </FormFrame>
+  );
 }
 
 function SubpartForm({ parentItem, parts, options, onSave, isSaving }: { parentItem: ContainerItem; parts: PartInventory[]; options: DropdownOption[]; onSave: SaveHandler; isSaving: boolean }) {
@@ -2264,15 +2308,15 @@ function ModalShell({ modal, onClose, children }: { modal: ModalState; onClose: 
   return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}><section className="modal-panel" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" onClick={onClose} aria-label="Close dialog"><X size={18} /></button>{children}</section></div>;
 }
 
-function Field({ name, label, type = 'text', required = false, textarea = false, defaultValue = '', value, onChange, autoComplete, min, max, step, disabled = false, maxLength }: { name: string; label: string; type?: string; required?: boolean; textarea?: boolean; defaultValue?: string | number | null; value?: string; onChange?: (value: string) => void; autoComplete?: string; min?: string; max?: string; step?: string; disabled?: boolean; maxLength?: number }) {
+function Field({ name, label, type = 'text', required = false, textarea = false, defaultValue = '', value, onChange, autoComplete, min, max, step, disabled = false, maxLength, placeholder }: { name: string; label: string; type?: string; required?: boolean; textarea?: boolean; defaultValue?: string | number | null; value?: string; onChange?: (value: string) => void; autoComplete?: string; min?: string; max?: string; step?: string; disabled?: boolean; maxLength?: number; placeholder?: string }) {
   const shared = { id: name, name, required, autoComplete, disabled };
   return (
     <div className="field">
       <label htmlFor={name}>{label}</label>
       {textarea ? (
-        <textarea {...shared} defaultValue={value === undefined ? String(defaultValue ?? '') : undefined} value={value} onChange={onChange ? (event) => onChange(event.currentTarget.value) : undefined} />
+        <textarea {...shared} placeholder={placeholder} defaultValue={value === undefined ? String(defaultValue ?? '') : undefined} value={value} onChange={onChange ? (event) => onChange(event.currentTarget.value) : undefined} />
       ) : (
-        <input {...shared} type={type} defaultValue={value === undefined ? String(defaultValue ?? '') : undefined} value={value} onChange={onChange ? (event) => onChange(event.currentTarget.value) : undefined} min={min} max={max} step={step} maxLength={maxLength} />
+        <input {...shared} type={type} placeholder={placeholder} defaultValue={value === undefined ? String(defaultValue ?? '') : undefined} value={value} onChange={onChange ? (event) => onChange(event.currentTarget.value) : undefined} min={min} max={max} step={step} maxLength={maxLength} />
       )}
     </div>
   );

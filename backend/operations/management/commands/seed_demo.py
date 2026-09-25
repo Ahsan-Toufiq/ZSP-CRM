@@ -24,8 +24,15 @@ from finance.models import (
     CustomerPaymentComponent,
 )
 from finance.services import change_cheque_status, create_cheque, customer_receivables, record_customer_payment
-from operations.models import AuctionSale, Container, ContainerItem, Customer, PartInventory
-from operations.services import apply_container_inventory_delta, create_auction_sale, create_subparts, is_container_cost_locked, recalculate_container_net_costs
+from operations.models import AuctionSale, Container, ContainerItem, Customer, InventoryBatch, PartInventory
+from operations.services import (
+    apply_container_inventory_delta,
+    create_auction_sale,
+    create_general_inventory_batch,
+    create_subparts,
+    is_container_cost_locked,
+    recalculate_container_net_costs,
+)
 
 
 class Command(BaseCommand):
@@ -270,6 +277,53 @@ class Command(BaseCommand):
             ).first()
             for lot, item in items.items()
         }
+
+        general_only, _ = PartInventory.objects.get_or_create(
+            part_name='General brake booster',
+            part_number='GEN-BB-01',
+            category='Brakes',
+            unit='piece',
+            defaults={
+                'description': 'Local non-container inventory with multiple cost batches.',
+                'quantity': 0,
+                'created_by': admin,
+                'updated_by': admin,
+            },
+        )
+        general_specs = [
+            (general_only, 'Local supplier lot A', 5, Decimal('18000.00'), 'Five identical units acquired at one rate.'),
+            (general_only, 'Local supplier lot B', 3, Decimal('21500.00'), 'Same part acquired later at a different rate.'),
+        ]
+        mixed_source_part = PartInventory.objects.filter(
+            part_name='Toyota headlight pair',
+            part_number='TY-HL-01',
+            category='Lights',
+            unit='pair',
+        ).first()
+        if mixed_source_part:
+            general_specs.append((
+                mixed_source_part,
+                'Karachi local purchase',
+                2,
+                Decimal('20500.00'),
+                'General stock for a part that also exists in container inventory.',
+            ))
+        for inventory, source_label, quantity, raw_cost, notes in general_specs:
+            if not InventoryBatch.objects.filter(
+                item=inventory,
+                container__isnull=True,
+                source_label=source_label,
+                raw_unit_cost=raw_cost,
+                notes=notes,
+            ).exists():
+                create_general_inventory_batch(
+                    user=admin,
+                    item=inventory,
+                    quantity=quantity,
+                    raw_unit_cost=raw_cost,
+                    source_label=source_label,
+                    notes=notes,
+                )
 
         subpart_specs = [
             (

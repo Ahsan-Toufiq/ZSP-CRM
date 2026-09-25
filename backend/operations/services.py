@@ -192,6 +192,137 @@ def net_unit_cost_for_batch(batch: InventoryBatch) -> Decimal:
     return Decimal(batch.net_unit_cost or batch.raw_unit_cost or 0).quantize(MONEY_QUANTUM)
 
 
+@transaction.atomic
+def create_general_inventory_batch(
+    *, user, item: PartInventory, quantity: int, raw_unit_cost: Decimal,
+    source_label='', notes='', merge_matching=True,
+) -> InventoryBatch:
+    item = PartInventory.objects.select_for_update().get(pk=item.pk)
+    quantity = int(quantity)
+    if quantity <= 0:
+        raise ValidationError({'quantity': 'Quantity must be greater than zero.'})
+    raw_unit_cost = Decimal(raw_unit_cost or 0).quantize(MONEY_QUANTUM)
+    source_label = str(source_label or '').strip() or 'General inventory'
+    notes = str(notes or '').strip()
+
+    batch = None
+    if merge_matching:
+        batch = (
+            InventoryBatch.objects.select_for_update()
+            .filter(
+                item=item,
+                container__isnull=True,
+                container_item__isnull=True,
+                source_label=source_label,
+                raw_unit_cost=raw_unit_cost,
+                net_unit_cost=raw_unit_cost,
+                notes=notes,
+            )
+            .order_by('created_at')
+            .first()
+        )
+    if batch is None:
+        batch = InventoryBatch.objects.create(
+            item=item,
+            source_label=source_label,
+            quantity=quantity,
+            raw_unit_cost=raw_unit_cost,
+            net_unit_cost=raw_unit_cost,
+            notes=notes,
+            created_by=user,
+            updated_by=user,
+        )
+        action = 'inventory.general_batch.created'
+    else:
+        batch.quantity += quantity
+        batch.updated_by = user
+        batch.save(update_fields=['quantity', 'updated_by', 'updated_at'])
+        action = 'inventory.general_batch.merged'
+
+    item.quantity += quantity
+    item.updated_by = user
+    item.save(update_fields=['quantity', 'updated_by', 'updated_at'])
+    AuditLog.objects.create(
+        actor=user,
+        action=action,
+        entity_type='InventoryBatch',
+        entity_id=str(batch.id),
+        message=f'Added {quantity} {item.unit} of general stock for {item.part_name}',
+        metadata={'quantity': quantity, 'raw_unit_cost': str(raw_unit_cost), 'source_label': source_label},
+    )
+    return batch
+
+
+@transaction.atomic
+def update_general_inventory_batch(*, user, batch: InventoryBatch, **data) -> InventoryBatch:
+    batch = InventoryBatch.objects.select_for_update().select_related('item').get(pk=batch.pk)
+    if batch.container_id or batch.container_item_id:
+        raise ValidationError({'batch': 'Container stock must be edited from Container Inventory.'})
+    item = PartInventory.objects.select_for_update().get(pk=batch.item_id)
+    next_quantity = int(data.get('quantity', batch.quantity))
+    sold = sold_quantity_for_batch(batch)
+    if next_quantity < sold:
+        raise ValidationError({'quantity': f'Quantity cannot be lower than {sold} already sold unit(s).'})
+    delta = next_quantity - int(batch.quantity)
+    next_item_quantity = int(item.quantity) + delta
+    item_sold = sold_quantity_for_item(item)
+    if next_item_quantity < item_sold:
+        raise ValidationError({'quantity': f'Total stock cannot be lower than {item_sold} already sold unit(s).'})
+
+    raw_unit_cost = Decimal(data.get('raw_unit_cost', batch.raw_unit_cost) or 0).quantize(MONEY_QUANTUM)
+    batch.quantity = next_quantity
+    batch.raw_unit_cost = raw_unit_cost
+    batch.net_unit_cost = raw_unit_cost
+    batch.source_label = str(data.get('source_label', batch.source_label) or '').strip() or 'General inventory'
+    batch.notes = str(data.get('notes', batch.notes) or '').strip()
+    batch.updated_by = user
+    batch.save(update_fields=[
+        'quantity', 'raw_unit_cost', 'net_unit_cost', 'source_label', 'notes', 'updated_by', 'updated_at',
+    ])
+    if delta:
+        item.quantity = next_item_quantity
+        item.updated_by = user
+        item.save(update_fields=['quantity', 'updated_by', 'updated_at'])
+    AuditLog.objects.create(
+        actor=user,
+        action='inventory.general_batch.updated',
+        entity_type='InventoryBatch',
+        entity_id=str(batch.id),
+        message=f'Updated general stock for {item.part_name}',
+        metadata={'quantity': next_quantity, 'raw_unit_cost': str(raw_unit_cost), 'source_label': batch.source_label},
+    )
+    return batch
+
+
+@transaction.atomic
+def delete_general_inventory_batch(*, user, batch: InventoryBatch) -> None:
+    batch = InventoryBatch.objects.select_for_update().select_related('item').get(pk=batch.pk)
+    if batch.container_id or batch.container_item_id:
+        raise ValidationError({'batch': 'Container stock must be managed from Container Inventory.'})
+    sold = sold_quantity_for_batch(batch)
+    if sold:
+        raise ValidationError({'batch': f'This batch has {sold} sold unit(s) and cannot be deleted.'})
+    item = PartInventory.objects.select_for_update().get(pk=batch.item_id)
+    next_quantity = int(item.quantity) - int(batch.quantity)
+    if next_quantity < sold_quantity_for_item(item):
+        raise ValidationError({'batch': 'Deleting this batch would make total stock lower than recorded sales.'})
+    batch_id = batch.id
+    quantity = batch.quantity
+    source_label = batch.source_label
+    batch.delete()
+    item.quantity = max(next_quantity, 0)
+    item.updated_by = user
+    item.save(update_fields=['quantity', 'updated_by', 'updated_at'])
+    AuditLog.objects.create(
+        actor=user,
+        action='inventory.general_batch.deleted',
+        entity_type='InventoryBatch',
+        entity_id=str(batch_id),
+        message=f'Deleted unsold general stock batch for {item.part_name}',
+        metadata={'quantity': quantity, 'source_label': source_label},
+    )
+
+
 def _part_payload(source) -> dict:
     return {
         'part_name': source.part_name,

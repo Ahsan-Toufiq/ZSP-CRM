@@ -156,7 +156,7 @@ class InventoryBatch(UserStampedModel):
         ]
 
     def __str__(self) -> str:
-        source = self.container.reference if self.container_id else self.source_label or 'Manual'
+        source = self.container.reference if self.container_id else self.source_label or 'General inventory'
         return f'{self.item.part_name} / {source}'
 
 

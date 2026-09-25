@@ -634,6 +634,9 @@ def customer_statement_pdf_response(statement: CustomerStatement, *, report_type
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=26, bottomMargin=26)
     styles = getSampleStyleSheet()
     ledger_style = ParagraphStyle('StatementLedgerCell', parent=styles['BodyText'], fontSize=6.5, leading=8)
+    payment_cell_style = ParagraphStyle(
+        'StatementPaymentCell', parent=styles['BodyText'], fontSize=6.2, leading=7.4, wordWrap='CJK',
+    )
     story = []
     logo_path = Path(settings.BASE_DIR) / 'static' / 'branding' / 'digi7-logo.png'
 
@@ -774,12 +777,15 @@ def customer_statement_pdf_response(statement: CustomerStatement, *, report_type
     for row in statement.payment_rows:
         payment_rows.append([
             str(row['date']),
-            row['payment_number'],
-            row['method'],
+            Paragraph(escape(row['payment_number']), payment_cell_style),
+            Paragraph(escape(row['method']), payment_cell_style),
             _whole_money(row['amount']),
-            Paragraph(escape(row['allocation']), ledger_style),
-            row['cheque_number'] if row['cheque_number'] != '-' else row['reference'],
-            row['cheque_status'],
+            Paragraph(escape(row['allocation']), payment_cell_style),
+            Paragraph(
+                escape(row['cheque_number'] if row['cheque_number'] != '-' else row['reference']),
+                payment_cell_style,
+            ),
+            Paragraph(escape(row['cheque_status']), payment_cell_style),
         ])
     if len(payment_rows) == 1:
         payment_rows.append(['No direct payments recorded', '', '', '', '', '', ''])

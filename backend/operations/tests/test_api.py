@@ -206,6 +206,128 @@ def test_container_with_inventory_returns_conflict_on_delete(api_client):
 
 
 @pytest.mark.django_db
+def test_part_can_be_created_with_general_inventory_only(api_client):
+    response = api_client.post(
+        '/api/operations/parts/',
+        {
+            'part_name': 'General stock alternator',
+            'part_number': 'GEN-ALT-1',
+            'category': 'Electrical',
+            'unit': 'piece',
+            'sources': [{
+                'source_type': 'general',
+                'source_label': 'Local market purchase',
+                'quantity': 5,
+                'raw_unit_cost': '12000.00',
+                'description': 'Five units bought together.',
+            }],
+        },
+        format='json',
+    )
+
+    assert response.status_code == 201
+    item = PartInventory.objects.get(id=response.data['id'])
+    batch = item.batches.get()
+    assert item.quantity == 5
+    assert batch.container_id is None
+    assert batch.container_item_id is None
+    assert batch.quantity == 5
+    assert batch.raw_unit_cost == Decimal('12000.00')
+    assert batch.net_unit_cost == Decimal('12000.00')
+
+
+@pytest.mark.django_db
+def test_general_inventory_merges_matching_batch_and_separates_different_cost(api_client):
+    item = PartInventory.objects.create(
+        part_name='General mirror', part_number='GM-1', category='Body', quantity=0, unit='piece',
+    )
+    base_payload = {
+        'item': str(item.id),
+        'source_label': 'Local supplier',
+        'quantity': 5,
+        'raw_unit_cost': '2000.00',
+        'notes': 'Same acquisition details',
+    }
+    first = api_client.post('/api/operations/inventory-batches/', base_payload, format='json')
+    second = api_client.post(
+        '/api/operations/inventory-batches/',
+        {**base_payload, 'quantity': 2},
+        format='json',
+    )
+    different_cost = api_client.post(
+        '/api/operations/inventory-batches/',
+        {**base_payload, 'quantity': 3, 'raw_unit_cost': '2600.00'},
+        format='json',
+    )
+
+    assert first.status_code == second.status_code == different_cost.status_code == 201
+    item.refresh_from_db()
+    assert item.quantity == 10
+    assert item.batches.count() == 2
+    assert item.batches.get(raw_unit_cost=Decimal('2000.00')).quantity == 7
+    assert item.batches.get(raw_unit_cost=Decimal('2600.00')).quantity == 3
+
+
+@pytest.mark.django_db
+def test_general_batch_quantity_can_be_edited_but_not_below_sold(api_client, admin_user):
+    item = PartInventory.objects.create(
+        part_name='General starter', part_number='GST-1', category='Electrical', quantity=0, unit='piece',
+    )
+    created = api_client.post(
+        '/api/operations/inventory-batches/',
+        {'item': str(item.id), 'quantity': 5, 'raw_unit_cost': '7000.00', 'source_label': 'General inventory'},
+        format='json',
+    )
+    batch = InventoryBatch.objects.get(id=created.data['id'])
+    create_auction_sale(
+        user=admin_user,
+        sale_date=timezone.localdate(),
+        payment_type=AuctionSale.PaymentType.CASH,
+        lines=[{'inventory_batch': batch, 'quantity': 2, 'sold_price': Decimal('10000.00')}],
+    )
+
+    valid = api_client.patch(
+        f'/api/operations/inventory-batches/{batch.id}/',
+        {'quantity': 4, 'raw_unit_cost': '7500.00'},
+        format='json',
+    )
+    invalid = api_client.patch(
+        f'/api/operations/inventory-batches/{batch.id}/',
+        {'quantity': 1},
+        format='json',
+    )
+
+    assert valid.status_code == 200
+    assert valid.data['available_quantity'] == 2
+    assert valid.data['net_unit_cost'] == '7500.00'
+    assert invalid.status_code == 400
+    batch.refresh_from_db()
+    item.refresh_from_db()
+    assert batch.quantity == 4
+    assert item.quantity == 4
+
+
+@pytest.mark.django_db
+def test_general_batch_with_sales_cannot_be_deleted(api_client, admin_user):
+    item = PartInventory.objects.create(part_name='General sold part', quantity=1, unit='piece')
+    batch = InventoryBatch.objects.create(
+        item=item, quantity=1, raw_unit_cost=Decimal('100.00'), net_unit_cost=Decimal('100.00'),
+        source_label='General inventory',
+    )
+    create_auction_sale(
+        user=admin_user,
+        sale_date=timezone.localdate(),
+        payment_type=AuctionSale.PaymentType.CASH,
+        lines=[{'inventory_batch': batch, 'quantity': 1, 'sold_price': Decimal('200.00')}],
+    )
+
+    response = api_client.delete(f'/api/operations/inventory-batches/{batch.id}/')
+
+    assert response.status_code == 400
+    assert InventoryBatch.objects.filter(id=batch.id).exists()
+
+
+@pytest.mark.django_db
 def test_subpart_split_over_available_quantity_returns_validation_error(api_client):
     container = Container.objects.create(reference='CNT-API-SUB', status=Container.Status.READY_FOR_AUCTION)
     parent_part = PartInventory.objects.create(

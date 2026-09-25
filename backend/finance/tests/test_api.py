@@ -18,6 +18,7 @@ from finance.models import (
     CurrencySpending,
     CustomerLedgerEntry,
     CustomerPayment,
+    CustomerPaymentComponent,
     CustomerPaymentAllocation,
     CustomerPaymentTarget,
 )
@@ -72,6 +73,30 @@ def test_individual_customer_report_types(api_client, report_type):
     customer = Customer.objects.create(name='Report Customer', phone='+923001234567')
     response = api_client.get(f'/api/finance/customers/{customer.id}/statement/?report={report_type}')
     assert response.status_code == 200
+    assert response.content.startswith(b'%PDF')
+
+
+@pytest.mark.django_db
+def test_combined_customer_report_handles_maximum_length_payment_reference(api_client):
+    customer = Customer.objects.create(name='Long Reference Customer', phone='+923001234567')
+    payment = CustomerPayment.objects.create(
+        payment_number='PAY-LONG-REFERENCE',
+        customer=customer,
+        payment_date=timezone.localdate(),
+        kind=CustomerPayment.PaymentKind.BANK_TRANSFER,
+        total_amount=Decimal('1000.00'),
+    )
+    CustomerPaymentComponent.objects.create(
+        payment=payment,
+        method=CustomerPaymentComponent.Method.BANK_TRANSFER,
+        amount=Decimal('1000.00'),
+        reference='R' * 120,
+    )
+
+    response = api_client.get(f'/api/finance/customers/{customer.id}/statement/?report=combined')
+
+    assert response.status_code == 200
+    assert response['Content-Type'] == 'application/pdf'
     assert response.content.startswith(b'%PDF')
 
 

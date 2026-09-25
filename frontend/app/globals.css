@@ -1022,7 +1022,7 @@ td select {
 .source-line-grid {
   display: grid;
   grid-column: 1 / -1;
-  grid-template-columns: minmax(180px, 1.2fr) 100px minmax(130px, 0.7fr) minmax(160px, 1fr) 42px;
+  grid-template-columns: minmax(150px, 0.8fr) minmax(180px, 1.1fr) 100px minmax(130px, 0.7fr) minmax(160px, 1fr) 42px;
   gap: 10px;
   align-items: end;
 }

@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
@@ -14,6 +15,7 @@ from operations.services import (
     available_quantity_for_batch,
     available_quantity_for_item,
     create_auction_sale,
+    create_general_inventory_batch,
     create_subparts,
     issue_gate_pass,
     is_container_cost_locked,
@@ -23,6 +25,7 @@ from operations.services import (
     recalculate_container_net_costs,
     sold_quantity_for_item,
     sold_quantity_for_batch,
+    update_general_inventory_batch,
     update_auction_sale,
     update_gate_pass,
 )
@@ -396,10 +399,62 @@ class InventoryBatchSerializer(serializers.ModelSerializer):
 
 
 class PartInventorySourceWriteSerializer(serializers.Serializer):
-    container = serializers.PrimaryKeyRelatedField(queryset=Container.objects.all())
+    source_type = serializers.ChoiceField(choices=['container', 'general'], default='container')
+    container = serializers.PrimaryKeyRelatedField(
+        queryset=Container.objects.all(), required=False, allow_null=True,
+    )
+    source_label = serializers.CharField(required=False, allow_blank=True, default='')
     quantity = serializers.IntegerField(min_value=1)
     raw_unit_cost = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0.00'))
     description = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        if attrs['source_type'] == 'container' and not attrs.get('container'):
+            raise serializers.ValidationError({'container': 'Select a container for container inventory.'})
+        if attrs['source_type'] == 'general':
+            attrs['container'] = None
+        return attrs
+
+
+class GeneralInventoryBatchWriteSerializer(serializers.ModelSerializer):
+    merge_matching = serializers.BooleanField(write_only=True, required=False, default=True)
+
+    class Meta:
+        model = InventoryBatch
+        fields = ['id', 'item', 'quantity', 'raw_unit_cost', 'source_label', 'notes', 'merge_matching']
+        read_only_fields = ['id']
+        extra_kwargs = {
+            'quantity': {'min_value': 1},
+            'raw_unit_cost': {'min_value': Decimal('0.00')},
+            'source_label': {'required': False, 'allow_blank': True},
+            'notes': {'required': False, 'allow_blank': True},
+        }
+
+    def create(self, validated_data):
+        merge_matching = validated_data.pop('merge_matching', True)
+        try:
+            return create_general_inventory_batch(
+                user=self.context['request'].user,
+                merge_matching=merge_matching,
+                **validated_data,
+            )
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(error.message_dict) from error
+
+    def update(self, instance, validated_data):
+        validated_data.pop('item', None)
+        validated_data.pop('merge_matching', None)
+        try:
+            return update_general_inventory_batch(
+                user=self.context['request'].user,
+                batch=instance,
+                **validated_data,
+            )
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(error.message_dict) from error
+
+    def to_representation(self, instance):
+        return InventoryBatchSerializer(instance, context=self.context).data
 
 
 class PartInventorySerializer(serializers.ModelSerializer):
@@ -457,7 +512,7 @@ class PartInventorySerializer(serializers.ModelSerializer):
         if self.instance is not None and 'quantity' in attrs and int(quantity) != int(self.instance.quantity):
             raise serializers.ValidationError({'quantity': 'Edit the individual source rows to change stock quantity.'})
         if self.instance is None and not attrs.get('sources') and not attrs.get('source_container'):
-            raise serializers.ValidationError({'sources': 'At least one source container row is required when adding parts inventory directly.'})
+            raise serializers.ValidationError({'sources': 'Add at least one container or general inventory source.'})
         return attrs
 
     def create(self, validated_data):
@@ -473,28 +528,45 @@ class PartInventorySerializer(serializers.ModelSerializer):
                 'description': validated_data.get('description', ''),
             }]
         with transaction.atomic():
-            for source in sources or []:
-                item_serializer = ContainerItemSerializer(
-                    data={
-                        'container': str(source['container'].id),
-                        'part_name': validated_data['part_name'],
-                        'part_number': validated_data.get('part_number', '') or '',
-                        'category': validated_data.get('category', '') or '',
-                        'quantity': source['quantity'],
-                        'unit': validated_data.get('unit', 'piece') or 'piece',
-                        'raw_unit_cost': source['raw_unit_cost'],
-                        'description': source.get('description') or validated_data.get('description', ''),
-                    },
-                    context=self.context,
+            identity = {
+                'part_name': validated_data['part_name'],
+                'part_number': validated_data.get('part_number', '') or '',
+                'category': validated_data.get('category', '') or '',
+                'unit': validated_data.get('unit', 'piece') or 'piece',
+            }
+            instance = PartInventory.objects.select_for_update().filter(**identity).first()
+            if instance is None:
+                instance = PartInventory.objects.create(
+                    **identity,
+                    description=validated_data.get('description', ''),
+                    quantity=0,
+                    created_by=self.context['request'].user,
+                    updated_by=self.context['request'].user,
                 )
-                item_serializer.is_valid(raise_exception=True)
-                item_serializer.save(created_by=self.context['request'].user, updated_by=self.context['request'].user)
-            instance = PartInventory.objects.select_for_update().get(
-                part_name=validated_data['part_name'],
-                part_number=validated_data.get('part_number', '') or '',
-                category=validated_data.get('category', '') or '',
-                unit=validated_data.get('unit', 'piece') or 'piece',
-            )
+            for source in sources or []:
+                if source.get('source_type') == 'general':
+                    create_general_inventory_batch(
+                        user=self.context['request'].user,
+                        item=instance,
+                        quantity=source['quantity'],
+                        raw_unit_cost=source['raw_unit_cost'],
+                        source_label=source.get('source_label', ''),
+                        notes=source.get('description') or validated_data.get('description', ''),
+                    )
+                else:
+                    item_serializer = ContainerItemSerializer(
+                        data={
+                            'container': str(source['container'].id),
+                            **identity,
+                            'quantity': source['quantity'],
+                            'raw_unit_cost': source['raw_unit_cost'],
+                            'description': source.get('description') or validated_data.get('description', ''),
+                        },
+                        context=self.context,
+                    )
+                    item_serializer.is_valid(raise_exception=True)
+                    item_serializer.save(created_by=self.context['request'].user, updated_by=self.context['request'].user)
+            instance.refresh_from_db()
             return instance
 
     def update(self, instance, validated_data):
@@ -566,7 +638,7 @@ class AuctionSaleLineReadSerializer(serializers.ModelSerializer):
         batch = obj.inventory_batch
         if batch is None:
             return ''
-        source = batch.container.reference if batch.container_id else batch.source_label or 'Manual adjustment'
+        source = batch.container.reference if batch.container_id else batch.source_label or 'General inventory'
         return f'{obj.item.part_name} / {source}'
 
     def get_current_raw_unit_cost(self, obj):
