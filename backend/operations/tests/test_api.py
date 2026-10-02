@@ -11,7 +11,7 @@ from accounts.models import UserProfile
 from accounts.permissions import full_tab_permissions
 from finance.models import CustomerLedgerEntry
 from operations.models import AuctionSale, Container, ContainerItem, Customer, InventoryBatch, PartInventory
-from operations.reporting import build_container_profit_loss_report
+from operations.reporting import _auction_inventory_units, build_container_profit_loss_report, build_inventory_report
 from operations.services import create_auction_sale
 
 
@@ -467,6 +467,12 @@ def test_auction_inventory_sheet_requires_ready_container(api_client, admin_user
     assert response.status_code == 200
     assert response.content.startswith(b'%PDF')
     assert rejected.status_code == 404
+
+    units = _auction_inventory_units(build_inventory_report(container_id=ready.id))
+    assert len(units) == 2
+    assert [unit['unit_number'] for unit in units] == [1, 2]
+    assert all(unit['quantity'] == 2 for unit in units)
+    assert all(unit['part_name'] == 'Auction engine' for unit in units)
 
 
 @pytest.mark.django_db

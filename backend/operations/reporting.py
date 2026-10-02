@@ -412,6 +412,24 @@ def container_profit_loss_pdf_response(report: ContainerProfitLossReport) -> Htt
     return response
 
 
+def _auction_inventory_units(report: InventoryReport) -> list[dict]:
+    units = []
+    serial = 1
+    for row in report.rows:
+        quantity = int(row['available_quantity'])
+        for unit_number in range(1, quantity + 1):
+            units.append({
+                'serial': serial,
+                'part_name': row['part_name'],
+                'category': row['category'],
+                'unit': row['unit'],
+                'unit_number': unit_number,
+                'quantity': quantity,
+            })
+            serial += 1
+    return units
+
+
 def auction_inventory_sheet_pdf_response(container: Container) -> HttpResponse:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -444,17 +462,23 @@ def auction_inventory_sheet_pdf_response(container: Container) -> HttpResponse:
     ]))
     story.extend([details, Spacer(1, 12)])
 
-    rows = [['Item / Part Name', 'Category', 'Quantity', 'Selling Price']]
-    for row in report.rows:
+    rows = [['S.No.', 'Item / Part Name', 'Category', 'Unit', 'Buyer Name', 'Selling Price']]
+    for unit in _auction_inventory_units(report):
         rows.append([
-            Paragraph(escape(row['part_name']), cell_style),
-            Paragraph(escape(row['category'] or '-'), cell_style),
-            f"{row['available_quantity']} {row['unit']}",
+            str(unit['serial']),
+            Paragraph(escape(unit['part_name']), cell_style),
+            Paragraph(escape(unit['category'] or '-'), cell_style),
+            f"{unit['unit_number']} of {unit['quantity']} ({unit['unit']})",
+            '',
             '',
         ])
     if len(rows) == 1:
-        rows.append(['No available inventory', '', '', ''])
-    table = Table(rows, repeatRows=1, colWidths=[2.65 * inch, 1.65 * inch, 1.0 * inch, 1.8 * inch])
+        rows.append(['', 'No available inventory', '', '', '', ''])
+    table = Table(
+        rows,
+        repeatRows=1,
+        colWidths=[0.42 * inch, 1.82 * inch, 1.08 * inch, 0.95 * inch, 1.45 * inch, 1.35 * inch],
+    )
     table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#111827')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
@@ -464,11 +488,27 @@ def auction_inventory_sheet_pdf_response(container: Container) -> HttpResponse:
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('LEFTPADDING', (0, 0), (-1, -1), 6),
         ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-        ('TOPPADDING', (0, 1), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 1), (-1, -1), 10),
+        ('TOPPADDING', (0, 1), (-1, -1), 11),
+        ('BOTTOMPADDING', (0, 1), (-1, -1), 11),
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
     ]))
-    story.append(table)
+    totals = Table([
+        [Paragraph('<b>Auction Totals</b>', styles['Heading3']), '', '', ''],
+        ['Total Auction Sales', '', 'Total Inventory Cost', ''],
+    ], colWidths=[1.55 * inch, 2.0 * inch, 1.35 * inch, 2.17 * inch], rowHeights=[0.38 * inch, 0.72 * inch])
+    totals.setStyle(TableStyle([
+        ('SPAN', (0, 0), (-1, 0)),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f3faf7')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#0f4f4b')),
+        ('BOX', (0, 0), (-1, -1), 0.7, colors.HexColor('#64748b')),
+        ('GRID', (0, 1), (-1, -1), 0.45, colors.HexColor('#94a3b8')),
+        ('FONTNAME', (0, 1), (0, 1), 'Helvetica-Bold'),
+        ('FONTNAME', (2, 1), (2, 1), 'Helvetica-Bold'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 8),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+    ]))
+    story.extend([table, Spacer(1, 14), totals])
     doc.build(story)
     response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
     response['Content-Disposition'] = _content_disposition(f'zsp-auction-inventory-{container.reference}.pdf')
