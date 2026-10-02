@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models import Q
 
@@ -70,6 +71,20 @@ class Container(UserStampedModel):
 
     def __str__(self) -> str:
         return self.reference
+
+
+class ContainerStatusAppearance(UserStampedModel):
+    status = models.CharField(max_length=30, choices=Container.Status.choices, unique=True)
+    color = models.CharField(
+        max_length=7,
+        validators=[RegexValidator(r'^#[0-9A-Fa-f]{6}$', 'Enter a valid six-digit hex color.')],
+    )
+
+    class Meta:
+        ordering = ['status']
+
+    def __str__(self) -> str:
+        return f'{self.get_status_display()}: {self.color}'
 
 
 class ContainerItem(UserStampedModel):

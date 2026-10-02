@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass, GatePassLine, InventoryBatch, PartInventory
+from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, ContainerStatusAppearance, Customer, GatePass, GatePassLine, InventoryBatch, PartInventory
 
 
 @admin.register(Customer)
@@ -22,6 +22,11 @@ class ContainerAdmin(admin.ModelAdmin):
     search_fields = ('reference', 'supplier_name')
     list_filter = ('status', 'origin_country')
     inlines = [ContainerItemInline]
+
+
+@admin.register(ContainerStatusAppearance)
+class ContainerStatusAppearanceAdmin(admin.ModelAdmin):
+    list_display = ('status', 'color', 'updated_at')
 
 
 @admin.register(ContainerItem)

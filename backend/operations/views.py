@@ -1,3 +1,4 @@
+import re
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -15,7 +16,7 @@ from rest_framework.status import HTTP_409_CONFLICT
 
 from accounts.permissions import OperationsPermission, has_tab_access
 from finance.models import Cheque, CustomerLedgerEntry
-from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, Customer, GatePass, InventoryBatch, PartInventory
+from operations.models import AuctionSale, AuctionSaleLine, Container, ContainerItem, ContainerStatusAppearance, Customer, GatePass, InventoryBatch, PartInventory
 from operations.reporting import (
     build_inventory_report,
     inventory_report_csv_response,
@@ -63,6 +64,34 @@ raw_container_item_cost_expression = ExpressionWrapper(
     F('raw_unit_cost') * F('quantity'),
     output_field=DecimalField(max_digits=14, decimal_places=2),
 )
+
+DEFAULT_CONTAINER_STATUS_COLORS = {
+    Container.Status.CONTAINER_BOUGHT: '#64748B',
+    Container.Status.GODOWN_LOADING: '#7C3AED',
+    Container.Status.SHIP_LOADING: '#2563EB',
+    Container.Status.PORT_LOADING: '#0891B2',
+    Container.Status.PORT_OPEN: '#D97706',
+    Container.Status.PORT_CLOSE: '#EA580C',
+    Container.Status.EDAN_GATE: '#DC2626',
+    Container.Status.READY_FOR_AUCTION: '#16A34A',
+    Container.Status.CLOSED: '#334155',
+}
+
+
+def container_status_appearance_payload():
+    overrides = {
+        appearance.status: appearance.color.upper()
+        for appearance in ContainerStatusAppearance.objects.all()
+    }
+    return [
+        {
+            'status': status_value,
+            'label': status_label,
+            'color': overrides.get(status_value, DEFAULT_CONTAINER_STATUS_COLORS[status_value]),
+            'is_custom': status_value in overrides,
+        }
+        for status_value, status_label in Container.Status.choices
+    ]
 
 
 def sale_line_queryset():
@@ -464,6 +493,37 @@ class GatePassViewSet(viewsets.ModelViewSet):
         gate_pass = self.get_object()
         gate_pass = mark_gate_pass_printed(user=request.user, gate_pass=gate_pass)
         return Response(GatePassSerializer(gate_pass, context={'request': request}).data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET', 'POST'])
+def container_status_appearances(request):
+    can_view = has_tab_access(request.user, 'containers') or has_tab_access(request.user, 'settings')
+    if not can_view:
+        raise PermissionDenied('You do not have access to container status colors.')
+
+    if request.method == 'GET':
+        return Response(container_status_appearance_payload())
+
+    if not has_tab_access(request.user, 'settings', write=True):
+        raise PermissionDenied('Full Settings access is required to change container status colors.')
+
+    status_value = str(request.data.get('status', '')).strip()
+    color = str(request.data.get('color', '')).strip().upper()
+    valid_statuses = {value for value, _label in Container.Status.choices}
+    if status_value not in valid_statuses:
+        raise ValidationError({'status': 'Select a valid container status.'})
+    if not re.fullmatch(r'#[0-9A-F]{6}', color):
+        raise ValidationError({'color': 'Enter a valid six-digit hex color.'})
+
+    appearance, created = ContainerStatusAppearance.objects.get_or_create(
+        status=status_value,
+        defaults={'color': color, 'created_by': request.user, 'updated_by': request.user},
+    )
+    if not created:
+        appearance.color = color
+        appearance.updated_by = request.user
+        appearance.save(update_fields=['color', 'updated_by', 'updated_at'])
+    return Response(next(item for item in container_status_appearance_payload() if item['status'] == status_value))
 
 
 @api_view(['GET'])

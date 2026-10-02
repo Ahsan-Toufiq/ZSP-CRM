@@ -11,6 +11,7 @@ from operations.views import (
     inventory_report,
     container_tracking_report,
     container_profit_loss_report,
+    container_status_appearances,
     PartInventoryViewSet,
 )
 
@@ -28,4 +29,5 @@ urlpatterns = [
     path('inventory-report/', inventory_report, name='inventory-report'),
     path('container-tracking-report/', container_tracking_report, name='container-tracking-report'),
     path('container-profit-loss-report/', container_profit_loss_report, name='container-profit-loss-report'),
+    path('container-status-appearances/', container_status_appearances, name='container-status-appearances'),
 ]

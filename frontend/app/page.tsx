@@ -30,7 +30,7 @@ import {
 } from 'lucide-react';
 import Image from 'next/image';
 import PhoneInput from 'react-phone-number-input';
-import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { CSSProperties, FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { destroy, get, list, patch, post } from '@/lib/api';
 import type {
   AuctionSale,
@@ -38,6 +38,7 @@ import type {
   ChequeStatus,
   Container,
   ContainerItem,
+  ContainerStatusAppearance,
   CreditReport,
   CustomerReceivable,
   CustomerReceivableResponse,
@@ -280,6 +281,7 @@ export default function Home() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [containers, setContainers] = useState<Container[]>([]);
+  const [containerStatusAppearances, setContainerStatusAppearances] = useState<ContainerStatusAppearance[]>([]);
   const [items, setItems] = useState<ContainerItem[]>([]);
   const [parts, setParts] = useState<PartInventory[]>([]);
   const [sales, setSales] = useState<AuctionSale[]>([]);
@@ -353,17 +355,19 @@ export default function Home() {
       }
 
       if (tab === 'containers') {
-        const [containerData, itemData, partData, optionData] = await Promise.allSettled([
+        const [containerData, itemData, partData, optionData, appearanceData] = await Promise.allSettled([
           list<Container>('/operations/containers/?page_size=200'),
           list<ContainerItem>('/operations/items/?page_size=200'),
           list<PartInventory>('/operations/parts/?page_size=200'),
           list<DropdownOption>('/catalog/dropdown-options/?page_size=200'),
+          get<ContainerStatusAppearance[]>('/operations/container-status-appearances/'),
         ]);
         if (loadToken.current === token) {
           setContainers(valueOf(containerData, emptyPage<Container>()).results);
           setItems(valueOf(itemData, emptyPage<ContainerItem>()).results);
           setParts(valueOf(partData, emptyPage<PartInventory>()).results);
           setDropdownOptions(valueOf(optionData, emptyPage<DropdownOption>()).results);
+          setContainerStatusAppearances(valueOf(appearanceData, []));
         }
       }
 
@@ -432,13 +436,15 @@ export default function Home() {
       }
 
       if (tab === 'settings') {
-        const [statusData, optionData] = await Promise.allSettled([
+        const [statusData, optionData, appearanceData] = await Promise.allSettled([
           list<ChequeStatus>('/finance/cheque-statuses/?page_size=100'),
           list<DropdownOption>('/catalog/dropdown-options/?page_size=200'),
+          get<ContainerStatusAppearance[]>('/operations/container-status-appearances/'),
         ]);
         if (loadToken.current === token) {
           setChequeStatuses(valueOf(statusData, emptyPage<ChequeStatus>()).results);
           setDropdownOptions(valueOf(optionData, emptyPage<DropdownOption>()).results);
+          setContainerStatusAppearances(valueOf(appearanceData, []));
         }
       }
 
@@ -600,6 +606,18 @@ export default function Home() {
       await loadTabData(activeTab);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to update record.');
+    }
+  }
+
+  async function saveContainerStatusAppearance(status: string, color: string) {
+    setMessage('');
+    try {
+      const saved = await post<ContainerStatusAppearance>('/operations/container-status-appearances/', { status, color });
+      setContainerStatusAppearances((previous) => previous.map((item) => item.status === saved.status ? saved : item));
+      setMessage(`${saved.label} color updated.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to update container status color.');
+      throw error;
     }
   }
 
@@ -858,12 +876,12 @@ export default function Home() {
         {loading ? <LoadingState label={`Loading ${currentTitle.toLowerCase()}...`} /> : null}
         {!loading && activeTab === 'dashboard' ? <Dashboard summary={summary} /> : null}
         {!loading && activeTab === 'customers' ? <CustomersPanel canWrite={canWrite('customers')} customers={customers} creditReport={creditReport} onAdd={() => setModal({ type: 'customer' })} onEdit={(customer) => setModal({ type: 'customer', customer })} onDelete={(customer) => remove(`/operations/customers/${customer.id}/`)} onStatus={(customer) => quickPatch(`/operations/customers/${customer.id}/`, { is_active: !customer.is_active })} onDownloadReport={(format) => setModal({ type: 'all-customer-report', format })} onDownloadDailyReport={downloadDailyPaymentReport} onDownloadStatement={(customer) => setModal({ type: 'customer-report', customer })} onViewDetails={(customer) => setModal({ type: 'customer-details', customer })} onRecordPayment={(customer) => setModal({ type: 'customer-payment', customer })} onRecordPagePayment={() => setModal({ type: 'customer-payment' })} /> : null}
-        {!loading && activeTab === 'containers' ? <ContainersPanel canWrite={canWrite('containers')} containers={containers} items={items} itemsByContainer={itemsByContainer} parts={parts} expandedContainers={expandedContainers} expandedParts={expandedParts} inventoryPane={inventoryPane} onInventoryPaneChange={setInventoryPane} onToggleContainer={(id) => toggleSet(setExpandedContainers, id)} onTogglePart={(id) => toggleSet(setExpandedParts, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onDelete={(container) => remove(`/operations/containers/${container.id}/`)} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddSubparts={(item) => setModal({ type: 'subparts', parentItem: item })} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} onAddGeneralStock={(part) => setModal({ type: 'general-batch', part })} onEditGeneralBatch={(part, batch) => setModal({ type: 'general-batch', part, batch })} onDeleteGeneralBatch={(batch) => remove(`/operations/inventory-batches/${batch.id}/`)} onReports={() => setModal({ type: 'container-reports' })} onProfitLoss={downloadContainerProfitLoss} /> : null}
+        {!loading && activeTab === 'containers' ? <ContainersPanel canWrite={canWrite('containers')} containers={containers} statusAppearances={containerStatusAppearances} items={items} itemsByContainer={itemsByContainer} parts={parts} expandedContainers={expandedContainers} expandedParts={expandedParts} inventoryPane={inventoryPane} onInventoryPaneChange={setInventoryPane} onToggleContainer={(id) => toggleSet(setExpandedContainers, id)} onTogglePart={(id) => toggleSet(setExpandedParts, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onDelete={(container) => remove(`/operations/containers/${container.id}/`)} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddSubparts={(item) => setModal({ type: 'subparts', parentItem: item })} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} onAddGeneralStock={(part) => setModal({ type: 'general-batch', part })} onEditGeneralBatch={(part, batch) => setModal({ type: 'general-batch', part, batch })} onDeleteGeneralBatch={(batch) => remove(`/operations/inventory-batches/${batch.id}/`)} onReports={() => setModal({ type: 'container-reports' })} onProfitLoss={downloadContainerProfitLoss} /> : null}
         {!loading && activeTab === 'sales' ? <SalesPanel canWrite={canWrite('sales')} sales={sales} analytics={salesAnalytics} onLoadAnalytics={loadSalesAnalytics} onAdd={() => { setNewSaleCustomer(null); setModal({ type: 'sale' }); }} onEdit={(sale) => { setNewSaleCustomer(null); setModal({ type: 'sale', sale }); }} onPrint={printSaleGatePass} onDownloadInvoice={downloadSaleInvoice} onPrintInvoice={printSaleInvoice} onPrintThermalInvoice={printThermalInvoice} /> : null}
         {!loading && activeTab === 'cheques' ? <ChequesPanel canWrite={canWrite('cheques')} cheques={cheques} statuses={chequeStatuses} onAdd={() => setModal({ type: 'cheque' })} onEdit={(cheque) => setModal({ type: 'cheque', cheque })} onStatus={markChequeStatus} onAddStatus={() => setModal({ type: 'cheque-status' })} /> : null}
         {!loading && activeTab === 'currency' ? <CurrencyPanel canWrite={canWrite('currency')} currencies={currencies} purchases={currencyPurchases} openings={currencyOpenings} spending={currencySpending} creditors={currencyCreditors} repayments={currencyRepayments} onAddOpening={() => setModal({ type: 'currency-opening' })} onEditCurrency={(currency) => setModal({ type: 'currency', currency })} onAddPurchase={() => setModal({ type: 'currency-purchase' })} onEditPurchase={(purchase) => setModal({ type: 'currency-purchase', purchase })} onAddSpending={() => setModal({ type: 'currency-spending' })} onEditOpening={(opening) => setModal({ type: 'currency-opening', opening })} onEditSpending={(entry) => setModal({ type: 'currency-spending', spending: entry })} onAddCreditor={() => setModal({ type: 'currency-creditor' })} onEditCreditor={(creditor) => setModal({ type: 'currency-creditor', creditor })} onRepay={(purchase) => setModal({ type: 'currency-repayment', purchase })} onDownloadCreditor={downloadCurrencyCreditorStatement} /> : null}
         {!loading && activeTab === 'expenses' ? <ExpensesPanel canWrite={canWrite('expenses')} expenses={expenses} analytics={expenseAnalytics} onLoadAnalytics={loadExpenseAnalytics} onAdd={() => setModal({ type: 'expense' })} onEdit={(expense) => setModal({ type: 'expense', expense })} onDelete={(expense) => remove(`/finance/expenses/${expense.id}/`)} /> : null}
-        {!loading && activeTab === 'settings' ? <SettingsPanel canWrite={canWrite('settings')} options={dropdownOptions} chequeStatuses={chequeStatuses} onAdd={(group) => setModal({ type: 'dropdown-option', group })} onAddChequeStatus={() => setModal({ type: 'cheque-status' })} /> : null}
+        {!loading && activeTab === 'settings' ? <SettingsPanel canWrite={canWrite('settings')} options={dropdownOptions} chequeStatuses={chequeStatuses} statusAppearances={containerStatusAppearances} onSaveStatusColor={saveContainerStatusAppearance} onAdd={(group) => setModal({ type: 'dropdown-option', group })} onAddChequeStatus={() => setModal({ type: 'cheque-status' })} /> : null}
         {!loading && activeTab === 'users' ? <UsersPanel canWrite={canWrite('users')} users={managedUsers} currentUserId={currentUser?.id} deletingPath={deletingPath} onAdd={() => setModal({ type: 'user' })} onEdit={(user) => setModal({ type: 'user', user })} onDelete={(user) => remove(`/auth/users/${user.id}/`)} /> : null}
       </section>
       <ModalShell modal={modal} onClose={() => setModal(null)}>
@@ -1107,6 +1125,7 @@ function DailyPaymentsPanel({ onDownload }: { onDownload: (date: string) => void
 
 function ContainersPanel({
   containers,
+  statusAppearances,
   items,
   itemsByContainer,
   parts,
@@ -1134,6 +1153,7 @@ function ContainersPanel({
   onProfitLoss,
 }: {
   containers: Container[];
+  statusAppearances: ContainerStatusAppearance[];
   items: ContainerItem[];
   itemsByContainer: Map<UUID, ContainerItem[]>;
   parts: PartInventory[];
@@ -1163,6 +1183,10 @@ function ContainersPanel({
   const [partSearch, setPartSearch] = useState('');
   const [containerSearch, setContainerSearch] = useState('');
   const [containerItemSearch, setContainerItemSearch] = useState<Record<string, string>>({});
+  const statusColors = useMemo(
+    () => new Map(statusAppearances.map((appearance) => [appearance.status, appearance.color])),
+    [statusAppearances],
+  );
   const partQuery = partSearch.trim().toLowerCase();
   const containerQuery = containerSearch.trim().toLowerCase();
   const filteredParts = parts.filter((part) => {
@@ -1332,14 +1356,15 @@ function ContainersPanel({
                 return [parentRow, ...subpartRows];
               });
               const expanded = expandedContainers.has(container.id);
+              const statusColor = statusColors.get(container.status) || '#64748B';
               return (
-                <article className="container-card" key={container.id}>
+                <article className="container-card status-coded" key={container.id} style={{ '--status-color': statusColor } as CSSProperties}>
                   <div className="container-top">
                     <button className="record-main compact-main" onClick={() => onToggleContainer(container.id)}>
                       {expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
                       <div><strong>{container.reference}</strong><span>{container.current_location || container.origin_country || 'Location not set'} · {container.supplier_name || 'Agent not set'} · {container.size_type || 'Size not set'}</span></div>
                     </button>
-                    <span className={statusClass(container.status)}>{statusLabel(container.status)}</span>
+                    <span className={`${statusClass(container.status)} container-status-badge`}><i aria-hidden="true" />{statusLabel(container.status)}</span>
                   </div>
                   <div className="container-meta cost-meta">
                     <span>{container.arrival_date || 'No arrival date'}</span>
@@ -1784,9 +1809,53 @@ function ExpenseBreakdown({ title, rows, field, max }: { title: string; rows: Ex
   return <div className="analytics-card"><h3>{title}</h3>{rows.length ? <div className="bar-list">{rows.map((row, index) => { const label = String(row[field] || 'Not specified'); return <div className="bar-row" key={`${label}-${index}`}><span>{label}</span><div className="bar-track"><i style={{ width: `${Math.max((Number(row.total_amount) / max) * 100, 2)}%` }} /></div><strong>{money(row.total_amount)}</strong><small>{row.count}</small></div>; })}</div> : <div className="empty-state">No breakdown available.</div>}</div>;
 }
 
-function SettingsPanel({ options, chequeStatuses, canWrite, onAdd, onAddChequeStatus }: { options: DropdownOption[]; chequeStatuses: ChequeStatus[]; canWrite: boolean; onAdd: (group?: DropdownOption['group']) => void; onAddChequeStatus: () => void }) {
+function SettingsPanel({ options, chequeStatuses, statusAppearances, canWrite, onAdd, onAddChequeStatus, onSaveStatusColor }: { options: DropdownOption[]; chequeStatuses: ChequeStatus[]; statusAppearances: ContainerStatusAppearance[]; canWrite: boolean; onAdd: (group?: DropdownOption['group']) => void; onAddChequeStatus: () => void; onSaveStatusColor: (status: string, color: string) => Promise<void> }) {
   const groups: DropdownOption['group'][] = ['bank', 'part_name', 'item_category', 'item_unit', 'container_size_type', 'expense_title', 'expense_category', 'expense_payee', 'expense_payment_method'];
-  return <section className="panel"><div className="section-head"><div><h2>Dropdown settings</h2><p className="muted">Persisted values here appear in future entry dialogs for all users.</p></div>{canWrite ? <button className="btn primary" onClick={() => onAdd()}><Plus size={18} /> Dropdown value</button> : null}</div><div className="settings-grid">{groups.map((group) => <article className="option-card" key={group}><div className="section-head slim"><h3>{group.replace('_', ' ')}</h3>{canWrite ? <button className="icon-btn" onClick={() => onAdd(group)} aria-label={`Add ${group}`}><Plus size={16} /></button> : null}</div><div className="chips">{options.filter((option) => option.group === group && option.is_active).map((option) => <span className="chip" key={option.id}>{option.label}</span>)}</div></article>)}<article className="option-card"><div className="section-head slim"><h3>cheque statuses</h3>{canWrite ? <button className="icon-btn" onClick={onAddChequeStatus} aria-label="Add cheque status"><Plus size={16} /></button> : null}</div><div className="chips">{chequeStatuses.filter((status) => status.is_active).map((status) => <span className="chip" key={status.id}>{status.name}<small>{status.balance_effect.replaceAll('_', ' ')}</small></span>)}</div></article></div></section>;
+  return (
+    <section className="panel">
+      <div className="section-head">
+        <div><h2>Dropdown settings</h2><p className="muted">Persisted values and visual status markers shared by all users.</p></div>
+        {canWrite ? <button className="btn primary" onClick={() => onAdd()}><Plus size={18} /> Dropdown value</button> : null}
+      </div>
+      <section className="status-color-section" aria-labelledby="container-status-colors-title">
+        <div className="section-head slim">
+          <div><h3 id="container-status-colors-title">Container status colors</h3><p className="muted">These colors mark container cards throughout the Containers view.</p></div>
+        </div>
+        <div className="status-color-list">
+          {statusAppearances.map((appearance) => <StatusColorRow key={appearance.status} appearance={appearance} canWrite={canWrite} onSave={onSaveStatusColor} />)}
+        </div>
+      </section>
+      <div className="settings-grid">
+        {groups.map((group) => <article className="option-card" key={group}><div className="section-head slim"><h3>{group.replace('_', ' ')}</h3>{canWrite ? <button className="icon-btn" onClick={() => onAdd(group)} aria-label={`Add ${group}`}><Plus size={16} /></button> : null}</div><div className="chips">{options.filter((option) => option.group === group && option.is_active).map((option) => <span className="chip" key={option.id}>{option.label}</span>)}</div></article>)}
+        <article className="option-card"><div className="section-head slim"><h3>cheque statuses</h3>{canWrite ? <button className="icon-btn" onClick={onAddChequeStatus} aria-label="Add cheque status"><Plus size={16} /></button> : null}</div><div className="chips">{chequeStatuses.filter((status) => status.is_active).map((status) => <span className="chip" key={status.id}>{status.name}<small>{status.balance_effect.replaceAll('_', ' ')}</small></span>)}</div></article>
+      </div>
+    </section>
+  );
+}
+
+function StatusColorRow({ appearance, canWrite, onSave }: { appearance: ContainerStatusAppearance; canWrite: boolean; onSave: (status: string, color: string) => Promise<void> }) {
+  const [draft, setDraft] = useState(appearance.color);
+  const [saving, setSaving] = useState(false);
+  const validColor = /^#[0-9A-Fa-f]{6}$/.test(draft);
+  const changed = draft.toUpperCase() !== appearance.color.toUpperCase();
+
+  async function saveColor() {
+    setSaving(true);
+    try {
+      await onSave(appearance.status, draft);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="status-color-row">
+      <input className="status-color-swatch" type="color" value={validColor ? draft : appearance.color} onChange={(event) => setDraft(event.target.value.toUpperCase())} aria-label={`Choose ${appearance.label} color`} disabled={!canWrite} />
+      <div className="status-color-name"><strong>{appearance.label}</strong><span>{appearance.is_custom ? 'Custom color' : 'Default color'}</span></div>
+      <input className="status-color-hex" value={draft} onChange={(event) => setDraft(event.target.value.toUpperCase())} aria-label={`${appearance.label} hex color`} pattern="#[0-9A-Fa-f]{6}" maxLength={7} disabled={!canWrite} />
+      {canWrite ? <button className="btn small" type="button" disabled={!validColor || !changed || saving} onClick={() => void saveColor()}>{saving ? <ProcessingLoader /> : <BadgeCheck size={15} />} Save</button> : null}
+    </div>
+  );
 }
 
 function CustomerForm({ customer, onSave, isSaving }: { customer?: Customer; onSave: SaveHandler; isSaving: boolean }) {

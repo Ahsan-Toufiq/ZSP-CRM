@@ -51,6 +51,13 @@ export interface Container {
   item_count: number;
 }
 
+export interface ContainerStatusAppearance {
+  status: string;
+  label: string;
+  color: string;
+  is_custom: boolean;
+}
+
 export interface ContainerItem {
   id: UUID;
   container: UUID;

@@ -52,6 +52,31 @@ def test_view_only_module_access_can_read_but_not_write(api_client):
 
 
 @pytest.mark.django_db
+def test_container_users_can_read_status_colors_but_only_settings_users_can_change_them(api_client):
+    viewer = user_with_permissions('container-color-viewer', {'containers': AccessLevel.VIEW})
+    api_client.login(username=viewer.username, password='StrongPass123!')
+
+    read_response = api_client.get('/api/operations/container-status-appearances/')
+    write_response = api_client.post(
+        '/api/operations/container-status-appearances/',
+        {'status': 'closed', 'color': '#111827'},
+        format='json',
+    )
+
+    assert read_response.status_code == 200
+    assert write_response.status_code == 403
+
+    manager = user_with_permissions('container-color-manager', {'settings': AccessLevel.FULL})
+    api_client.login(username=manager.username, password='StrongPass123!')
+    manager_response = api_client.post(
+        '/api/operations/container-status-appearances/',
+        {'status': 'closed', 'color': '#111827'},
+        format='json',
+    )
+    assert manager_response.status_code == 200
+
+
+@pytest.mark.django_db
 def test_full_module_access_can_write_matching_module(api_client):
     user = user_with_permissions('settings-manager', {'settings': AccessLevel.FULL})
     api_client.login(username=user.username, password='StrongPass123!')

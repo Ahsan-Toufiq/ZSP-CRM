@@ -10,7 +10,7 @@ from rest_framework.test import APIClient
 from accounts.models import UserProfile
 from accounts.permissions import full_tab_permissions
 from finance.models import CustomerLedgerEntry
-from operations.models import AuctionSale, Container, ContainerItem, Customer, InventoryBatch, PartInventory
+from operations.models import AuctionSale, Container, ContainerItem, ContainerStatusAppearance, Customer, InventoryBatch, PartInventory
 from operations.reporting import _auction_inventory_units, build_container_profit_loss_report, build_inventory_report
 from operations.services import create_auction_sale
 
@@ -37,6 +37,46 @@ def test_customer_without_transactions_can_be_deleted(api_client):
 
     assert response.status_code == 204
     assert not Customer.objects.filter(id=customer.id).exists()
+
+
+@pytest.mark.django_db
+def test_container_status_colors_return_defaults_and_persist_overrides(api_client):
+    defaults = api_client.get('/api/operations/container-status-appearances/')
+
+    assert defaults.status_code == 200
+    assert len(defaults.data) == len(Container.Status.choices)
+    ready = next(item for item in defaults.data if item['status'] == Container.Status.READY_FOR_AUCTION)
+    assert ready == {
+        'status': Container.Status.READY_FOR_AUCTION,
+        'label': 'Ready for auction',
+        'color': '#16A34A',
+        'is_custom': False,
+    }
+
+    updated = api_client.post(
+        '/api/operations/container-status-appearances/',
+        {'status': Container.Status.READY_FOR_AUCTION, 'color': '#123abc'},
+        format='json',
+    )
+
+    assert updated.status_code == 200
+    assert updated.data['color'] == '#123ABC'
+    assert updated.data['is_custom'] is True
+    assert ContainerStatusAppearance.objects.get(status=Container.Status.READY_FOR_AUCTION).color == '#123ABC'
+
+
+@pytest.mark.django_db
+def test_invalid_container_status_color_does_not_replace_existing_override(api_client):
+    ContainerStatusAppearance.objects.create(status=Container.Status.CLOSED, color='#112233')
+
+    response = api_client.post(
+        '/api/operations/container-status-appearances/',
+        {'status': Container.Status.CLOSED, 'color': 'not-a-color'},
+        format='json',
+    )
+
+    assert response.status_code == 400
+    assert ContainerStatusAppearance.objects.get(status=Container.Status.CLOSED).color == '#112233'
 
 
 @pytest.mark.django_db
