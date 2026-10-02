@@ -14,7 +14,7 @@ class AccessLevel:
     FULL = 'full'
 
 
-ALL_TABS = {'dashboard', 'customers', 'containers', 'sales', 'cheques', 'currency', 'settings', 'users'}
+ALL_TABS = {'dashboard', 'customers', 'containers', 'sales', 'cheques', 'currency', 'expenses', 'settings', 'users'}
 PERMANENT_ADMIN_USERNAME = 'admin'
 
 VIEW_TAB_MAP = {
@@ -34,6 +34,7 @@ VIEW_TAB_MAP = {
     'CurrencyCreditorRepaymentViewSet': 'currency',
     'CurrencyOpeningBalanceViewSet': 'currency',
     'CurrencySpendingViewSet': 'currency',
+    'ExpenseViewSet': 'expenses',
     'DropdownOptionViewSet': 'settings',
 }
 

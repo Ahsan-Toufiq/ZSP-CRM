@@ -11,6 +11,7 @@ from accounts.models import UserProfile
 from accounts.permissions import full_tab_permissions
 from finance.models import CustomerLedgerEntry
 from operations.models import AuctionSale, Container, ContainerItem, Customer, InventoryBatch, PartInventory
+from operations.reporting import build_container_profit_loss_report
 from operations.services import create_auction_sale
 
 
@@ -466,6 +467,43 @@ def test_auction_inventory_sheet_requires_ready_container(api_client, admin_user
     assert response.status_code == 200
     assert response.content.startswith(b'%PDF')
     assert rejected.status_code == 404
+
+
+@pytest.mark.django_db
+def test_container_profit_loss_report_uses_current_batch_costs(api_client, admin_user):
+    container = Container.objects.create(
+        reference='PNL-CNT-001',
+        status=Container.Status.READY_FOR_AUCTION,
+        added_cost=Decimal('200.00'),
+        created_by=admin_user,
+        updated_by=admin_user,
+    )
+    item = PartInventory.objects.create(part_name='P&L engine', quantity=10, unit='piece')
+    batch = InventoryBatch.objects.create(
+        item=item,
+        container=container,
+        quantity=10,
+        raw_unit_cost=Decimal('100.00'),
+        net_unit_cost=Decimal('120.00'),
+    )
+    create_auction_sale(
+        user=admin_user,
+        sale_date=timezone.localdate(),
+        payment_type=AuctionSale.PaymentType.CASH,
+        lines=[{'inventory_batch': batch, 'quantity': 3, 'sold_price': Decimal('200.00')}],
+    )
+
+    report = build_container_profit_loss_report(container=container)
+    response = api_client.get(f'/api/operations/container-profit-loss-report/?container={container.id}')
+    missing = api_client.get('/api/operations/container-profit-loss-report/')
+
+    assert report.totals['revenue'] == Decimal('600.00')
+    assert report.totals['sold_cost'] == Decimal('360.00')
+    assert report.totals['gross_profit'] == Decimal('240.00')
+    assert report.totals['remaining_inventory_value'] == Decimal('840.00')
+    assert response.status_code == 200
+    assert response.content.startswith(b'%PDF')
+    assert missing.status_code == 400
 
 
 @pytest.mark.django_db

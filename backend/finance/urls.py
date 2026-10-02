@@ -10,6 +10,7 @@ from finance.views import (
     CurrencyOpeningBalanceViewSet,
     CurrencySpendingViewSet,
     CurrencyViewSet,
+    ExpenseViewSet,
     CustomerBalanceViewSet,
     CustomerPaymentViewSet,
     customer_receivable_list,
@@ -32,6 +33,7 @@ router.register('currency-creditors', CurrencyCreditorViewSet, basename='currenc
 router.register('currency-creditor-repayments', CurrencyCreditorRepaymentViewSet, basename='currency-creditor-repayment')
 router.register('currency-opening-balances', CurrencyOpeningBalanceViewSet, basename='currency-opening-balance')
 router.register('currency-spending', CurrencySpendingViewSet, basename='currency-spending')
+router.register('expenses', ExpenseViewSet, basename='expense')
 
 urlpatterns = [
     path('dashboard-summary/', dashboard_summary, name='dashboard-summary'),

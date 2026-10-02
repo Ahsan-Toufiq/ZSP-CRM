@@ -18,6 +18,7 @@ from finance.models import (
     CurrencyOpeningBalance,
     CurrencyPurchase,
     CurrencySpending,
+    Expense,
     CustomerLedgerEntry,
     CustomerPayment,
     CustomerPaymentAllocation,
@@ -792,3 +793,37 @@ class CurrencySpendingSerializer(CurrencyReferenceSerializerMixin, serializers.M
             )
         except DjangoValidationError as error:
             raise serializers.ValidationError(error.message_dict) from error
+
+
+class ExpenseSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Expense
+        fields = [
+            'id', 'expense_date', 'title', 'category', 'amount', 'payee',
+            'payment_method', 'reference', 'notes', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError('Amount must be greater than zero.')
+        return value
+
+    def _persist_options(self, validated_data):
+        user = self.context['request'].user
+        groups = {
+            'title': DropdownOption.Group.EXPENSE_TITLE,
+            'category': DropdownOption.Group.EXPENSE_CATEGORY,
+            'payee': DropdownOption.Group.EXPENSE_PAYEE,
+            'payment_method': DropdownOption.Group.EXPENSE_PAYMENT_METHOD,
+        }
+        for field, group in groups.items():
+            ensure_dropdown_option(group=group, label=validated_data.get(field, ''), user=user)
+
+    def create(self, validated_data):
+        self._persist_options(validated_data)
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        self._persist_options(validated_data)
+        return super().update(instance, validated_data)

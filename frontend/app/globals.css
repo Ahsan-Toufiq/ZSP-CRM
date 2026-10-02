@@ -580,6 +580,29 @@ h3 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.report-family-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.report-center-detail,
+.report-option-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.report-center-detail {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbfa;
+}
+
+.report-option-panel h3,
+.report-center-detail h3 {
+  margin: 0;
+  text-transform: none;
+}
+
 .download-format-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -674,6 +697,16 @@ h3 {
 
 .analytics-apply {
   min-width: 130px;
+}
+
+.quick-range-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.expense-period-list .bar-row {
+  grid-template-columns: 112px minmax(90px, 1fr) 112px 72px;
 }
 
 .analytics-card {
@@ -2055,6 +2088,7 @@ td select {
   .analytics-controls,
   .payment-method-fields,
   .payment-cheque-fields,
+  .report-family-grid,
   .export-choice-grid,
   .download-format-grid,
   .payment-mode-grid,

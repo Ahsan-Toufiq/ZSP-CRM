@@ -16,6 +16,7 @@ from finance.models import (
     CurrencyOpeningBalance,
     CurrencyPurchase,
     CurrencySpending,
+    Expense,
     CustomerLedgerEntry,
     CustomerPayment,
     CustomerPaymentComponent,
@@ -617,3 +618,57 @@ def test_acquisition_cannot_be_reduced_or_deleted_below_recorded_spending(api_cl
     assert 'amount' in reduction.data
     assert deletion.status_code == 400
     assert CurrencyOpeningBalance.objects.filter(pk=opening.id).exists()
+
+
+@pytest.mark.django_db
+def test_expense_crud_persists_reusable_dropdown_values(api_client):
+    response = api_client.post(
+        '/api/finance/expenses/',
+        {
+            'expense_date': str(timezone.localdate()),
+            'title': 'Workshop maintenance',
+            'category': 'Repairs',
+            'amount': '12500.00',
+            'payee': 'Local mechanic',
+            'payment_method': 'Cash',
+            'reference': 'EXP-TEST-001',
+        },
+        format='json',
+    )
+
+    assert response.status_code == 201
+    assert Expense.objects.get(pk=response.data['id']).amount == Decimal('12500.00')
+    expected_options = {
+        ('expense_title', 'Workshop maintenance'),
+        ('expense_category', 'Repairs'),
+        ('expense_payee', 'Local mechanic'),
+        ('expense_payment_method', 'Cash'),
+    }
+    from catalog.models import DropdownOption
+    assert expected_options.issubset(set(DropdownOption.objects.values_list('group', 'label')))
+
+    invalid = api_client.post(
+        '/api/finance/expenses/',
+        {'expense_date': str(timezone.localdate()), 'title': 'Invalid', 'category': 'Test', 'amount': '0.00'},
+        format='json',
+    )
+    assert invalid.status_code == 400
+    assert 'amount' in invalid.data
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('granularity', ['day', 'week', 'month', 'year'])
+def test_expense_analytics_supports_all_time_groupings(api_client, granularity):
+    today = timezone.localdate()
+    Expense.objects.create(expense_date=today - timedelta(days=8), title='Rent', category='Premises', amount=Decimal('1000.00'))
+    Expense.objects.create(expense_date=today, title='Labour', category='Operations', amount=Decimal('2500.00'))
+
+    response = api_client.get(
+        f'/api/finance/expenses/analytics/?start={today - timedelta(days=30)}&end={today}&granularity={granularity}'
+    )
+
+    assert response.status_code == 200
+    assert response.data['totals']['total'] == Decimal('3500.00')
+    assert response.data['totals']['count'] == 2
+    assert response.data['date_bounds']['granularity'] == granularity
+    assert response.data['selected']

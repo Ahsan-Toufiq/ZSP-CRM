@@ -10,6 +10,7 @@ from django.utils import timezone
 from accounts.models import UserProfile
 from accounts.permissions import AccessLevel, full_tab_permissions
 from catalog.models import DropdownOption
+from catalog.services import ensure_dropdown_option
 from finance.models import (
     Cheque,
     ChequeStatus,
@@ -19,6 +20,7 @@ from finance.models import (
     CurrencyOpeningBalance,
     CurrencyPurchase,
     CurrencySpending,
+    Expense,
     CustomerLedgerEntry,
     CustomerPayment,
     CustomerPaymentComponent,
@@ -59,7 +61,7 @@ class Command(BaseCommand):
 
         demo_users = [
             ('operator', 'Operations', 'User', 'Operator@12345', {'dashboard': AccessLevel.VIEW, 'customers': AccessLevel.FULL, 'containers': AccessLevel.FULL, 'sales': AccessLevel.FULL}),
-            ('finance', 'Finance', 'User', 'Finance@12345', {'dashboard': AccessLevel.VIEW, 'customers': AccessLevel.VIEW, 'cheques': AccessLevel.FULL}),
+            ('finance', 'Finance', 'User', 'Finance@12345', {'dashboard': AccessLevel.VIEW, 'customers': AccessLevel.VIEW, 'cheques': AccessLevel.FULL, 'expenses': AccessLevel.FULL}),
             ('viewer', 'Read Only', 'User', 'Viewer@12345', {'dashboard': AccessLevel.VIEW, 'customers': AccessLevel.VIEW, 'containers': AccessLevel.VIEW, 'sales': AccessLevel.VIEW, 'cheques': AccessLevel.VIEW}),
         ]
         for username, first_name, last_name, password, permissions in demo_users:
@@ -83,6 +85,7 @@ class Command(BaseCommand):
 
         self._seed_customer_payments(admin)
         self._seed_currency_portfolio(admin)
+        self._seed_expenses(admin)
 
         self.stdout.write(self.style.SUCCESS('Seeded Digi7 ZSP demo data. Login: admin / Admin@12345'))
 
@@ -828,6 +831,44 @@ class Command(BaseCommand):
                     'spending_date': today - timedelta(days=days_ago),
                     'amount': Decimal(amount),
                     'purpose': purpose,
+                    'created_by': admin,
+                    'updated_by': admin,
+                },
+            )
+
+    def _seed_expenses(self, admin):
+        today = timezone.localdate()
+        specs = [
+            (0, 'Godown electricity', 'Utilities', '28500.00', 'K-Electric', 'Bank transfer', 'EXP-DEMO-001'),
+            (1, 'Auction labour', 'Labour', '18000.00', 'Daily labour team', 'Cash', 'EXP-DEMO-002'),
+            (3, 'Local transport', 'Transport', '32000.00', 'Karachi Goods Carrier', 'Cash', 'EXP-DEMO-003'),
+            (8, 'Godown rent', 'Rent', '185000.00', 'Property owner', 'Bank transfer', 'EXP-DEMO-004'),
+            (15, 'Port documentation', 'Port charges', '42500.00', 'Clearing agent', 'Cheque', 'EXP-DEMO-005'),
+            (32, 'Godown electricity', 'Utilities', '26750.00', 'K-Electric', 'Bank transfer', 'EXP-DEMO-006'),
+            (48, 'Auction refreshments', 'Staff welfare', '12500.00', 'Local caterer', 'Cash', 'EXP-DEMO-007'),
+            (75, 'Office stationery', 'Office', '8600.00', 'Stationery supplier', 'Cash', 'EXP-DEMO-008'),
+            (110, 'Godown rent', 'Rent', '175000.00', 'Property owner', 'Bank transfer', 'EXP-DEMO-009'),
+            (190, 'Local transport', 'Transport', '29500.00', 'Karachi Goods Carrier', 'Cash', 'EXP-DEMO-010'),
+            (370, 'Annual software subscription', 'Office', '48000.00', 'Software vendor', 'Bank transfer', 'EXP-DEMO-011'),
+        ]
+        for days_ago, title, category, amount, payee, payment_method, reference in specs:
+            for group, label in [
+                (DropdownOption.Group.EXPENSE_TITLE, title),
+                (DropdownOption.Group.EXPENSE_CATEGORY, category),
+                (DropdownOption.Group.EXPENSE_PAYEE, payee),
+                (DropdownOption.Group.EXPENSE_PAYMENT_METHOD, payment_method),
+            ]:
+                ensure_dropdown_option(group=group, label=label, user=admin)
+            Expense.objects.get_or_create(
+                reference=reference,
+                defaults={
+                    'expense_date': today - timedelta(days=days_ago),
+                    'title': title,
+                    'category': category,
+                    'amount': Decimal(amount),
+                    'payee': payee,
+                    'payment_method': payment_method,
+                    'notes': 'Seeded local expense for analytics testing.',
                     'created_by': admin,
                     'updated_by': admin,
                 },

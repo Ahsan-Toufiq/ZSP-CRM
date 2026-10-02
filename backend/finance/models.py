@@ -485,4 +485,30 @@ class CurrencySpending(UserStampedModel):
     def __str__(self) -> str:
         return f'{self.currency.code} spent {self.amount} on {self.spending_date}'
 
+
+class Expense(UserStampedModel):
+    expense_date = models.DateField()
+    title = models.CharField(max_length=180)
+    category = models.CharField(max_length=120)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    payee = models.CharField(max_length=180, blank=True)
+    payment_method = models.CharField(max_length=120, blank=True)
+    reference = models.CharField(max_length=120, blank=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['-expense_date', '-created_at']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(amount__gt=0), name='expense_amount_positive'),
+        ]
+        indexes = [
+            models.Index(fields=['expense_date']),
+            models.Index(fields=['category', 'expense_date']),
+            models.Index(fields=['payment_method', 'expense_date']),
+            models.Index(fields=['title']),
+        ]
+
+    def __str__(self) -> str:
+        return f'{self.title} - {self.amount} on {self.expense_date}'
+
 # Create your models here.

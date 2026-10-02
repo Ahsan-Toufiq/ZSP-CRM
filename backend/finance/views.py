@@ -1,8 +1,8 @@
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import Count, DecimalField, F, Prefetch, Q, Sum, Value
-from django.db.models.functions import Coalesce
+from django.db.models import Avg, Count, DecimalField, F, Max, Min, Prefetch, Q, Sum, Value
+from django.db.models.functions import Coalesce, TruncMonth, TruncWeek, TruncYear
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -23,6 +23,7 @@ from finance.models import (
     CurrencyOpeningBalance,
     CurrencyPurchase,
     CurrencySpending,
+    Expense,
     CustomerLedgerEntry,
     CustomerPayment,
     CustomerPaymentAllocation,
@@ -51,6 +52,7 @@ from finance.serializers import (
     CurrencySerializer,
     CurrencyOpeningBalanceSerializer,
     CurrencySpendingSerializer,
+    ExpenseSerializer,
     CustomerBalanceSerializer,
     CustomerLedgerEntrySerializer,
     CustomerPaymentCreateSerializer,
@@ -65,6 +67,81 @@ class UserStampedMixin:
 
     def perform_update(self, serializer):
         serializer.save(updated_by=self.request.user)
+
+
+class ExpenseViewSet(UserStampedMixin, viewsets.ModelViewSet):
+    queryset = Expense.objects.all()
+    serializer_class = ExpenseSerializer
+    permission_classes = [FinancePermission]
+    filterset_fields = ['expense_date', 'category', 'payment_method', 'title', 'payee']
+    search_fields = ['title', 'category', 'payee', 'payment_method', 'reference', 'notes']
+    ordering_fields = ['expense_date', 'amount', 'title', 'category', 'created_at']
+
+    def get_queryset(self):
+        queryset = Expense.objects.all()
+        start = parse_date(self.request.query_params.get('start', ''))
+        end = parse_date(self.request.query_params.get('end', ''))
+        if start:
+            queryset = queryset.filter(expense_date__gte=start)
+        if end:
+            queryset = queryset.filter(expense_date__lte=end)
+        return queryset.order_by('-expense_date', '-created_at')
+
+    @action(detail=False, methods=['get'])
+    def analytics(self, request):
+        bounds = Expense.objects.aggregate(oldest=Min('expense_date'), latest=Max('expense_date'))
+        oldest = bounds['oldest']
+        latest = bounds['latest']
+        start = parse_date(request.query_params.get('start', '')) or oldest
+        end = parse_date(request.query_params.get('end', '')) or latest
+        if start and end and start > end:
+            raise DRFValidationError({'end': 'End date must be on or after start date.'})
+
+        granularity = request.query_params.get('granularity', 'month').lower()
+        if granularity not in {'day', 'week', 'month', 'year'}:
+            raise DRFValidationError({'granularity': 'Use day, week, month, or year.'})
+
+        queryset = Expense.objects.all()
+        if start:
+            queryset = queryset.filter(expense_date__gte=start)
+        if end:
+            queryset = queryset.filter(expense_date__lte=end)
+
+        totals = queryset.aggregate(
+            total=Coalesce(Sum('amount'), Value(Decimal('0.00')), output_field=DecimalField(max_digits=16, decimal_places=2)),
+            average=Coalesce(Avg('amount'), Value(Decimal('0.00')), output_field=DecimalField(max_digits=16, decimal_places=2)),
+            largest=Coalesce(Max('amount'), Value(Decimal('0.00')), output_field=DecimalField(max_digits=16, decimal_places=2)),
+            count=Count('id'),
+        )
+
+        truncators = {'week': TruncWeek, 'month': TruncMonth, 'year': TruncYear}
+        if granularity == 'day':
+            period_rows = queryset.values(period=F('expense_date')).annotate(total=Sum('amount'), count=Count('id')).order_by('period')
+        else:
+            period_rows = queryset.annotate(period=truncators[granularity]('expense_date')).values('period').annotate(total=Sum('amount'), count=Count('id')).order_by('period')
+
+        def period_value(value):
+            if hasattr(value, 'date'):
+                value = value.date()
+            return value.isoformat()
+
+        return Response({
+            'generated_at': timezone.localtime(),
+            'date_bounds': {
+                'oldest_expense_date': oldest,
+                'latest_expense_date': latest,
+                'start': start,
+                'end': end,
+                'granularity': granularity,
+            },
+            'totals': totals,
+            'selected': [
+                {'period': period_value(row['period']), 'total_amount': row['total'], 'count': row['count']}
+                for row in period_rows
+            ],
+            'categories': list(queryset.values('category').annotate(total_amount=Sum('amount'), count=Count('id')).order_by('-total_amount', 'category')),
+            'payment_methods': list(queryset.values('payment_method').annotate(total_amount=Sum('amount'), count=Count('id')).order_by('-total_amount', 'payment_method')),
+        })
 
 
 class ChequeStatusViewSet(UserStampedMixin, viewsets.ModelViewSet):

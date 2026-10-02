@@ -23,6 +23,8 @@ from operations.reporting import (
     auction_inventory_sheet_pdf_response,
     container_tracking_pdf_response,
     container_tracking_xlsx_response,
+    build_container_profit_loss_report,
+    container_profit_loss_pdf_response,
     sale_invoice_pdf_response,
     sale_thermal_invoice_pdf_response,
 )
@@ -498,3 +500,15 @@ def container_tracking_report(request):
     if export_format == 'xlsx':
         return container_tracking_xlsx_response(containers)
     raise ValidationError({'export': 'Supported export formats are pdf and xlsx.'})
+
+
+@api_view(['GET'])
+def container_profit_loss_report(request):
+    if not has_tab_access(request.user, 'containers'):
+        raise PermissionDenied('You do not have access to container profit and loss reports.')
+    container_id = request.query_params.get('container')
+    if not container_id:
+        raise ValidationError({'container': 'Select a container.'})
+    container = get_object_or_404(Container, id=container_id)
+    report = build_container_profit_loss_report(container=container)
+    return container_profit_loss_pdf_response(report)

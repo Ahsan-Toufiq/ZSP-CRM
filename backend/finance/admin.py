@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from finance.models import Cheque, ChequeStatus, ChequeStatusHistory, CustomerLedgerEntry
+from finance.models import Cheque, ChequeStatus, ChequeStatusHistory, CustomerLedgerEntry, Expense
 
 
 @admin.register(ChequeStatus)
@@ -29,5 +29,12 @@ class CustomerLedgerEntryAdmin(admin.ModelAdmin):
     list_display = ('customer', 'entry_date', 'entry_type', 'description', 'debit', 'credit')
     search_fields = ('customer__name', 'description')
     list_filter = ('entry_type',)
+
+
+@admin.register(Expense)
+class ExpenseAdmin(admin.ModelAdmin):
+    list_display = ('expense_date', 'title', 'category', 'amount', 'payee', 'payment_method')
+    search_fields = ('title', 'category', 'payee', 'reference', 'notes')
+    list_filter = ('category', 'payment_method', 'expense_date')
 
 # Register your models here.

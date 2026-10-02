@@ -11,6 +11,10 @@ class DropdownOption(UserStampedModel):
         ITEM_CATEGORY = 'item_category', 'Item category'
         ITEM_UNIT = 'item_unit', 'Item unit'
         CONTAINER_SIZE_TYPE = 'container_size_type', 'Container size / type'
+        EXPENSE_TITLE = 'expense_title', 'Expense title'
+        EXPENSE_CATEGORY = 'expense_category', 'Expense category'
+        EXPENSE_PAYEE = 'expense_payee', 'Expense payee'
+        EXPENSE_PAYMENT_METHOD = 'expense_payment_method', 'Expense payment method'
 
     group = models.CharField(max_length=40, choices=Group.choices)
     label = models.CharField(max_length=160)

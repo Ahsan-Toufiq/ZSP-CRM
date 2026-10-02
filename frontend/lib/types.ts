@@ -176,6 +176,53 @@ export interface SalesAnalytics {
   selected: SalesAnalyticsBucket[];
 }
 
+export interface Expense {
+  id: UUID;
+  expense_date: string;
+  title: string;
+  category: string;
+  amount: string;
+  payee: string;
+  payment_method: string;
+  reference: string;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExpenseAnalyticsBucket {
+  period: string;
+  total_amount: string | number;
+  count: number;
+}
+
+export interface ExpenseAnalyticsBreakdown {
+  category?: string;
+  payment_method?: string;
+  total_amount: string | number;
+  count: number;
+}
+
+export interface ExpenseAnalytics {
+  generated_at: string;
+  date_bounds: {
+    oldest_expense_date: string | null;
+    latest_expense_date: string | null;
+    start: string | null;
+    end: string | null;
+    granularity: 'day' | 'week' | 'month' | 'year';
+  };
+  totals: {
+    total: string | number;
+    average: string | number;
+    largest: string | number;
+    count: number;
+  };
+  selected: ExpenseAnalyticsBucket[];
+  categories: ExpenseAnalyticsBreakdown[];
+  payment_methods: ExpenseAnalyticsBreakdown[];
+}
+
 export interface GatePass {
   id: UUID;
   gate_pass_number: string;
@@ -399,7 +446,7 @@ export interface DashboardCheque {
 
 export interface DropdownOption {
   id: UUID;
-  group: 'bank' | 'part_name' | 'item_category' | 'item_unit' | 'container_size_type';
+  group: 'bank' | 'part_name' | 'item_category' | 'item_unit' | 'container_size_type' | 'expense_title' | 'expense_category' | 'expense_payee' | 'expense_payment_method';
   label: string;
   value: string;
   is_system: boolean;

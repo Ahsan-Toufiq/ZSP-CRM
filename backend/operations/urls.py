@@ -10,6 +10,7 @@ from operations.views import (
     InventoryBatchViewSet,
     inventory_report,
     container_tracking_report,
+    container_profit_loss_report,
     PartInventoryViewSet,
 )
 
@@ -26,4 +27,5 @@ urlpatterns = [
     *router.urls,
     path('inventory-report/', inventory_report, name='inventory-report'),
     path('container-tracking-report/', container_tracking_report, name='container-tracking-report'),
+    path('container-profit-loss-report/', container_profit_loss_report, name='container-profit-loss-report'),
 ]

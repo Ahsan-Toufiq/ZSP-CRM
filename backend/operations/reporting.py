@@ -6,12 +6,12 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 from django.conf import settings
-from django.db.models import IntegerField, Q, Sum, Value
+from django.db.models import IntegerField, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from django.utils import timezone
 
-from operations.models import AuctionSale, Container, InventoryBatch
+from operations.models import AuctionSale, AuctionSaleLine, Container, InventoryBatch
 
 
 @dataclass(frozen=True)
@@ -22,8 +22,17 @@ class InventoryReport:
     totals: dict
 
 
+@dataclass(frozen=True)
+class ContainerProfitLossReport:
+    generated_at: timezone.datetime
+    container: Container
+    rows: list[dict]
+    totals: dict
+
+
 def _money(value) -> Decimal:
-    return Decimal(value or 0).quantize(Decimal('0.01'))
+    rounded = Decimal(value or 0).quantize(Decimal('0.01'))
+    return Decimal('0.00') if rounded == 0 else rounded
 
 
 def _logo_path() -> Path:
@@ -224,6 +233,182 @@ def inventory_report_pdf_response(report: InventoryReport) -> HttpResponse:
 
     response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
     response['Content-Disposition'] = _content_disposition('zsp-available-inventory.pdf')
+    return response
+
+
+def build_container_profit_loss_report(*, container: Container) -> ContainerProfitLossReport:
+    sale_lines = (
+        AuctionSaleLine.objects
+        .filter(sale__is_cancelled=False)
+        .select_related('sale', 'sale__customer')
+        .order_by('sale__sale_date', 'sale__created_at')
+    )
+    batches = (
+        InventoryBatch.objects
+        .filter(container=container)
+        .select_related('item', 'container_item')
+        .prefetch_related(Prefetch('sale_lines', queryset=sale_lines))
+        .order_by('item__part_name', 'item__part_number', 'created_at')
+    )
+
+    rows = []
+    for batch in batches:
+        lines = list(batch.sale_lines.all())
+        sold_quantity = sum(int(line.quantity) for line in lines)
+        available_quantity = max(int(batch.quantity) - sold_quantity, 0)
+        revenue = sum((Decimal(line.sold_price) * Decimal(line.quantity) for line in lines), Decimal('0.00'))
+        sold_cost = _money(batch.net_unit_cost) * Decimal(sold_quantity)
+        remaining_value = _money(batch.net_unit_cost) * Decimal(available_quantity)
+        rows.append({
+            'part_name': batch.item.part_name,
+            'part_number': batch.item.part_number or '',
+            'category': batch.item.category or '',
+            'unit': batch.item.unit or 'piece',
+            'acquired_quantity': int(batch.quantity),
+            'sold_quantity': sold_quantity,
+            'available_quantity': available_quantity,
+            'raw_unit_cost': _money(batch.raw_unit_cost),
+            'net_unit_cost': _money(batch.net_unit_cost),
+            'revenue': _money(revenue),
+            'sold_cost': _money(sold_cost),
+            'gross_profit': _money(revenue - sold_cost),
+            'remaining_value': _money(remaining_value),
+        })
+
+    raw_inventory_cost = sum(
+        (row['raw_unit_cost'] * Decimal(row['acquired_quantity']) for row in rows),
+        Decimal('0.00'),
+    )
+    allocated_inventory_cost = sum(
+        (row['net_unit_cost'] * Decimal(row['acquired_quantity']) for row in rows),
+        Decimal('0.00'),
+    )
+    revenue = sum((row['revenue'] for row in rows), Decimal('0.00'))
+    sold_cost = sum((row['sold_cost'] for row in rows), Decimal('0.00'))
+    remaining_value = sum((row['remaining_value'] for row in rows), Decimal('0.00'))
+    total_recorded_cost = raw_inventory_cost + _money(container.added_cost)
+
+    return ContainerProfitLossReport(
+        generated_at=timezone.localtime(),
+        container=container,
+        rows=rows,
+        totals={
+            'raw_inventory_cost': _money(raw_inventory_cost),
+            'clearing_fee': _money(container.added_cost),
+            'total_recorded_cost': _money(total_recorded_cost),
+            'allocated_inventory_cost': _money(allocated_inventory_cost),
+            'allocation_variance': _money(total_recorded_cost - allocated_inventory_cost),
+            'revenue': _money(revenue),
+            'sold_cost': _money(sold_cost),
+            'gross_profit': _money(revenue - sold_cost),
+            'gross_margin': (revenue - sold_cost) / revenue * Decimal('100.00') if revenue else Decimal('0.00'),
+            'remaining_inventory_value': _money(remaining_value),
+            'sold_quantity': sum(row['sold_quantity'] for row in rows),
+            'available_quantity': sum(row['available_quantity'] for row in rows),
+        },
+    )
+
+
+def container_profit_loss_pdf_response(report: ContainerProfitLossReport) -> HttpResponse:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=landscape(A4), rightMargin=22, leftMargin=22, topMargin=20, bottomMargin=22,
+    )
+    styles = getSampleStyleSheet()
+    cell = ParagraphStyle('ContainerPnlCell', parent=styles['BodyText'], fontSize=6.8, leading=8.2, wordWrap='CJK')
+    note = ParagraphStyle('ContainerPnlNote', parent=styles['BodyText'], fontSize=7.5, leading=10, textColor=colors.HexColor('#475569'))
+    story = []
+    container = report.container
+    _report_header(
+        story,
+        styles,
+        'Container Profit & Loss',
+        f'Syed Zulfiqar Old Spare Parts | {escape(container.reference)}',
+        report.generated_at,
+    )
+
+    details = Table([
+        ['Container', container.reference, 'Status', container.get_status_display(), 'Current location', container.current_location or '-'],
+        ['Agent', container.supplier_name or '-', 'Arrival date', str(container.arrival_date or '-'), 'Size / Type', container.size_type or '-'],
+    ], colWidths=[0.9 * inch, 2.15 * inch, 0.8 * inch, 1.45 * inch, 1.15 * inch, 3.05 * inch])
+    details.setStyle(TableStyle([
+        ('GRID', (0, 0), (-1, -1), 0.3, colors.HexColor('#cbd5e1')),
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f3faf7')),
+        ('BACKGROUND', (2, 0), (2, -1), colors.HexColor('#f3faf7')),
+        ('BACKGROUND', (4, 0), (4, -1), colors.HexColor('#f3faf7')),
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTNAME', (2, 0), (2, -1), 'Helvetica-Bold'),
+        ('FONTNAME', (4, 0), (4, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('INNERPADDING', (0, 0), (-1, -1), 6),
+    ]))
+
+    totals = report.totals
+    summary = Table([
+        ['Recorded container cost', f"PKR {totals['total_recorded_cost']:,.0f}", 'Sales revenue', f"PKR {totals['revenue']:,.0f}", 'Realized COGS', f"PKR {totals['sold_cost']:,.0f}"],
+        ['Realized gross profit', f"PKR {totals['gross_profit']:,.0f}", 'Gross margin', f"{totals['gross_margin']:,.1f}%", 'Remaining stock value', f"PKR {totals['remaining_inventory_value']:,.0f}"],
+        ['Raw parts cost', f"PKR {totals['raw_inventory_cost']:,.0f}", 'Clearing Fee', f"PKR {totals['clearing_fee']:,.0f}", 'Allocation variance', f"PKR {totals['allocation_variance']:,.0f}"],
+    ], colWidths=[1.35 * inch, 1.65 * inch, 1.15 * inch, 1.55 * inch, 1.35 * inch, 1.65 * inch])
+    summary.setStyle(TableStyle([
+        ('GRID', (0, 0), (-1, -1), 0.35, colors.HexColor('#cbd5e1')),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#0f766e')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('INNERPADDING', (0, 0), (-1, -1), 7),
+    ]))
+    story.extend([details, Spacer(1, 10), summary, Spacer(1, 10)])
+
+    rows = [['Part', 'Part no.', 'Category', 'Acquired', 'Sold', 'Available', 'Net unit', 'Revenue', 'COGS', 'Gross P/L', 'Stock value']]
+    for row in report.rows:
+        rows.append([
+            Paragraph(escape(row['part_name']), cell),
+            Paragraph(escape(row['part_number'] or '-'), cell),
+            Paragraph(escape(row['category'] or '-'), cell),
+            f"{row['acquired_quantity']} {row['unit']}",
+            str(row['sold_quantity']),
+            str(row['available_quantity']),
+            f"PKR {row['net_unit_cost']:,.0f}",
+            f"PKR {row['revenue']:,.0f}",
+            f"PKR {row['sold_cost']:,.0f}",
+            f"PKR {row['gross_profit']:,.0f}",
+            f"PKR {row['remaining_value']:,.0f}",
+        ])
+    if len(rows) == 1:
+        rows.append(['No inventory has been recorded for this container.', '', '', '', '', '', '', '', '', '', ''])
+    table = Table(
+        rows,
+        repeatRows=1,
+        colWidths=[1.45 * inch, 0.8 * inch, 0.9 * inch, 0.65 * inch, 0.48 * inch, 0.58 * inch, 0.82 * inch, 0.85 * inch, 0.8 * inch, 0.8 * inch, 0.85 * inch],
+    )
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#111827')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 6.5),
+        ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#d1d5db')),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
+        ('INNERPADDING', (0, 0), (-1, -1), 4),
+    ]))
+    story.extend([
+        table,
+        Spacer(1, 10),
+        KeepTogether(Paragraph(
+            'This is a gross container-level report. Cost of goods sold uses the current allocated net cost of each source batch. General operating expenses are not allocated to containers and are therefore excluded.',
+            note,
+        )),
+    ])
+    doc.build(story)
+    response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
+    response['Content-Disposition'] = _content_disposition(f'container-{container.reference}-profit-loss.pdf')
     return response
 
 

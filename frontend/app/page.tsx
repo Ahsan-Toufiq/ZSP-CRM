@@ -47,6 +47,8 @@ import type {
   CurrencyOpeningBalance,
   CurrencyPurchase,
   CurrencySpending,
+  Expense,
+  ExpenseAnalytics,
   Customer,
   CustomerLedgerEntry,
   CustomerPayment,
@@ -63,7 +65,7 @@ import type {
   UUID,
 } from '@/lib/types';
 
-type Tab = 'dashboard' | 'customers' | 'containers' | 'sales' | 'cheques' | 'currency' | 'settings' | 'users';
+type Tab = 'dashboard' | 'customers' | 'containers' | 'sales' | 'cheques' | 'currency' | 'expenses' | 'settings' | 'users';
 type AccessLevel = 'none' | 'view' | 'full';
 type ModalState =
   | { type: 'customer'; customer?: Customer }
@@ -84,11 +86,11 @@ type ModalState =
   | { type: 'currency-spending'; spending?: CurrencySpending }
   | { type: 'currency-creditor'; creditor?: CurrencyCreditor }
   | { type: 'currency-repayment'; purchase: CurrencyPurchase }
+  | { type: 'expense'; expense?: Expense }
   | { type: 'cheque-status' }
   | { type: 'dropdown-option'; group?: DropdownOption['group'] }
   | { type: 'user'; user?: ManagedUser }
-  | { type: 'inventory-export' }
-  | { type: 'container-tracking-export' }
+  | { type: 'container-reports' }
   | { type: 'change-password' }
   | null;
 
@@ -142,6 +144,7 @@ const tabs: { id: Tab; label: string; icon: ReactNode }[] = [
   { id: 'sales', label: 'Auction Sales', icon: <Gavel size={18} /> },
   { id: 'cheques', label: 'Cheques', icon: <WalletCards size={18} /> },
   { id: 'currency', label: 'Currency Portfolio', icon: <Globe2 size={18} /> },
+  { id: 'expenses', label: 'Expenses', icon: <ReceiptText size={18} /> },
   { id: 'settings', label: 'Dropdown Settings', icon: <Boxes size={18} /> },
   { id: 'users', label: 'Users', icon: <ShieldCheck size={18} /> },
 ];
@@ -154,6 +157,7 @@ const tabRoutes: Record<Tab, string> = {
   sales: '/sales',
   cheques: '/cheques',
   currency: '/currency',
+  expenses: '/expenses',
   settings: '/settings',
   users: '/users',
 };
@@ -293,6 +297,8 @@ export default function Home() {
   const [currencySpending, setCurrencySpending] = useState<CurrencySpending[]>([]);
   const [currencyCreditors, setCurrencyCreditors] = useState<CurrencyCreditor[]>([]);
   const [currencyRepayments, setCurrencyRepayments] = useState<CurrencyCreditorRepayment[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [expenseAnalytics, setExpenseAnalytics] = useState<ExpenseAnalytics | null>(null);
 
   const availableBatches = useMemo<BatchWithPart[]>(() => parts.flatMap((part) => (part.batches ?? []).map((batch) => ({ ...batch, item_detail: part }))).filter((batch) => batch.available_quantity > 0), [parts]);
   const visibleTabs = useMemo(() => {
@@ -409,6 +415,19 @@ export default function Home() {
           setCurrencySpending(valueOf(spendingData, emptyPage<CurrencySpending>()).results);
           setCurrencyCreditors(valueOf(creditorData, emptyPage<CurrencyCreditor>()).results);
           setCurrencyRepayments(valueOf(repaymentData, emptyPage<CurrencyCreditorRepayment>()).results);
+        }
+      }
+
+      if (tab === 'expenses') {
+        const [expenseData, analyticsData, optionData] = await Promise.allSettled([
+          list<Expense>('/finance/expenses/?page_size=250'),
+          get<ExpenseAnalytics>('/finance/expenses/analytics/'),
+          list<DropdownOption>('/catalog/dropdown-options/?page_size=250'),
+        ]);
+        if (loadToken.current === token) {
+          setExpenses(valueOf(expenseData, emptyPage<Expense>()).results);
+          setExpenseAnalytics(valueOf(analyticsData, null));
+          setDropdownOptions(valueOf(optionData, emptyPage<DropdownOption>()).results);
         }
       }
 
@@ -651,6 +670,20 @@ export default function Home() {
     }
   }
 
+  async function loadExpenseAnalytics(params?: { start?: string; end?: string; granularity?: 'day' | 'week' | 'month' | 'year' }) {
+    setMessage('');
+    try {
+      const query = new URLSearchParams();
+      if (params?.start) query.set('start', params.start);
+      if (params?.end) query.set('end', params.end);
+      if (params?.granularity) query.set('granularity', params.granularity);
+      const suffix = query.toString() ? `?${query.toString()}` : '';
+      setExpenseAnalytics(await get<ExpenseAnalytics>(`/finance/expenses/analytics/${suffix}`));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to load expense analytics.');
+    }
+  }
+
   async function downloadCreditReport(format: 'csv' | 'pdf', section: 'summary' | 'aging' | 'outstanding' | 'combined') {
     await downloadBlob(
       `/api/finance/credit-report/?export=${format}&section=${section}`,
@@ -698,6 +731,15 @@ export default function Home() {
       `/api/operations/container-tracking-report/?export=${format}`,
       `zsp-container-tracking.${format}`,
       `Unable to download the container tracking ${format === 'xlsx' ? 'Spreadsheet' : 'PDF'}.`,
+    );
+  }
+
+  async function downloadContainerProfitLoss(containerId: UUID) {
+    const container = containers.find((entry) => entry.id === containerId);
+    await downloadBlob(
+      `/api/operations/container-profit-loss-report/?container=${encodeURIComponent(containerId)}`,
+      `container-${(container?.reference || 'report').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-profit-loss.pdf`,
+      'Unable to download the container profit and loss report.',
     );
   }
 
@@ -816,10 +858,11 @@ export default function Home() {
         {loading ? <LoadingState label={`Loading ${currentTitle.toLowerCase()}...`} /> : null}
         {!loading && activeTab === 'dashboard' ? <Dashboard summary={summary} /> : null}
         {!loading && activeTab === 'customers' ? <CustomersPanel canWrite={canWrite('customers')} customers={customers} creditReport={creditReport} onAdd={() => setModal({ type: 'customer' })} onEdit={(customer) => setModal({ type: 'customer', customer })} onDelete={(customer) => remove(`/operations/customers/${customer.id}/`)} onStatus={(customer) => quickPatch(`/operations/customers/${customer.id}/`, { is_active: !customer.is_active })} onDownloadReport={(format) => setModal({ type: 'all-customer-report', format })} onDownloadDailyReport={downloadDailyPaymentReport} onDownloadStatement={(customer) => setModal({ type: 'customer-report', customer })} onViewDetails={(customer) => setModal({ type: 'customer-details', customer })} onRecordPayment={(customer) => setModal({ type: 'customer-payment', customer })} onRecordPagePayment={() => setModal({ type: 'customer-payment' })} /> : null}
-        {!loading && activeTab === 'containers' ? <ContainersPanel canWrite={canWrite('containers')} containers={containers} items={items} itemsByContainer={itemsByContainer} parts={parts} expandedContainers={expandedContainers} expandedParts={expandedParts} inventoryPane={inventoryPane} onInventoryPaneChange={setInventoryPane} onToggleContainer={(id) => toggleSet(setExpandedContainers, id)} onTogglePart={(id) => toggleSet(setExpandedParts, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onDelete={(container) => remove(`/operations/containers/${container.id}/`)} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddSubparts={(item) => setModal({ type: 'subparts', parentItem: item })} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} onAddGeneralStock={(part) => setModal({ type: 'general-batch', part })} onEditGeneralBatch={(part, batch) => setModal({ type: 'general-batch', part, batch })} onDeleteGeneralBatch={(batch) => remove(`/operations/inventory-batches/${batch.id}/`)} onExport={() => setModal({ type: 'inventory-export' })} onTrackingExport={() => setModal({ type: 'container-tracking-export' })} /> : null}
+        {!loading && activeTab === 'containers' ? <ContainersPanel canWrite={canWrite('containers')} containers={containers} items={items} itemsByContainer={itemsByContainer} parts={parts} expandedContainers={expandedContainers} expandedParts={expandedParts} inventoryPane={inventoryPane} onInventoryPaneChange={setInventoryPane} onToggleContainer={(id) => toggleSet(setExpandedContainers, id)} onTogglePart={(id) => toggleSet(setExpandedParts, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onDelete={(container) => remove(`/operations/containers/${container.id}/`)} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddSubparts={(item) => setModal({ type: 'subparts', parentItem: item })} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} onAddGeneralStock={(part) => setModal({ type: 'general-batch', part })} onEditGeneralBatch={(part, batch) => setModal({ type: 'general-batch', part, batch })} onDeleteGeneralBatch={(batch) => remove(`/operations/inventory-batches/${batch.id}/`)} onReports={() => setModal({ type: 'container-reports' })} onProfitLoss={downloadContainerProfitLoss} /> : null}
         {!loading && activeTab === 'sales' ? <SalesPanel canWrite={canWrite('sales')} sales={sales} analytics={salesAnalytics} onLoadAnalytics={loadSalesAnalytics} onAdd={() => { setNewSaleCustomer(null); setModal({ type: 'sale' }); }} onEdit={(sale) => { setNewSaleCustomer(null); setModal({ type: 'sale', sale }); }} onPrint={printSaleGatePass} onDownloadInvoice={downloadSaleInvoice} onPrintInvoice={printSaleInvoice} onPrintThermalInvoice={printThermalInvoice} /> : null}
         {!loading && activeTab === 'cheques' ? <ChequesPanel canWrite={canWrite('cheques')} cheques={cheques} statuses={chequeStatuses} onAdd={() => setModal({ type: 'cheque' })} onEdit={(cheque) => setModal({ type: 'cheque', cheque })} onStatus={markChequeStatus} onAddStatus={() => setModal({ type: 'cheque-status' })} /> : null}
         {!loading && activeTab === 'currency' ? <CurrencyPanel canWrite={canWrite('currency')} currencies={currencies} purchases={currencyPurchases} openings={currencyOpenings} spending={currencySpending} creditors={currencyCreditors} repayments={currencyRepayments} onAddOpening={() => setModal({ type: 'currency-opening' })} onEditCurrency={(currency) => setModal({ type: 'currency', currency })} onAddPurchase={() => setModal({ type: 'currency-purchase' })} onEditPurchase={(purchase) => setModal({ type: 'currency-purchase', purchase })} onAddSpending={() => setModal({ type: 'currency-spending' })} onEditOpening={(opening) => setModal({ type: 'currency-opening', opening })} onEditSpending={(entry) => setModal({ type: 'currency-spending', spending: entry })} onAddCreditor={() => setModal({ type: 'currency-creditor' })} onEditCreditor={(creditor) => setModal({ type: 'currency-creditor', creditor })} onRepay={(purchase) => setModal({ type: 'currency-repayment', purchase })} onDownloadCreditor={downloadCurrencyCreditorStatement} /> : null}
+        {!loading && activeTab === 'expenses' ? <ExpensesPanel canWrite={canWrite('expenses')} expenses={expenses} analytics={expenseAnalytics} onLoadAnalytics={loadExpenseAnalytics} onAdd={() => setModal({ type: 'expense' })} onEdit={(expense) => setModal({ type: 'expense', expense })} onDelete={(expense) => remove(`/finance/expenses/${expense.id}/`)} /> : null}
         {!loading && activeTab === 'settings' ? <SettingsPanel canWrite={canWrite('settings')} options={dropdownOptions} chequeStatuses={chequeStatuses} onAdd={(group) => setModal({ type: 'dropdown-option', group })} onAddChequeStatus={() => setModal({ type: 'cheque-status' })} /> : null}
         {!loading && activeTab === 'users' ? <UsersPanel canWrite={canWrite('users')} users={managedUsers} currentUserId={currentUser?.id} deletingPath={deletingPath} onAdd={() => setModal({ type: 'user' })} onEdit={(user) => setModal({ type: 'user', user })} onDelete={(user) => remove(`/auth/users/${user.id}/`)} /> : null}
       </section>
@@ -843,11 +886,11 @@ export default function Home() {
         {modal?.type === 'currency-spending' ? <CurrencySpendingForm spending={modal.spending} currencies={currencies} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'currency-creditor' ? <CurrencyCreditorForm creditor={modal.creditor} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'currency-repayment' ? <CurrencyRepaymentForm purchase={modal.purchase} onSave={save} isSaving={saving} /> : null}
+        {modal?.type === 'expense' ? <ExpenseForm expense={modal.expense} options={dropdownOptions} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'cheque-status' ? <ChequeStatusForm onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'dropdown-option' ? <DropdownOptionForm group={modal.group} onSave={save} isSaving={saving} /> : null}
         {modal?.type === 'user' ? <UserForm user={modal.user} onSave={save} isSaving={saving} /> : null}
-        {modal?.type === 'inventory-export' ? <InventoryExportDialog containers={containers} parts={parts} onDownload={downloadInventoryReport} onDownloadAuction={downloadAuctionInventory} /> : null}
-        {modal?.type === 'container-tracking-export' ? <ContainerTrackingExportDialog onDownload={downloadContainerTracking} /> : null}
+        {modal?.type === 'container-reports' ? <ContainerReportsDialog containers={containers} parts={parts} onDownloadInventory={downloadInventoryReport} onDownloadAuction={downloadAuctionInventory} onDownloadTracking={downloadContainerTracking} onDownloadProfitLoss={downloadContainerProfitLoss} /> : null}
         {modal?.type === 'change-password' ? <ChangePasswordForm onSave={changePassword} isSaving={saving} /> : null}
       </ModalShell>
       {saleCustomerOverlayOpen ? <ModalShell modal={{ type: 'customer' }} onClose={() => setSaleCustomerOverlayOpen(false)}>{message ? <div className="alert modal-alert">{message}</div> : null}<CustomerForm onSave={saveSaleCustomer} isSaving={saving} /></ModalShell> : null}
@@ -1087,8 +1130,8 @@ function ContainersPanel({
   onAddGeneralStock,
   onEditGeneralBatch,
   onDeleteGeneralBatch,
-  onExport,
-  onTrackingExport,
+  onReports,
+  onProfitLoss,
 }: {
   containers: Container[];
   items: ContainerItem[];
@@ -1114,8 +1157,8 @@ function ContainersPanel({
   onAddGeneralStock: (part: PartInventory) => void;
   onEditGeneralBatch: (part: PartInventory, batch: InventoryBatch) => void;
   onDeleteGeneralBatch: (batch: InventoryBatch) => void;
-  onExport: () => void;
-  onTrackingExport: () => void;
+  onReports: () => void;
+  onProfitLoss: (containerId: UUID) => void;
 }) {
   const [partSearch, setPartSearch] = useState('');
   const [containerSearch, setContainerSearch] = useState('');
@@ -1139,8 +1182,7 @@ function ContainersPanel({
           <h2>Containers & Inventory</h2>
         </div>
         <div className="head-actions">
-          <button className="btn" onClick={onExport}><FileDown size={18} /> Download inventory</button>
-          <button className="btn" onClick={onTrackingExport}><FileDown size={18} /> Container tracking</button>
+          <button className="btn" onClick={onReports}><FileDown size={18} /> Reports</button>
           <div className="segmented-control" role="tablist" aria-label="Inventory views">
             <button
               type="button"
@@ -1307,13 +1349,16 @@ function ContainersPanel({
                     <span>Clearing Fee: <strong>{money(container.added_cost)}</strong></span>
                     <span>Total cost: <strong>{money(container.total_container_cost)}</strong></span>
                   </div>
-                  {canWrite ? (
-                    <div className="record-actions">
-                      <button className="btn small" onClick={() => onAddItem(container.id)}><Plus size={16} /> Add manifest item</button>
+                  <div className="record-actions">
+                      <button className="btn small" onClick={() => onProfitLoss(container.id)}><ReceiptText size={16} /> Profit &amp; loss</button>
+                      {canWrite ? <button className="btn small" onClick={() => onAddItem(container.id)}><Plus size={16} /> Add manifest item</button> : null}
+                      {canWrite ? (
+                        <>
                       <button className="icon-btn" onClick={() => onEdit(container)} aria-label={`Edit ${container.reference}`}><Pencil size={16} /></button>
                       <button className="icon-btn danger" onClick={() => onDelete(container)} aria-label={`Delete ${container.reference}`} title={`Delete ${container.reference}`}><Trash2 size={16} /></button>
-                    </div>
-                  ) : null}
+                        </>
+                      ) : null}
+                  </div>
                   {expanded ? (
                     <>
                     <SearchField compact label={`Search parts inside ${container.reference}`} value={containerItemSearch[container.id] || ''} onChange={(value) => setContainerItemSearch((previous) => ({ ...previous, [container.id]: value }))} />
@@ -1333,7 +1378,35 @@ function ContainersPanel({
   );
 }
 
-function InventoryExportDialog({ containers, parts, onDownload, onDownloadAuction }: { containers: Container[]; parts: PartInventory[]; onDownload: (format: 'csv' | 'pdf', containerId?: UUID) => void; onDownloadAuction: (containerId: UUID) => void }) {
+function ContainerReportsDialog({ containers, parts, onDownloadInventory, onDownloadAuction, onDownloadTracking, onDownloadProfitLoss }: { containers: Container[]; parts: PartInventory[]; onDownloadInventory: (format: 'csv' | 'pdf', containerId?: UUID) => void; onDownloadAuction: (containerId: UUID) => void; onDownloadTracking: (format: 'pdf' | 'xlsx') => void; onDownloadProfitLoss: (containerId: UUID) => void }) {
+  const [report, setReport] = useState<'inventory' | 'tracking' | 'profit-loss'>('inventory');
+  const [containerId, setContainerId] = useState('');
+  return (
+    <div className="modal-form report-center">
+      <h2>Container reports</h2>
+      <p className="muted">Choose the operational or financial report you need.</p>
+      <div className="export-choice-grid report-family-grid">
+        <button type="button" className={report === 'inventory' ? 'export-choice active' : 'export-choice'} onClick={() => setReport('inventory')}><strong>Inventory reports</strong><span>Available inventory, one-container stock, or auction sheet.</span></button>
+        <button type="button" className={report === 'tracking' ? 'export-choice active' : 'export-choice'} onClick={() => setReport('tracking')}><strong>Container tracking</strong><span>Operational register with status, location, agent, and notes.</span></button>
+        <button type="button" className={report === 'profit-loss' ? 'export-choice active' : 'export-choice'} onClick={() => setReport('profit-loss')}><strong>Container profit &amp; loss</strong><span>Revenue, realized cost, gross margin, and stock value for one container.</span></button>
+      </div>
+      <div className="report-center-detail">
+        {report === 'inventory' ? <InventoryExportDialog containers={containers} parts={parts} onDownload={onDownloadInventory} onDownloadAuction={onDownloadAuction} embedded /> : null}
+        {report === 'tracking' ? <ContainerTrackingExportDialog onDownload={onDownloadTracking} embedded /> : null}
+        {report === 'profit-loss' ? (
+          <div className="report-option-panel">
+            <h3>Container profit &amp; loss</h3>
+            <p className="muted">This gross report uses current allocated batch costs. General operating expenses are not assigned to a container and are excluded.</p>
+            <Select name="pnl_container" label="Container" value={containerId} onChange={setContainerId} options={containers.map((container) => [container.id, `${container.reference} - ${statusLabel(container.status)}`])} required />
+            <button type="button" className="btn primary wide" disabled={!containerId} onClick={() => onDownloadProfitLoss(containerId)}><FileDown size={18} /> Download PDF</button>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function InventoryExportDialog({ containers, parts, onDownload, onDownloadAuction, embedded = false }: { containers: Container[]; parts: PartInventory[]; onDownload: (format: 'csv' | 'pdf', containerId?: UUID) => void; onDownloadAuction: (containerId: UUID) => void; embedded?: boolean }) {
   const [scope, setScope] = useState<'all' | 'container' | 'auction'>('all');
   const [containerId, setContainerId] = useState('');
   const containersWithStock = useMemo(() => {
@@ -1345,7 +1418,7 @@ function InventoryExportDialog({ containers, parts, onDownload, onDownloadAuctio
   const canDownload = scope === 'all' || Boolean(selectedContainer);
   return (
     <div className="modal-form">
-      <h2>Download available inventory</h2>
+      {embedded ? <h3>Inventory reports</h3> : <h2>Download available inventory</h2>}
       <div className="export-choice-grid">
         <button type="button" className={scope === 'all' ? 'export-choice active' : 'export-choice'} onClick={() => setScope('all')}>
           <strong>All available inventory</strong>
@@ -1390,8 +1463,8 @@ function InventoryExportDialog({ containers, parts, onDownload, onDownloadAuctio
   );
 }
 
-function ContainerTrackingExportDialog({ onDownload }: { onDownload: (format: 'pdf' | 'xlsx') => void }) {
-  return <div className="modal-form"><h2>Container tracking report</h2><p className="muted">Export the operational container register with number, size, current location, agent, and notes.</p><div className="download-format-grid"><button type="button" className="btn primary" onClick={() => onDownload('pdf')}><FileDown size={18} /> PDF</button><button type="button" className="btn" onClick={() => onDownload('xlsx')}><FileDown size={18} /> Spreadsheet</button></div></div>;
+function ContainerTrackingExportDialog({ onDownload, embedded = false }: { onDownload: (format: 'pdf' | 'xlsx') => void; embedded?: boolean }) {
+  return <div className="modal-form">{embedded ? <h3>Container tracking report</h3> : <h2>Container tracking report</h2>}<p className="muted">Export the operational container register with number, size, current location, agent, and notes.</p><div className="download-format-grid"><button type="button" className="btn primary" onClick={() => onDownload('pdf')}><FileDown size={18} /> PDF</button><button type="button" className="btn" onClick={() => onDownload('xlsx')}><FileDown size={18} /> Spreadsheet</button></div></div>;
 }
 
 function CustomerReportDialog({ customer, onDownload }: { customer: Customer; onDownload: (report: 'aging' | 'transactions' | 'outstanding' | 'combined') => void }) {
@@ -1644,8 +1717,75 @@ function CurrencyPanel({ currencies, purchases, openings, spending, creditors, r
   );
 }
 
+function ExpensesPanel({ expenses, analytics, canWrite, onLoadAnalytics, onAdd, onEdit, onDelete }: { expenses: Expense[]; analytics: ExpenseAnalytics | null; canWrite: boolean; onLoadAnalytics: (params?: { start?: string; end?: string; granularity?: 'day' | 'week' | 'month' | 'year' }) => Promise<void>; onAdd: () => void; onEdit: (expense: Expense) => void; onDelete: (expense: Expense) => void }) {
+  const [pane, setPane] = useState<'records' | 'analytics'>('records');
+  const [search, setSearch] = useState('');
+  const [start, setStart] = useState(analytics?.date_bounds.start || '');
+  const [end, setEnd] = useState(analytics?.date_bounds.end || '');
+  const [granularity, setGranularity] = useState<'day' | 'week' | 'month' | 'year'>(analytics?.date_bounds.granularity || 'month');
+  const query = search.trim().toLowerCase();
+  const filtered = expenses.filter((expense) => !query || `${expense.title} ${expense.category} ${expense.payee} ${expense.payment_method} ${expense.reference} ${expense.notes}`.toLowerCase().includes(query));
+  const selected = analytics?.selected ?? [];
+  const maxPeriod = Math.max(...selected.map((entry) => Number(entry.total_amount)), 1);
+  const maxCategory = Math.max(...(analytics?.categories ?? []).map((entry) => Number(entry.total_amount)), 1);
+  const maxMethod = Math.max(...(analytics?.payment_methods ?? []).map((entry) => Number(entry.total_amount)), 1);
+
+  function applyQuickRange(days?: number, mode?: 'month' | 'year' | 'all') {
+    const latest = analytics?.date_bounds.latest_expense_date || pakistanLocalDate();
+    const oldest = analytics?.date_bounds.oldest_expense_date || latest;
+    let nextStart = oldest;
+    if (days) {
+      const value = new Date(`${latest}T12:00:00`);
+      value.setDate(value.getDate() - (days - 1));
+      nextStart = value.toISOString().slice(0, 10);
+    } else if (mode === 'month') nextStart = `${latest.slice(0, 7)}-01`;
+    else if (mode === 'year') nextStart = `${latest.slice(0, 4)}-01-01`;
+    setStart(nextStart);
+    setEnd(latest);
+    void onLoadAnalytics({ start: nextStart, end: latest, granularity });
+  }
+
+  return (
+    <section className="panel">
+      <div className="section-head">
+        <div><h2>Expenses</h2><p className="muted">Record operating costs and inspect spending patterns across the full history.</p></div>
+        <div className="head-actions">
+          {canWrite ? <button className="btn primary" onClick={onAdd}><Plus size={18} /> Record expense</button> : null}
+          <div className="segmented-control sales-segment" role="tablist" aria-label="Expense views">
+            <button type="button" role="tab" className={pane === 'records' ? 'active' : ''} aria-selected={pane === 'records'} onClick={() => setPane('records')}><ReceiptText size={16} /> Records</button>
+            <button type="button" role="tab" className={pane === 'analytics' ? 'active' : ''} aria-selected={pane === 'analytics'} onClick={() => setPane('analytics')}><LayoutDashboard size={16} /> Analytics</button>
+          </div>
+        </div>
+      </div>
+      {pane === 'records' ? (
+        <div className="inventory-pane">
+          <SearchField label="Search expenses by title, category, payee, method, or reference" value={search} onChange={setSearch} />
+          {filtered.length ? <DataTable headers={['Date', 'Expense', 'Category', 'Paid to', 'Method', 'Reference', 'Amount', 'Actions']} rows={filtered.map((expense) => [shortDate(expense.expense_date), <div key="expense"><strong>{expense.title}</strong><span className="cell-note">{expense.notes || 'No notes'}</span></div>, expense.category, expense.payee || '-', expense.payment_method || '-', expense.reference || '-', <strong key="amount">{money(expense.amount)}</strong>, <div className="table-actions" key="actions">{canWrite ? <button className="icon-btn" onClick={() => onEdit(expense)} aria-label={`Edit ${expense.title}`}><Pencil size={16} /></button> : null}{canWrite ? <button className="icon-btn danger" onClick={() => onDelete(expense)} aria-label={`Delete ${expense.title}`}><Trash2 size={16} /></button> : <span className="muted">View only</span>}</div>])} /> : <div className="empty-state"><ReceiptText size={22} /> No matching expenses.</div>}
+        </div>
+      ) : (
+        <div className="sales-analytics expense-analytics">
+          <div className="analytics-controls expense-controls">
+            <Field name="expense_start" label="From" type="date" value={start} onChange={setStart} min={analytics?.date_bounds.oldest_expense_date || undefined} max={analytics?.date_bounds.latest_expense_date || pakistanLocalDate()} />
+            <Field name="expense_end" label="To" type="date" value={end} onChange={setEnd} min={analytics?.date_bounds.oldest_expense_date || undefined} max={analytics?.date_bounds.latest_expense_date || pakistanLocalDate()} />
+            <Select name="expense_granularity" label="Group by" value={granularity} onChange={(value) => setGranularity(value as typeof granularity)} options={[["day", "Daily"], ["week", "Weekly"], ["month", "Monthly"], ["year", "Yearly"]]} />
+            <button className="btn primary analytics-apply" onClick={() => void onLoadAnalytics({ start, end, granularity })}><RefreshCw size={16} /> Apply</button>
+          </div>
+          <div className="quick-range-row"><button className="btn small" onClick={() => applyQuickRange(1)}>Today</button><button className="btn small" onClick={() => applyQuickRange(7)}>Last 7 days</button><button className="btn small" onClick={() => applyQuickRange(undefined, 'month')}>This month</button><button className="btn small" onClick={() => applyQuickRange(undefined, 'year')}>This year</button><button className="btn small" onClick={() => applyQuickRange(undefined, 'all')}>All history</button></div>
+          <div className="metric-row"><Metric label="Total expense" value={money(analytics?.totals.total)} tone="warning" /><Metric label="Entries" value={analytics?.totals.count ?? 0} /><Metric label="Average expense" value={money(analytics?.totals.average)} /><Metric label="Largest expense" value={money(analytics?.totals.largest)} /></div>
+          <div className="analytics-card featured-chart"><div className="section-head slim"><div><h3>Expense trend</h3><p className="muted">{start && end ? `${shortDate(start)} to ${shortDate(end)}` : 'Complete recorded history'}</p></div></div>{selected.length ? <div className="bar-list expense-period-list">{selected.map((entry) => <div className="bar-row" key={entry.period}><span>{shortDate(entry.period)}</span><div className="bar-track"><i style={{ width: `${Math.max((Number(entry.total_amount) / maxPeriod) * 100, 2)}%` }} /></div><strong>{money(entry.total_amount)}</strong><small>{entry.count} entries</small></div>)}</div> : <div className="empty-state">No expenses in this period.</div>}</div>
+          <div className="analytics-split"><ExpenseBreakdown title="By category" rows={analytics?.categories ?? []} field="category" max={maxCategory} /><ExpenseBreakdown title="By payment method" rows={analytics?.payment_methods ?? []} field="payment_method" max={maxMethod} /></div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ExpenseBreakdown({ title, rows, field, max }: { title: string; rows: ExpenseAnalytics['categories']; field: 'category' | 'payment_method'; max: number }) {
+  return <div className="analytics-card"><h3>{title}</h3>{rows.length ? <div className="bar-list">{rows.map((row, index) => { const label = String(row[field] || 'Not specified'); return <div className="bar-row" key={`${label}-${index}`}><span>{label}</span><div className="bar-track"><i style={{ width: `${Math.max((Number(row.total_amount) / max) * 100, 2)}%` }} /></div><strong>{money(row.total_amount)}</strong><small>{row.count}</small></div>; })}</div> : <div className="empty-state">No breakdown available.</div>}</div>;
+}
+
 function SettingsPanel({ options, chequeStatuses, canWrite, onAdd, onAddChequeStatus }: { options: DropdownOption[]; chequeStatuses: ChequeStatus[]; canWrite: boolean; onAdd: (group?: DropdownOption['group']) => void; onAddChequeStatus: () => void }) {
-  const groups: DropdownOption['group'][] = ['bank', 'part_name', 'item_category', 'item_unit', 'container_size_type'];
+  const groups: DropdownOption['group'][] = ['bank', 'part_name', 'item_category', 'item_unit', 'container_size_type', 'expense_title', 'expense_category', 'expense_payee', 'expense_payment_method'];
   return <section className="panel"><div className="section-head"><div><h2>Dropdown settings</h2><p className="muted">Persisted values here appear in future entry dialogs for all users.</p></div>{canWrite ? <button className="btn primary" onClick={() => onAdd()}><Plus size={18} /> Dropdown value</button> : null}</div><div className="settings-grid">{groups.map((group) => <article className="option-card" key={group}><div className="section-head slim"><h3>{group.replace('_', ' ')}</h3>{canWrite ? <button className="icon-btn" onClick={() => onAdd(group)} aria-label={`Add ${group}`}><Plus size={16} /></button> : null}</div><div className="chips">{options.filter((option) => option.group === group && option.is_active).map((option) => <span className="chip" key={option.id}>{option.label}</span>)}</div></article>)}<article className="option-card"><div className="section-head slim"><h3>cheque statuses</h3>{canWrite ? <button className="icon-btn" onClick={onAddChequeStatus} aria-label="Add cheque status"><Plus size={16} /></button> : null}</div><div className="chips">{chequeStatuses.filter((status) => status.is_active).map((status) => <span className="chip" key={status.id}>{status.name}<small>{status.balance_effect.replaceAll('_', ' ')}</small></span>)}</div></article></div></section>;
 }
 
@@ -2244,12 +2384,27 @@ function CurrencySpendingForm({ spending, currencies, onSave, isSaving }: { spen
   );
 }
 
+function ExpenseForm({ expense, options, onSave, isSaving }: { expense?: Expense; options: DropdownOption[]; onSave: SaveHandler; isSaving: boolean }) {
+  return (
+    <FormFrame title={expense ? 'Edit expense' : 'Record expense'} isSaving={isSaving} onSubmit={(form) => onSave(expense ? `/finance/expenses/${expense.id}/` : '/finance/expenses/', form, expense ? 'patch' : 'post')}>
+      <Field name="expense_date" label="Expense date" type="date" defaultValue={expense?.expense_date || pakistanLocalDate()} max={pakistanLocalDate()} required />
+      <OptionText name="title" label="Expense title" defaultValue={expense?.title} options={optionLabels(options, 'expense_title')} required />
+      <OptionText name="category" label="Category" defaultValue={expense?.category} options={optionLabels(options, 'expense_category')} required />
+      <Field name="amount" label="Amount" type="number" defaultValue={expense?.amount || ''} min="0.01" step="0.01" required />
+      <OptionText name="payee" label="Paid to" defaultValue={expense?.payee} options={optionLabels(options, 'expense_payee')} />
+      <OptionText name="payment_method" label="Payment method" defaultValue={expense?.payment_method} options={optionLabels(options, 'expense_payment_method')} />
+      <Field name="reference" label="Reference" defaultValue={expense?.reference} />
+      <Field name="notes" label="Notes" defaultValue={expense?.notes} textarea />
+    </FormFrame>
+  );
+}
+
 function ChequeStatusForm({ onSave, isSaving }: { onSave: SaveHandler; isSaving: boolean }) {
   return <FormFrame title="Add cheque status" isSaving={isSaving} onSubmit={(form) => onSave('/finance/cheque-statuses/', form)}><Field name="name" label="Status name" required /><Select name="balance_effect" label="Balance effect" options={[['none', 'No automatic balance effect'], ['settles_balance', 'Settles customer balance'], ['reverses_settlement', 'Reverses settlement']]} required /></FormFrame>;
 }
 
 function DropdownOptionForm({ group, onSave, isSaving }: { group?: DropdownOption['group']; onSave: SaveHandler; isSaving: boolean }) {
-  return <FormFrame title="Add dropdown value" isSaving={isSaving} onSubmit={(form) => onSave('/catalog/dropdown-options/', { ...form, sort_order: Number(form.sort_order || 100) })}><Select name="group" label="Dropdown" defaultValue={group} options={[['bank', 'Bank'], ['part_name', 'Part name'], ['item_category', 'Item category'], ['item_unit', 'Item unit'], ['container_size_type', 'Container size / type']]} required /><Field name="label" label="Value" required /><Field name="sort_order" label="Sort order" type="number" defaultValue="100" /></FormFrame>;
+  return <FormFrame title="Add dropdown value" isSaving={isSaving} onSubmit={(form) => onSave('/catalog/dropdown-options/', { ...form, sort_order: Number(form.sort_order || 100) })}><Select name="group" label="Dropdown" defaultValue={group} options={[['bank', 'Bank'], ['part_name', 'Part name'], ['item_category', 'Item category'], ['item_unit', 'Item unit'], ['container_size_type', 'Container size / type'], ['expense_title', 'Expense title'], ['expense_category', 'Expense category'], ['expense_payee', 'Expense payee'], ['expense_payment_method', 'Expense payment method']]} required /><Field name="label" label="Value" required /><Field name="sort_order" label="Sort order" type="number" defaultValue="100" /></FormFrame>;
 }
 
 function UserForm({ user, onSave, isSaving }: { user?: ManagedUser; onSave: SaveHandler; isSaving: boolean }) {
