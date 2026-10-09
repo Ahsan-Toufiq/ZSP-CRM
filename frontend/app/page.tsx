@@ -787,14 +787,30 @@ export default function Home() {
     );
   }
 
+  function openPdfWindow(path: string, label: string, features: string) {
+    const printWindow = window.open('about:blank', '_blank', features);
+    if (!printWindow) {
+      setMessage(`Browser blocked the ${label} window. Allow popups for this site and try again.`);
+      return;
+    }
+    printWindow.opener = null;
+    printWindow.location.replace(path);
+  }
+
   function printSaleInvoice(sale: AuctionSale) {
-    const printWindow = window.open(`/api/operations/auction-sales/${sale.id}/invoice/?disposition=inline`, '_blank', 'noopener,noreferrer,width=980,height=760');
-    if (!printWindow) setMessage('Browser blocked the invoice window. Allow popups for this site and try again.');
+    openPdfWindow(
+      `/api/operations/auction-sales/${sale.id}/invoice/?disposition=inline`,
+      'invoice',
+      'width=980,height=760',
+    );
   }
 
   function printThermalInvoice(sale: AuctionSale) {
-    const printWindow = window.open(`/api/operations/auction-sales/${sale.id}/invoice/?layout=thermal&disposition=inline`, '_blank', 'noopener,noreferrer,width=480,height=760');
-    if (!printWindow) setMessage('Browser blocked the thermal invoice window. Allow popups for this site and try again.');
+    openPdfWindow(
+      `/api/operations/auction-sales/${sale.id}/invoice/?layout=thermal&disposition=inline`,
+      'thermal invoice',
+      'width=480,height=760',
+    );
   }
 
   async function markChequeStatus(cheque: Cheque, statusId: UUID) {
@@ -802,18 +818,24 @@ export default function Home() {
     await loadTabData(activeTab);
   }
 
-  async function printGatePass(gatePass: GatePass) {
-    const printWindow = window.open('', '_blank', 'width=920,height=720');
-    if (!printWindow) {
-      setMessage('Browser blocked the print window. Allow popups for this site and try again.');
-      return;
-    }
+  async function printGatePass(gatePass: GatePass, printWindow: Window) {
     printWindow.document.write(gatePassPrintHtml(gatePass));
     printWindow.document.close();
     printWindow.focus();
     printWindow.print();
-    await post(`/operations/gate-passes/${gatePass.id}/mark-printed/`, {});
-    await loadTabData(activeTab);
+    const updatedGatePass = await post<GatePass>(`/operations/gate-passes/${gatePass.id}/mark-printed/`, {});
+    setSales((currentSales) => currentSales.map((entry) => (
+      entry.gate_pass?.id === updatedGatePass.id
+        ? {
+            ...entry,
+            gate_pass: {
+              ...entry.gate_pass,
+              print_status: updatedGatePass.print_status,
+              printed_at: updatedGatePass.printed_at,
+            },
+          }
+        : entry
+    )));
   }
 
   async function printSaleGatePass(sale: AuctionSale) {
@@ -821,8 +843,21 @@ export default function Home() {
       setMessage('This sale does not have a gate pass yet.');
       return;
     }
-    const gatePass = await get<GatePass>(`/operations/gate-passes/${sale.gate_pass.id}/`);
-    await printGatePass(gatePass);
+    const printWindow = window.open('', '_blank', 'width=920,height=720');
+    if (!printWindow) {
+      setMessage('Browser blocked the print window. Allow popups for this site and try again.');
+      return;
+    }
+    printWindow.opener = null;
+    printWindow.document.write('<!doctype html><title>Preparing gate pass</title><p style="font:16px Arial,sans-serif;padding:24px">Preparing gate pass...</p>');
+    printWindow.document.close();
+    try {
+      const gatePass = await get<GatePass>(`/operations/gate-passes/${sale.gate_pass.id}/`);
+      await printGatePass(gatePass, printWindow);
+    } catch (error) {
+      printWindow.close();
+      setMessage(error instanceof Error ? error.message : 'Unable to prepare the gate pass for printing.');
+    }
   }
 
   if (booting) {
@@ -1535,7 +1570,7 @@ function SalesPanel({ sales, analytics, canWrite, onLoadAnalytics, onAdd, onEdit
             <button type="button" role="tab" aria-selected={pane === 'ledger'} className={pane === 'ledger' ? 'active' : ''} onClick={() => setPane('ledger')}>Ledger</button>
             <button type="button" role="tab" aria-selected={pane === 'analytics'} className={pane === 'analytics' ? 'active' : ''} onClick={() => setPane('analytics')}>Analytics</button>
           </div>
-          {canWrite ? <button className="btn primary" onClick={onAdd}><Gavel size={18} /> Record sale</button> : null}
+          {canWrite ? <button type="button" className="btn primary" onClick={onAdd}><Gavel size={18} /> Record sale</button> : null}
         </div>
       </div>
       {pane === 'analytics' ? <SalesAnalyticsPanel analytics={analytics} onLoadAnalytics={onLoadAnalytics} /> : (
@@ -1557,15 +1592,15 @@ function SalesPanel({ sales, analytics, canWrite, onLoadAnalytics, onAdd, onEdit
             </div>,
             <div className="table-actions" key="gate-pass">
               {sale.gate_pass ? <span className={statusClass(sale.gate_pass.print_status)}>{statusLabel(sale.gate_pass.print_status)}</span> : <span className="badge bad">missing</span>}
-              {canWrite ? <button className="icon-btn" onClick={() => onPrint(sale)} aria-label={`Print gate pass for ${sale.sale_number}`} disabled={!sale.gate_pass}><Printer size={16} /></button> : null}
+              {canWrite ? <button type="button" className="icon-btn" onClick={() => onPrint(sale)} aria-label={`Print gate pass for ${sale.sale_number}`} disabled={!sale.gate_pass}><Printer size={16} /></button> : null}
             </div>,
             <div className="table-actions" key="invoice">
-              <button className="icon-btn" onClick={() => onDownloadInvoice(sale)} aria-label={`Download standard and thermal invoices for ${sale.sale_number}`} title="Download both invoice formats"><FileDown size={16} /></button>
-              <button className="icon-btn" onClick={() => onPrintInvoice(sale)} aria-label={`Print standard invoice for ${sale.sale_number}`} title="Print standard invoice"><Printer size={16} /></button>
-              <button className="icon-btn" onClick={() => onPrintThermalInvoice(sale)} aria-label={`Print thermal invoice for ${sale.sale_number}`} title="Print 80 mm thermal invoice"><ReceiptText size={16} /></button>
+              <button type="button" className="icon-btn" onClick={() => onDownloadInvoice(sale)} aria-label={`Download standard and thermal invoices for ${sale.sale_number}`} title="Download both invoice formats"><FileDown size={16} /></button>
+              <button type="button" className="icon-btn" onClick={() => onPrintInvoice(sale)} aria-label={`Print standard invoice for ${sale.sale_number}`} title="Print standard invoice"><Printer size={16} /></button>
+              <button type="button" className="icon-btn" onClick={() => onPrintThermalInvoice(sale)} aria-label={`Print thermal invoice for ${sale.sale_number}`} title="Print 80 mm thermal invoice"><ReceiptText size={16} /></button>
             </div>,
             <div className="table-actions" key="actions">
-              {canWrite ? <button className="icon-btn" onClick={() => onEdit(sale)} aria-label={`Edit ${sale.sale_number}`}><Pencil size={16} /></button> : null}
+              {canWrite ? <button type="button" className="icon-btn" onClick={() => onEdit(sale)} aria-label={`Edit ${sale.sale_number}`}><Pencil size={16} /></button> : null}
               {!canWrite ? <span className="muted">View only</span> : null}
             </div>,
           ])}
