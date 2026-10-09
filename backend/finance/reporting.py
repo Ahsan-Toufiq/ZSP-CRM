@@ -16,6 +16,9 @@ from finance.models import ChequeSettlementAllocation, CurrencyCreditor, Custome
 from operations.models import AuctionSale, AuctionSaleLine, Customer
 
 
+BRAND_NAME = 'Zulfiqar Old Spare Parts'
+
+
 AGING_BUCKETS = (
     ('current', '0-30 days', 0, 30),
     ('days_31_60', '31-60 days', 31, 60),
@@ -37,6 +40,7 @@ class CustomerStatement:
     customer: Customer
     ledger_rows: list[dict]
     payment_rows: list[dict]
+    sales_rows: list[dict]
     totals: dict
 
 
@@ -54,6 +58,13 @@ def _money(value) -> Decimal:
 
 def _whole_money(value) -> str:
     return f'PKR {_money(value):,.0f}'
+
+
+def _filename(label: str, extension: str, *, prepared_at=None) -> str:
+    prepared_at = prepared_at or timezone.localtime()
+    clean_label = ' '.join(str(label).replace('_', ' ').replace('/', ' ').split())
+    clean_label = ''.join(character for character in clean_label if character.isalnum() or character in ' -().')
+    return f'{BRAND_NAME} - {clean_label} - {prepared_at:%Y-%m-%d}.{extension}'
 
 
 def _aging_key(days_old: int) -> str:
@@ -242,6 +253,42 @@ def build_credit_report() -> CreditReport:
 def build_customer_statement(*, customer_id) -> CustomerStatement:
     generated_at = timezone.localtime()
     customer = Customer.objects.get(id=customer_id)
+    sale_line_queryset = AuctionSaleLine.objects.select_related('item', 'inventory_batch')
+    sales = list(
+        AuctionSale.objects
+        .filter(customer=customer)
+        .prefetch_related(Prefetch('lines', queryset=sale_line_queryset))
+        .order_by('sale_date', 'created_at')
+    )
+    sales_by_id = {sale.id: sale for sale in sales}
+
+    def item_details(sale):
+        return [
+            {
+                'part_name': line.item.part_name,
+                'part_number': line.item.part_number or '',
+                'category': line.item.category or '',
+                'unit': line.item.unit or 'piece',
+                'quantity': line.quantity,
+                'sold_price': _money(line.sold_price),
+                'line_total': _money(line.quantity * line.sold_price),
+            }
+            for line in sale.lines.all()
+        ]
+
+    sales_rows = [
+        {
+            'sale_number': sale.sale_number,
+            'sale_date': sale.sale_date,
+            'payment_type': sale.get_payment_type_display(),
+            'total_amount': _money(sale.total_amount),
+            'receivable_amount': _money(sale.receivable_amount),
+            'status': 'Cancelled' if sale.is_cancelled else 'Completed',
+            'notes': sale.notes or '',
+            'items': item_details(sale),
+        }
+        for sale in sales
+    ]
     ledger_entries = (
         CustomerLedgerEntry.objects
         .filter(customer=customer)
@@ -252,6 +299,7 @@ def build_customer_statement(*, customer_id) -> CustomerStatement:
     ledger_rows = []
     for entry in ledger_entries:
         running_balance += _money(entry.debit) - _money(entry.credit)
+        sale = sales_by_id.get(entry.sale_id)
         ledger_rows.append({
             'date': entry.entry_date,
             'type': entry.get_entry_type_display(),
@@ -265,6 +313,7 @@ def build_customer_statement(*, customer_id) -> CustomerStatement:
                 entry.payment.payment_number if entry.payment_id else
                 '-'
             ),
+            'items': item_details(sale) if sale is not None else [],
         })
 
     payments = (
@@ -305,6 +354,7 @@ def build_customer_statement(*, customer_id) -> CustomerStatement:
         customer=customer,
         ledger_rows=ledger_rows,
         payment_rows=payment_rows,
+        sales_rows=sales_rows,
         totals={
             'debit': debit,
             'credit': credit,
@@ -452,10 +502,10 @@ def credit_report_csv_response(report: CreditReport, *, section='combined') -> H
     buffer = StringIO()
     writer = csv.writer(buffer)
     titles = {
-        'summary': 'ZSP Customer Summary',
-        'aging': 'ZSP Customer Aging Report',
-        'outstanding': 'ZSP Per-Customer Outstanding Balance Breakdown',
-        'combined': 'ZSP Customer Credit And Aging Report',
+        'summary': f'{BRAND_NAME} Customer Summary',
+        'aging': f'{BRAND_NAME} Customer Aging Report',
+        'outstanding': f'{BRAND_NAME} Per-Customer Outstanding Balance Breakdown',
+        'combined': f'{BRAND_NAME} Customer Credit And Aging Report',
     }
     writer.writerow([titles[section]])
     writer.writerow(['Prepared on', report.generated_at.strftime('%Y-%m-%d %H:%M:%S %Z')])
@@ -491,7 +541,7 @@ def credit_report_csv_response(report: CreditReport, *, section='combined') -> H
                 ])
 
     response = HttpResponse(buffer.getvalue(), content_type='text/csv')
-    response['Content-Disposition'] = 'attachment; filename="zsp-credit-aging-report.csv"'
+    response['Content-Disposition'] = f'attachment; filename="{_filename(titles[section], "csv", prepared_at=report.generated_at)}"'
     return response
 
 
@@ -513,12 +563,12 @@ def credit_report_pdf_response(report: CreditReport, *, section='combined') -> H
     if logo_path.exists():
         header_data.append(Image(str(logo_path), width=0.62 * inch, height=0.62 * inch))
     else:
-        header_data.append(Paragraph('ZSP', styles['Title']))
+        header_data.append(Paragraph(BRAND_NAME, styles['Title']))
     titles = {
-        'summary': 'ZSP Customer Summary',
-        'aging': 'ZSP Customer Aging Report',
-        'outstanding': 'ZSP Per-Customer Outstanding Balance Report',
-        'combined': 'ZSP Customer Credit And Aging Report',
+        'summary': f'{BRAND_NAME} Customer Summary',
+        'aging': f'{BRAND_NAME} Customer Aging Report',
+        'outstanding': f'{BRAND_NAME} Per-Customer Outstanding Balance Report',
+        'combined': f'{BRAND_NAME} Customer Credit And Aging Report',
     }
     header_data.append(Paragraph(f"<b>{titles[section]}</b><br/>Prepared through Digi7", styles['Title']))
     header_data.append(Paragraph(f"Prepared on<br/><b>{report.generated_at.strftime('%Y-%m-%d %H:%M:%S %Z')}</b>", styles['Normal']))
@@ -619,19 +669,27 @@ def credit_report_pdf_response(report: CreditReport, *, section='combined') -> H
     doc.build(story)
 
     response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
-    response['Content-Disposition'] = 'attachment; filename="zsp-credit-aging-report.pdf"'
+    response['Content-Disposition'] = f'attachment; filename="{_filename(titles[section], "pdf", prepared_at=report.generated_at)}"'
     return response
 
 
 def customer_statement_pdf_response(statement: CustomerStatement, *, report_type='combined', credit_row=None) -> HttpResponse:
     from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import inch
     from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
     buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=26, bottomMargin=26)
+    combined = report_type == 'combined'
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4) if combined else A4,
+        rightMargin=30,
+        leftMargin=30,
+        topMargin=26,
+        bottomMargin=26,
+    )
     styles = getSampleStyleSheet()
     ledger_style = ParagraphStyle('StatementLedgerCell', parent=styles['BodyText'], fontSize=6.5, leading=8)
     payment_cell_style = ParagraphStyle(
@@ -644,16 +702,19 @@ def customer_statement_pdf_response(statement: CustomerStatement, *, report_type
     if logo_path.exists():
         header_data.append(Image(str(logo_path), width=0.62 * inch, height=0.62 * inch))
     else:
-        header_data.append(Paragraph('ZSP', styles['Title']))
+        header_data.append(Paragraph(BRAND_NAME, styles['Title']))
     titles = {
         'aging': 'Customer Aging Report',
         'transactions': 'Customer Transaction History',
         'outstanding': 'Customer Outstanding Balance Report',
         'combined': 'Combined Customer Report',
     }
-    header_data.append(Paragraph(f"<b>{titles[report_type]}</b><br/>{escape(statement.customer.name)}", styles['Title']))
+    header_data.append(Paragraph(f"<b>{titles[report_type]}</b><br/>{escape(BRAND_NAME)} | {escape(statement.customer.name)}", styles['Title']))
     header_data.append(Paragraph(f"Statement date<br/><b>{statement.generated_at.strftime('%Y-%m-%d %H:%M:%S %Z')}</b>", styles['Normal']))
-    header = Table([header_data], colWidths=[0.8 * inch, 4.0 * inch, 2.3 * inch])
+    header = Table(
+        [header_data],
+        colWidths=[0.8 * inch, 7.25 * inch, 2.55 * inch] if combined else [0.8 * inch, 4.0 * inch, 2.3 * inch],
+    )
     header.setStyle(TableStyle([
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f3faf7')),
@@ -744,20 +805,39 @@ def customer_statement_pdf_response(statement: CustomerStatement, *, report_type
         ]))
         story.extend([Paragraph('<b>Amounts Currently Due</b>', styles['Heading2']), outstanding_table, Spacer(1, 12)])
 
-    ledger_rows = [['Date', 'Type', 'Description', 'Reference', 'Debit', 'Credit', 'Balance']]
+    ledger_headers = ['Date', 'Type', 'Description', 'Reference']
+    if combined:
+        ledger_headers.append('Invoice Items')
+    ledger_headers.extend(['Debit', 'Credit', 'Balance'])
+    ledger_rows = [ledger_headers]
     for row in statement.ledger_rows:
-        ledger_rows.append([
+        ledger_row = [
             str(row['date']),
             Paragraph(escape(row['type']), ledger_style),
             Paragraph(escape(row['description']), ledger_style),
             Paragraph(escape(str(row['reference'])), ledger_style),
+        ]
+        if combined:
+            item_lines = [
+                f"<b>{item['quantity']} {escape(item['unit'])} x {escape(item['part_name'])}</b>"
+                f"<br/><font size='6'>Part no: {escape(item['part_number'] or '-')} | "
+                f"Category: {escape(item['category'] or '-')}</font>"
+                for item in row['items']
+            ]
+            ledger_row.append(Paragraph('<br/>'.join(item_lines) or '-', ledger_style))
+        ledger_row.extend([
             _whole_money(row['debit']),
             _whole_money(row['credit']),
             _whole_money(row['balance']),
         ])
+        ledger_rows.append(ledger_row)
     if len(ledger_rows) == 1:
-        ledger_rows.append(['No financial activity recorded', '', '', '', '', '', ''])
-    ledger_table = Table(ledger_rows, repeatRows=1, colWidths=[0.72 * inch, 0.82 * inch, 1.62 * inch, 0.82 * inch, 0.9 * inch, 0.9 * inch, 1.0 * inch])
+        ledger_rows.append(['No financial activity recorded', *[''] * (len(ledger_headers) - 1)])
+    ledger_widths = (
+        [0.72, 0.78, 1.48, 1.05, 2.65, 1.15, 1.15, 1.25]
+        if combined else [0.72, 0.82, 1.62, 0.82, 0.9, 0.9, 1.0]
+    )
+    ledger_table = Table(ledger_rows, repeatRows=1, colWidths=[width * inch for width in ledger_widths])
     ledger_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#111827')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
@@ -765,9 +845,9 @@ def customer_statement_pdf_response(statement: CustomerStatement, *, report_type
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, -1), 6.8),
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('ALIGN', (4, 1), (6, -1), 'RIGHT'),
-        ('LEFTPADDING', (4, 1), (6, -1), 4),
-        ('RIGHTPADDING', (4, 1), (6, -1), 4),
+        ('ALIGN', (-3, 1), (-1, -1), 'RIGHT'),
+        ('LEFTPADDING', (-3, 1), (-1, -1), 4),
+        ('RIGHTPADDING', (-3, 1), (-1, -1), 4),
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
     ]))
     if report_type in {'transactions', 'combined'}:
@@ -789,7 +869,8 @@ def customer_statement_pdf_response(statement: CustomerStatement, *, report_type
         ])
     if len(payment_rows) == 1:
         payment_rows.append(['No direct payments recorded', '', '', '', '', '', ''])
-    payment_table = Table(payment_rows, repeatRows=1, colWidths=[0.72 * inch, 1.0 * inch, 0.9 * inch, 0.88 * inch, 1.45 * inch, 1.0 * inch, 0.78 * inch])
+    payment_widths = [0.9, 1.25, 1.15, 1.05, 2.4, 2.4, 1.2] if combined else [0.72, 1.0, 0.9, 0.88, 1.45, 1.0, 0.78]
+    payment_table = Table(payment_rows, repeatRows=1, colWidths=[width * inch for width in payment_widths])
     payment_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#111827')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
@@ -802,12 +883,54 @@ def customer_statement_pdf_response(statement: CustomerStatement, *, report_type
     if report_type in {'transactions', 'combined'}:
         story.extend([Paragraph('<b>Payment Details</b>', styles['Heading2']), payment_table])
         story.append(Spacer(1, 12))
-    story.append(Paragraph('Positive balance means the customer still owes ZSP. Negative balance means the customer has an advance or credit with ZSP.', styles['BodyText']))
+
+    if combined:
+        sales_rows = [['Sale / Invoice', 'Date', 'Items Purchased', 'Payment', 'Invoice Amount', 'Receivable', 'Status', 'Notes']]
+        for sale in statement.sales_rows:
+            item_lines = [
+                f"<b>{item['quantity']} {escape(item['unit'])} x {escape(item['part_name'])}</b>"
+                f"<br/><font size='6'>Part no: {escape(item['part_number'] or '-')} | "
+                f"Category: {escape(item['category'] or '-')}</font>"
+                for item in sale['items']
+            ]
+            sales_rows.append([
+                Paragraph(escape(sale['sale_number']), ledger_style),
+                sale['sale_date'].strftime('%d %b %Y'),
+                Paragraph('<br/>'.join(item_lines) or '-', ledger_style),
+                Paragraph(escape(sale['payment_type']), ledger_style),
+                _whole_money(sale['total_amount']),
+                _whole_money(sale['receivable_amount']),
+                Paragraph(escape(sale['status']), ledger_style),
+                Paragraph(escape(sale['notes'] or '-'), ledger_style),
+            ])
+        if len(sales_rows) == 1:
+            sales_rows.append(['No sales or auctions recorded', '', '', '', '', '', '', ''])
+        sales_table = Table(
+            sales_rows,
+            repeatRows=1,
+            colWidths=[1.35 * inch, 0.9 * inch, 2.75 * inch, 1.0 * inch, 1.15 * inch, 1.15 * inch, 0.85 * inch, 1.45 * inch],
+        )
+        sales_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#111827')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#d1d5db')),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 6.8),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('ALIGN', (4, 1), (5, -1), 'RIGHT'),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
+        ]))
+        story.extend([Paragraph('<b>Complete Sales / Auction History</b>', styles['Heading2']), sales_table, Spacer(1, 12)])
+
+    story.append(Paragraph(
+        f'Positive balance means the customer still owes {BRAND_NAME}. '
+        f'Negative balance means the customer has an advance or credit with {BRAND_NAME}.',
+        styles['BodyText'],
+    ))
     doc.build(story)
 
     response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
-    safe_name = ''.join(ch if ch.isalnum() else '-' for ch in statement.customer.name.lower()).strip('-') or 'customer'
-    response['Content-Disposition'] = f'attachment; filename="zsp-customer-statement-{safe_name}.pdf"'
+    response['Content-Disposition'] = f'attachment; filename="{_filename(f"{statement.customer.name} {titles[report_type]}", "pdf", prepared_at=statement.generated_at)}"'
     return response
 
 
@@ -830,10 +953,10 @@ def currency_creditor_statement_pdf_response(creditor: CurrencyCreditor) -> Http
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=24, leftMargin=24, topMargin=22, bottomMargin=24)
     story = []
     logo_path = Path(settings.BASE_DIR) / 'static' / 'branding' / 'digi7-logo.png'
-    logo = Image(str(logo_path), width=0.62 * inch, height=0.62 * inch) if logo_path.exists() else Paragraph('<b>ZSP</b>', styles['Title'])
+    logo = Image(str(logo_path), width=0.62 * inch, height=0.62 * inch) if logo_path.exists() else Paragraph(f'<b>{BRAND_NAME}</b>', styles['Title'])
     header = Table([[
         logo,
-        Paragraph(f'<b>Currency Creditor Statement</b><br/>{escape(creditor.name)}', styles['Title']),
+        Paragraph(f'<b>Currency Creditor Statement</b><br/>{escape(BRAND_NAME)} | {escape(creditor.name)}', styles['Title']),
         Paragraph(f"Prepared on<br/><b>{prepared_on.strftime('%d %B %Y, %I:%M %p')}</b>", styles['Normal']),
     ]], colWidths=[0.8 * inch, 6.7 * inch, 3.3 * inch])
     header.setStyle(TableStyle([
@@ -894,8 +1017,7 @@ def currency_creditor_statement_pdf_response(creditor: CurrencyCreditor) -> Http
         story.extend([Paragraph(f'<b>{title}</b>', styles['Heading2']), table, Spacer(1, 12)])
     doc.build(story)
     response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
-    safe_name = ''.join(ch if ch.isalnum() else '-' for ch in creditor.name.lower()).strip('-') or 'creditor'
-    response['Content-Disposition'] = f'attachment; filename="zsp-currency-creditor-{safe_name}.pdf"'
+    response['Content-Disposition'] = f'attachment; filename="{_filename(f"Currency Creditor {creditor.name}", "pdf", prepared_at=prepared_on)}"'
     return response
 
 
@@ -912,10 +1034,10 @@ def daily_payment_report_pdf_response(report: DailyPaymentReport) -> HttpRespons
     cell_style = ParagraphStyle('DailyPaymentCell', parent=styles['BodyText'], fontSize=7, leading=9)
     story = []
     logo_path = Path(settings.BASE_DIR) / 'static' / 'branding' / 'digi7-logo.png'
-    logo = Image(str(logo_path), width=0.62 * inch, height=0.62 * inch) if logo_path.exists() else Paragraph('<b>ZSP</b>', styles['Title'])
+    logo = Image(str(logo_path), width=0.62 * inch, height=0.62 * inch) if logo_path.exists() else Paragraph(f'<b>{BRAND_NAME}</b>', styles['Title'])
     header = Table([[
         logo,
-        Paragraph('<b>ZSP Daily Payment Report</b><br/><font size="9">Customer receipts and balance activity</font>', styles['Title']),
+        Paragraph(f'<b>{BRAND_NAME} Daily Payment Report</b><br/><font size="9">Customer receipts and balance activity</font>', styles['Title']),
         Paragraph(
             f'Report date<br/><b>{report.report_date.strftime("%d %B %Y")}</b><br/>'
             f'Prepared {report.prepared_at.strftime("%d %B %Y, %I:%M %p")}',
@@ -987,5 +1109,5 @@ def daily_payment_report_pdf_response(report: DailyPaymentReport) -> HttpRespons
     doc.build(story)
 
     response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
-    response['Content-Disposition'] = f'attachment; filename="zsp-daily-payments-{report.report_date.isoformat()}.pdf"'
+    response['Content-Disposition'] = f'attachment; filename="{_filename(f"Daily Payments {report.report_date:%Y-%m-%d}", "pdf", prepared_at=report.prepared_at)}"'
     return response

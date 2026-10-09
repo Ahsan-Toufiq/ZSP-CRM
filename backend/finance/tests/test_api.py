@@ -25,6 +25,7 @@ from finance.models import (
 )
 from finance.services import change_cheque_status, create_cheque
 from operations.models import AuctionSale, Customer, InventoryBatch, PartInventory
+from finance.reporting import build_customer_statement
 from operations.services import create_auction_sale
 
 
@@ -52,7 +53,7 @@ def test_credit_report_exports_json_csv_and_pdf(api_client):
     assert 'generated_at' in json_response.data
     assert csv_response.status_code == 200
     assert csv_response['Content-Type'].startswith('text/csv')
-    assert b'ZSP Customer Credit And Aging Report' in csv_response.content
+    assert b'Zulfiqar Old Spare Parts Customer Credit And Aging Report' in csv_response.content
     assert pdf_response.status_code == 200
     assert pdf_response['Content-Type'] == 'application/pdf'
     assert pdf_response.content.startswith(b'%PDF')
@@ -442,6 +443,57 @@ def test_customer_statement_pdf_exports_customer_history(api_client):
     assert response.status_code == 200
     assert response['Content-Type'] == 'application/pdf'
     assert response.content.startswith(b'%PDF')
+
+
+@pytest.mark.django_db
+def test_combined_customer_statement_includes_invoice_items_and_complete_sales_history(api_client, admin_user):
+    customer = Customer.objects.create(name='Detailed Statement Customer', phone='+923001114445')
+    item = PartInventory.objects.create(
+        part_name='NE6 Engine', part_number='A', category='Engine', quantity=2, unit='piece',
+    )
+    batch = InventoryBatch.objects.create(
+        item=item, quantity=2, raw_unit_cost=Decimal('100000.00'), net_unit_cost=Decimal('110000.00'),
+        source_label='Statement stock',
+    )
+    sale = create_auction_sale(
+        user=admin_user,
+        sale_date=timezone.localdate(),
+        payment_type=AuctionSale.PaymentType.CREDIT,
+        customer=customer,
+        notes='Customer requested inspected engine unit.',
+        lines=[{'inventory_batch': batch, 'quantity': 2, 'sold_price': Decimal('150000.00')}],
+    )
+
+    statement = build_customer_statement(customer_id=customer.id)
+    response = api_client.get(f'/api/finance/customers/{customer.id}/statement/?report=combined')
+
+    sale_ledger = next(row for row in statement.ledger_rows if row['reference'] == sale.sale_number)
+    assert sale_ledger['items'][0]['part_name'] == 'NE6 Engine'
+    assert sale_ledger['items'][0]['quantity'] == 2
+    assert statement.sales_rows[0]['sale_number'] == sale.sale_number
+    assert statement.sales_rows[0]['notes'] == 'Customer requested inspected engine unit.'
+    assert response.status_code == 200
+    assert 'Zulfiqar Old Spare Parts - Detailed Statement Customer Combined Customer Report' in response['Content-Disposition']
+
+
+@pytest.mark.django_db
+def test_currency_creditor_delete_allows_empty_record_and_blocks_financial_history(api_client):
+    empty = CurrencyCreditor.objects.create(name='Unused Currency Dealer')
+    empty_response = api_client.delete(f'/api/finance/currency-creditors/{empty.id}/')
+    assert empty_response.status_code == 204
+
+    creditor = CurrencyCreditor.objects.create(name='Historical Currency Dealer')
+    currency = Currency.objects.get(code='USD')
+    CurrencyPurchase.objects.create(
+        currency=currency,
+        purchase_type=CurrencyPurchase.PurchaseType.CREDIT,
+        creditor=creditor,
+        purchase_date=timezone.localdate(),
+        amount=Decimal('100.0000'),
+    )
+    response = api_client.delete(f'/api/finance/currency-creditors/{creditor.id}/')
+    assert response.status_code == 409
+    assert CurrencyCreditor.objects.filter(id=creditor.id).exists()
 
 
 @pytest.mark.django_db

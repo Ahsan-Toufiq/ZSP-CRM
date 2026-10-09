@@ -369,6 +369,91 @@ def test_general_batch_with_sales_cannot_be_deleted(api_client, admin_user):
 
 
 @pytest.mark.django_db
+def test_container_inventory_edit_and_delete_keep_aggregate_stock_synchronized(api_client):
+    container = Container.objects.create(reference='SYNC-DELETE-001')
+    created = api_client.post(
+        '/api/operations/items/',
+        {
+            'container': str(container.id),
+            'part_name': 'Synchronized engine',
+            'part_number': 'SYNC-A',
+            'category': 'Engine',
+            'quantity': 2,
+            'unit': 'piece',
+            'raw_unit_cost': '5000.00',
+        },
+        format='json',
+    )
+    assert created.status_code == 201
+    item = ContainerItem.objects.get(id=created.data['id'])
+    aggregate = PartInventory.objects.get(part_name='Synchronized engine')
+    assert aggregate.quantity == 2
+
+    updated = api_client.patch(
+        f'/api/operations/items/{item.id}/',
+        {'quantity': 5, 'raw_unit_cost': '5500.00'},
+        format='json',
+    )
+    assert updated.status_code == 200
+    aggregate.refresh_from_db()
+    item.refresh_from_db()
+    assert aggregate.quantity == 5
+    assert item.inventory_batch.quantity == 5
+
+    deleted = api_client.delete(f'/api/operations/items/{item.id}/')
+    assert deleted.status_code == 204
+    aggregate.refresh_from_db()
+    assert aggregate.quantity == 0
+    assert not ContainerItem.objects.filter(id=item.id).exists()
+    assert not InventoryBatch.objects.filter(container_item_id=item.id).exists()
+
+
+@pytest.mark.django_db
+def test_sold_container_inventory_delete_is_blocked_without_partial_stock_change(api_client, admin_user):
+    container = Container.objects.create(reference='SYNC-SOLD-001')
+    created = api_client.post(
+        '/api/operations/items/',
+        {
+            'container': str(container.id),
+            'part_name': 'Protected sold engine',
+            'part_number': 'PROTECTED-A',
+            'category': 'Engine',
+            'quantity': 3,
+            'unit': 'piece',
+            'raw_unit_cost': '5000.00',
+        },
+        format='json',
+    )
+    item = ContainerItem.objects.get(id=created.data['id'])
+    batch = item.inventory_batch
+    aggregate = batch.item
+    create_auction_sale(
+        user=admin_user,
+        sale_date=timezone.localdate(),
+        payment_type=AuctionSale.PaymentType.CASH,
+        lines=[{'inventory_batch': batch, 'quantity': 2, 'sold_price': Decimal('9000.00')}],
+    )
+
+    too_small = api_client.patch(
+        f'/api/operations/items/{item.id}/', {'quantity': 1}, format='json',
+    )
+    changed_identity = api_client.patch(
+        f'/api/operations/items/{item.id}/', {'part_number': 'CHANGED'}, format='json',
+    )
+    response = api_client.delete(f'/api/operations/items/{item.id}/')
+
+    assert too_small.status_code == 400
+    assert changed_identity.status_code == 400
+    assert response.status_code == 409
+    item.refresh_from_db()
+    batch.refresh_from_db()
+    aggregate.refresh_from_db()
+    assert item.quantity == 3
+    assert batch.quantity == 3
+    assert aggregate.quantity == 3
+
+
+@pytest.mark.django_db
 def test_subpart_split_over_available_quantity_returns_validation_error(api_client):
     container = Container.objects.create(reference='CNT-API-SUB', status=Container.Status.READY_FOR_AUCTION)
     parent_part = PartInventory.objects.create(
@@ -575,7 +660,8 @@ def test_sale_invoice_pdf_endpoint_returns_pdf(api_client, admin_user):
     assert thermal_response.status_code == 200
     assert thermal_response['Content-Type'] == 'application/pdf'
     assert thermal_response.content.startswith(b'%PDF')
-    assert 'thermal-invoice' in thermal_response['Content-Disposition']
+    assert 'Zulfiqar Old Spare Parts - Thermal Sales Invoice' in thermal_response['Content-Disposition']
+    assert '_' not in thermal_response['Content-Disposition']
 
 
 @pytest.mark.django_db

@@ -46,11 +46,9 @@ from operations.serializers import (
     SubpartCreateSerializer,
 )
 from operations.services import (
-    apply_container_inventory_delta,
+    delete_container_inventory_item,
     delete_general_inventory_batch,
-    is_container_cost_locked,
     mark_gate_pass_printed,
-    recalculate_container_net_costs,
     sold_quantity_for_item,
 )
 
@@ -211,6 +209,16 @@ class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
             )
             .values('raw_total')[:1]
         )
+        sold_quantity_totals = (
+            AuctionSaleLine.objects
+            .filter(
+                inventory_batch__container_item_id=OuterRef('pk'),
+                sale__is_cancelled=False,
+            )
+            .values('inventory_batch__container_item_id')
+            .annotate(total=Sum('quantity'))
+            .values('total')[:1]
+        )
         return (
             ContainerItem.objects
             .select_related('container')
@@ -221,25 +229,22 @@ class ContainerItemViewSet(UserStampedMixin, viewsets.ModelViewSet):
                     output_field=DecimalField(max_digits=14, decimal_places=2),
                 ),
                 subpart_count_total=Count('subparts'),
+                sold_quantity_total=Coalesce(
+                    Subquery(sold_quantity_totals),
+                    Value(0),
+                    output_field=IntegerField(),
+                ),
             )
             .order_by('container__reference', 'part_name', 'lot_number')
         )
 
-    def perform_destroy(self, instance):
-        container = instance.container
-        before = {
-            'container_item_id': instance.id,
-            'part_name': instance.part_name,
-            'part_number': instance.part_number or '',
-            'category': instance.category or '',
-            'unit': instance.unit or 'piece',
-            'quantity': instance.quantity,
-            'description': instance.description or '',
-        }
-        apply_container_inventory_delta(user=self.request.user, before=before)
-        instance.delete()
-        if not is_container_cost_locked(container):
-            recalculate_container_net_costs(user=self.request.user, container=container)
+    def destroy(self, request, *args, **kwargs):
+        try:
+            delete_container_inventory_item(user=request.user, container_item=self.get_object())
+        except DjangoValidationError as error:
+            detail = error.message_dict if hasattr(error, 'message_dict') else {'detail': error.messages}
+            return Response(detail, status=HTTP_409_CONFLICT)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=['post'], url_path='subparts')
     def subparts(self, request, pk=None):

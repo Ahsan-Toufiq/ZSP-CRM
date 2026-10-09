@@ -69,6 +69,8 @@ export interface ContainerItem {
   description: string;
   category: string;
   quantity: number;
+  sold_quantity: number;
+  available_quantity: number;
   unit: string;
   raw_unit_cost: string;
   raw_total_cost: string;
@@ -559,6 +561,7 @@ export interface CurrencyCreditor {
   repayment_count: number;
   overdue_count: number;
   total_pkr_repaid: string;
+  can_delete: boolean;
 }
 
 export interface CurrencyCreditorRepayment {

@@ -14,6 +14,9 @@ from django.utils import timezone
 from operations.models import AuctionSale, AuctionSaleLine, Container, InventoryBatch
 
 
+BRAND_NAME = 'Zulfiqar Old Spare Parts'
+
+
 @dataclass(frozen=True)
 class InventoryReport:
     generated_at: timezone.datetime
@@ -44,6 +47,13 @@ def _content_disposition(filename: str, *, inline: bool = False) -> str:
     return f'{disposition}; filename="{filename}"'
 
 
+def _filename(label: str, extension: str, *, prepared_at=None) -> str:
+    prepared_at = prepared_at or timezone.localtime()
+    clean_label = ' '.join(str(label).replace('_', ' ').replace('/', ' ').split())
+    clean_label = ''.join(character for character in clean_label if character.isalnum() or character in ' -().')
+    return f'{BRAND_NAME} - {clean_label} - {prepared_at:%Y-%m-%d}.{extension}'
+
+
 def _report_header(story, styles, title: str, subtitle: str, generated_at, *, generated_label='Prepared on', compact=False):
     from reportlab.lib import colors
     from reportlab.lib.units import inch
@@ -54,7 +64,7 @@ def _report_header(story, styles, title: str, subtitle: str, generated_at, *, ge
     if logo_path.exists():
         header_data.append(Image(str(logo_path), width=0.62 * inch, height=0.62 * inch))
     else:
-        header_data.append(Paragraph('<b>ZSP</b>', styles['Title']))
+        header_data.append(Paragraph(f'<b>{BRAND_NAME}</b>', styles['Title']))
     header_data.append(Paragraph(f'<b>{title}</b><br/><font size="9">{subtitle}</font>', styles['Title']))
     header_data.append(Paragraph(f'{generated_label}<br/><b>{generated_at.strftime("%Y-%m-%d %H:%M:%S %Z")}</b>', styles['Normal']))
     widths = [0.75 * inch, 4.15 * inch, 2.25 * inch] if compact else [0.8 * inch, 6.7 * inch, 3.3 * inch]
@@ -135,7 +145,7 @@ def build_inventory_report(*, container_id=None) -> InventoryReport:
 def inventory_report_csv_response(report: InventoryReport) -> HttpResponse:
     buffer = StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(['ZSP Available Inventory Report'])
+    writer.writerow([f'{BRAND_NAME} Available Inventory Report'])
     writer.writerow(['Scope', report.scope_label])
     writer.writerow(['Generated at', report.generated_at.strftime('%Y-%m-%d %H:%M:%S %Z')])
     writer.writerow([])
@@ -161,7 +171,7 @@ def inventory_report_csv_response(report: InventoryReport) -> HttpResponse:
         ])
 
     response = HttpResponse(buffer.getvalue(), content_type='text/csv')
-    response['Content-Disposition'] = _content_disposition('zsp-available-inventory.csv')
+    response['Content-Disposition'] = _content_disposition(_filename(report.scope_label, 'csv', prepared_at=report.generated_at))
     return response
 
 
@@ -176,7 +186,7 @@ def inventory_report_pdf_response(report: InventoryReport) -> HttpResponse:
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=18, bottomMargin=18)
     styles = getSampleStyleSheet()
     story = []
-    _report_header(story, styles, 'ZSP Available Inventory Report', report.scope_label, report.generated_at)
+    _report_header(story, styles, f'{BRAND_NAME} Available Inventory Report', report.scope_label, report.generated_at)
 
     summary = Table([[
         'Rows', report.totals['row_count'],
@@ -232,7 +242,7 @@ def inventory_report_pdf_response(report: InventoryReport) -> HttpResponse:
     doc.build(story)
 
     response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
-    response['Content-Disposition'] = _content_disposition('zsp-available-inventory.pdf')
+    response['Content-Disposition'] = _content_disposition(_filename(report.scope_label, 'pdf', prepared_at=report.generated_at))
     return response
 
 
@@ -336,12 +346,14 @@ def container_profit_loss_pdf_response(report: ContainerProfitLossReport) -> Htt
     details = Table([
         ['Container', container.reference, 'Status', container.get_status_display(), 'Current location', container.current_location or '-'],
         ['Agent', container.supplier_name or '-', 'Arrival date', str(container.arrival_date or '-'), 'Size / Type', container.size_type or '-'],
+        ['Notes', Paragraph(escape(container.notes or '-'), note), '', '', '', ''],
     ], colWidths=[0.9 * inch, 2.15 * inch, 0.8 * inch, 1.45 * inch, 1.15 * inch, 3.05 * inch])
     details.setStyle(TableStyle([
         ('GRID', (0, 0), (-1, -1), 0.3, colors.HexColor('#cbd5e1')),
         ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f3faf7')),
         ('BACKGROUND', (2, 0), (2, -1), colors.HexColor('#f3faf7')),
         ('BACKGROUND', (4, 0), (4, -1), colors.HexColor('#f3faf7')),
+        ('SPAN', (1, 2), (-1, 2)),
         ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
         ('FONTNAME', (2, 0), (2, -1), 'Helvetica-Bold'),
         ('FONTNAME', (4, 0), (4, -1), 'Helvetica-Bold'),
@@ -408,7 +420,9 @@ def container_profit_loss_pdf_response(report: ContainerProfitLossReport) -> Htt
     ])
     doc.build(story)
     response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
-    response['Content-Disposition'] = _content_disposition(f'container-{container.reference}-profit-loss.pdf')
+    response['Content-Disposition'] = _content_disposition(
+        _filename(f'Container {container.reference} Profit and Loss', 'pdf', prepared_at=report.generated_at),
+    )
     return response
 
 
@@ -444,7 +458,7 @@ def auction_inventory_sheet_pdf_response(container: Container) -> HttpResponse:
     cell_style = ParagraphStyle('AuctionInventoryCell', parent=styles['BodyText'], fontSize=8.5, leading=11)
     story = []
     _report_header(
-        story, styles, 'ZSP Auction Inventory Sheet',
+        story, styles, f'{BRAND_NAME} Auction Inventory Sheet',
         f'Container {escape(container.reference)}', report.generated_at, compact=True,
     )
     details = Table([
@@ -511,7 +525,9 @@ def auction_inventory_sheet_pdf_response(container: Container) -> HttpResponse:
     story.extend([table, Spacer(1, 14), totals])
     doc.build(story)
     response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
-    response['Content-Disposition'] = _content_disposition(f'zsp-auction-inventory-{container.reference}.pdf')
+    response['Content-Disposition'] = _content_disposition(
+        _filename(f'Container {container.reference} Auction Inventory Sheet', 'pdf', prepared_at=report.generated_at),
+    )
     return response
 
 
@@ -543,7 +559,7 @@ def container_tracking_pdf_response(containers) -> HttpResponse:
     styles = getSampleStyleSheet()
     cell_style = ParagraphStyle('TrackingCell', parent=styles['BodyText'], fontSize=7.5, leading=9.5)
     story = []
-    _report_header(story, styles, 'ZSP Container Tracking Report', 'Container movement and status register', generated_at)
+    _report_header(story, styles, f'{BRAND_NAME} Container Tracking Report', 'Container movement and status register', generated_at)
     rows = [['Serial No.', 'Container Number', 'Size / Type', 'Current Location', 'Agent', 'Notes']]
     for row in rows_data:
         rows.append([
@@ -570,7 +586,7 @@ def container_tracking_pdf_response(containers) -> HttpResponse:
     story.append(table)
     doc.build(story)
     response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
-    response['Content-Disposition'] = _content_disposition('zsp-container-tracking.pdf')
+    response['Content-Disposition'] = _content_disposition(_filename('Container Tracking Report', 'pdf', prepared_at=generated_at))
     return response
 
 
@@ -585,7 +601,7 @@ def container_tracking_xlsx_response(containers) -> HttpResponse:
     sheet.title = 'Container Tracking'
     sheet.sheet_view.showGridLines = False
     sheet.merge_cells('B1:F1')
-    sheet['B1'] = 'ZSP Container Tracking Report'
+    sheet['B1'] = f'{BRAND_NAME} Container Tracking Report'
     sheet['B1'].font = Font(size=18, bold=True, color='111827')
     sheet['B1'].alignment = Alignment(vertical='center')
     sheet.merge_cells('B2:F2')
@@ -633,7 +649,7 @@ def container_tracking_xlsx_response(containers) -> HttpResponse:
         buffer.getvalue(),
         content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     )
-    response['Content-Disposition'] = _content_disposition('zsp-container-tracking.xlsx')
+    response['Content-Disposition'] = _content_disposition(_filename('Container Tracking Report', 'xlsx'))
     return response
 
 
@@ -667,12 +683,15 @@ def sale_invoice_pdf_response(sale: AuctionSale, *, inline: bool = False) -> Htt
         gate_pass_number = sale.gate_pass.gate_pass_number
     except AuctionSale.gate_pass.RelatedObjectDoesNotExist:
         gate_pass_number = '-'
-    invoice_meta = Table([
+    invoice_meta_rows = [
         ['Invoice #', Paragraph(escape(sale.sale_number), meta_style), 'Date', str(sale.sale_date)],
         ['Customer', Paragraph(escape(customer_name), meta_style), 'Contact', Paragraph(escape(customer_phone), meta_style)],
         ['Payment', Paragraph(escape(sale.get_payment_type_display()), meta_style), 'Gate pass', Paragraph(escape(gate_pass_number), meta_style)],
-    ], colWidths=[1.2 * inch, 2.4 * inch, 1.2 * inch, 2.1 * inch])
-    invoice_meta.setStyle(TableStyle([
+    ]
+    if sale.notes:
+        invoice_meta_rows.append(['Sale Notes', Paragraph(escape(sale.notes), meta_style), '', ''])
+    invoice_meta = Table(invoice_meta_rows, colWidths=[1.2 * inch, 2.4 * inch, 1.2 * inch, 2.1 * inch])
+    invoice_meta_style = [
         ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#d1d5db')),
         ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f3faf7')),
         ('BACKGROUND', (2, 0), (2, -1), colors.HexColor('#f3faf7')),
@@ -681,10 +700,13 @@ def sale_invoice_pdf_response(sale: AuctionSale, *, inline: bool = False) -> Htt
         ('FONTSIZE', (0, 0), (-1, -1), 8.5),
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('INNERPADDING', (0, 0), (-1, -1), 8),
-    ]))
+    ]
+    if sale.notes:
+        invoice_meta_style.append(('SPAN', (1, -1), (-1, -1)))
+    invoice_meta.setStyle(TableStyle(invoice_meta_style))
     story.extend([invoice_meta, Spacer(1, 14)])
 
-    item_rows = [['Item', 'Part No.', 'Category', 'Quantity', 'Unit Price', 'Amount']]
+    item_rows = [['Item Name', 'Part No.', 'Category', 'Quantity', 'Unit Price', 'Amount']]
     for line in sale.lines.all():
         item_rows.append([
             Paragraph(escape(line.item.part_name), styles['BodyText']),
@@ -730,7 +752,9 @@ def sale_invoice_pdf_response(sale: AuctionSale, *, inline: bool = False) -> Htt
     doc.build(story)
 
     response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
-    response['Content-Disposition'] = _content_disposition(f'zsp-invoice-{sale.sale_number}.pdf', inline=inline)
+    response['Content-Disposition'] = _content_disposition(
+        _filename(f'Sales Invoice {sale.sale_number}', 'pdf', prepared_at=generated_at), inline=inline,
+    )
     return response
 
 
@@ -746,7 +770,8 @@ def sale_thermal_invoice_pdf_response(sale: AuctionSale, *, inline: bool = False
         .prefetch_related('lines__item', 'cheques')
         .get(id=sale.id)
     )
-    page_height = max(150 * mm, (118 + (len(sale.lines.all()) * 11)) * mm)
+    notes_height = min(max(len(sale.notes) // 28, 0) * 5, 35) if sale.notes else 0
+    page_height = max(150 * mm, (118 + (len(sale.lines.all()) * 11) + notes_height) * mm)
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -774,13 +799,16 @@ def sale_thermal_invoice_pdf_response(sale: AuctionSale, *, inline: bool = False
 
     customer_name = sale.customer.name if sale.customer_id else 'Cash customer'
     customer_phone = sale.customer.phone if sale.customer_id else '-'
-    meta = Table([
+    meta_rows = [
         ['Invoice', escape(sale.sale_number)],
         ['Date', sale.sale_date.strftime('%d %b %Y')],
         ['Customer', Paragraph(escape(customer_name), cell_style)],
         ['Contact', escape(customer_phone)],
         ['Payment', sale.get_payment_type_display()],
-    ], colWidths=[18 * mm, 52 * mm])
+    ]
+    if sale.notes:
+        meta_rows.append(['Sale Notes', Paragraph(escape(sale.notes), cell_style)])
+    meta = Table(meta_rows, colWidths=[18 * mm, 52 * mm])
     meta.setStyle(TableStyle([
         ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, -1), 7),
@@ -790,7 +818,7 @@ def sale_thermal_invoice_pdf_response(sale: AuctionSale, *, inline: bool = False
     ]))
     story.extend([meta, Spacer(1, 3 * mm)])
 
-    rows = [['Item', 'Qty', 'Rate', 'Amount']]
+    rows = [['Item Name', 'Qty', 'Rate', 'Amount']]
     for line in sale.lines.all():
         rows.append([
             Paragraph(
@@ -843,5 +871,7 @@ def sale_thermal_invoice_pdf_response(sale: AuctionSale, *, inline: bool = False
     doc.build(story)
 
     response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
-    response['Content-Disposition'] = _content_disposition(f'zsp-thermal-invoice-{sale.sale_number}.pdf', inline=inline)
+    response['Content-Disposition'] = _content_disposition(
+        _filename(f'Thermal Sales Invoice {sale.sale_number}', 'pdf'), inline=inline,
+    )
     return response

@@ -422,6 +422,57 @@ def apply_container_inventory_delta(*, user, before: dict | None = None, after: 
         _sync_container_batch(user=user, container_item=after, inventory=inventory)
 
 
+@transaction.atomic
+def delete_container_inventory_item(*, user, container_item: ContainerItem) -> None:
+    """Delete unsold source stock without leaving aggregate inventory out of sync."""
+    container_item = (
+        ContainerItem.objects
+        .select_for_update()
+        .select_related('container')
+        .get(pk=container_item.pk)
+    )
+    if container_item.subparts.exists():
+        raise ValidationError({
+            'item': 'Delete this item\'s child parts first. Parent inventory with child-part history cannot be deleted.',
+        })
+
+    batch = (
+        InventoryBatch.objects
+        .select_for_update(of=('self',))
+        .filter(container_item=container_item)
+        .first()
+    )
+    sold_quantity = sold_quantity_for_batch(batch) if batch is not None else 0
+    if sold_quantity:
+        raise ValidationError({
+            'item': (
+                f'This inventory source has {sold_quantity} sold unit(s) and cannot be deleted. '
+                'Its sales and costing history must remain auditable.'
+            ),
+        })
+
+    snapshot = _container_item_snapshot(container_item)
+    item_id = container_item.id
+    container = container_item.container
+    apply_container_inventory_delta(user=user, before=snapshot)
+    container_item.delete()
+    if not is_container_cost_locked(container):
+        recalculate_container_net_costs(user=user, container=container)
+    AuditLog.objects.create(
+        actor=user,
+        action='inventory.container_item.deleted',
+        entity_type='ContainerItem',
+        entity_id=str(item_id),
+        message=f'Deleted unsold container inventory for {snapshot["part_name"]}',
+        metadata={
+            'container': container.reference,
+            'part_number': snapshot['part_number'],
+            'category': snapshot['category'],
+            'quantity': snapshot['quantity'],
+        },
+    )
+
+
 def _ensure_subpart_dropdown_options(*, user, payload: dict) -> None:
     ensure_dropdown_option(group=DropdownOption.Group.PART_NAME, label=payload.get('part_name', ''), user=user)
     ensure_dropdown_option(group=DropdownOption.Group.ITEM_CATEGORY, label=payload.get('category', ''), user=user)

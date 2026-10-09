@@ -564,17 +564,18 @@ class CurrencyCreditorSerializer(serializers.ModelSerializer):
     repayment_count = serializers.SerializerMethodField()
     overdue_count = serializers.SerializerMethodField()
     total_pkr_repaid = serializers.SerializerMethodField()
+    can_delete = serializers.SerializerMethodField()
 
     class Meta:
         model = CurrencyCreditor
         fields = [
             'id', 'name', 'phone', 'address', 'notes', 'is_active',
             'outstanding_by_currency', 'purchase_count', 'repayment_count',
-            'overdue_count', 'total_pkr_repaid', 'created_at', 'updated_at',
+            'overdue_count', 'total_pkr_repaid', 'can_delete', 'created_at', 'updated_at',
         ]
         read_only_fields = [
             'id', 'outstanding_by_currency', 'purchase_count', 'repayment_count',
-            'overdue_count', 'total_pkr_repaid', 'created_at', 'updated_at',
+            'overdue_count', 'total_pkr_repaid', 'can_delete', 'created_at', 'updated_at',
         ]
 
     def _summary(self, obj):
@@ -620,6 +621,9 @@ class CurrencyCreditorSerializer(serializers.ModelSerializer):
 
     def get_total_pkr_repaid(self, obj):
         return self._summary(obj)['total_pkr_repaid']
+
+    def get_can_delete(self, obj):
+        return self._summary(obj)['purchase_count'] == 0
 
 
 class CurrencyCreditorRepaymentSerializer(serializers.ModelSerializer):

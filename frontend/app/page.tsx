@@ -191,6 +191,11 @@ function money(value: string | number | null | undefined) {
   return new Intl.NumberFormat('en-PK', { style: 'currency', currency: 'PKR', maximumFractionDigits: 0 }).format(amount);
 }
 
+function reportFilename(label: string, extension: string) {
+  const cleanLabel = label.replaceAll('_', ' ').replaceAll('/', ' ').replace(/[^a-zA-Z0-9 .()-]+/g, '').replace(/\s+/g, ' ').trim();
+  return `Zulfiqar Old Spare Parts - ${cleanLabel} - ${pakistanLocalDate()}.${extension}`;
+}
+
 function shortDate(value: string | null | undefined) {
   if (!value) return '-';
   return new Intl.DateTimeFormat('en-PK', { dateStyle: 'medium' }).format(new Date(`${value}T00:00:00`));
@@ -705,7 +710,7 @@ export default function Home() {
   async function downloadCreditReport(format: 'csv' | 'pdf', section: 'summary' | 'aging' | 'outstanding' | 'combined') {
     await downloadBlob(
       `/api/finance/credit-report/?export=${format}&section=${section}`,
-      `zsp-customer-${section}-report.${format}`,
+      reportFilename(`Customer ${statusLabel(section)} Report`, format),
       format === 'csv' ? 'Unable to download Spreadsheet report.' : 'Unable to download PDF report.',
     );
   }
@@ -713,7 +718,7 @@ export default function Home() {
   async function downloadCustomerStatement(customer: Customer, report: 'aging' | 'transactions' | 'outstanding' | 'combined') {
     await downloadBlob(
       `/api/finance/customers/${customer.id}/statement/?report=${report}`,
-      `zsp-customer-${report}-${customer.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.pdf`,
+      reportFilename(`${customer.name} ${statusLabel(report)} Customer Report`, 'pdf'),
       'Unable to download customer statement.',
     );
   }
@@ -721,7 +726,7 @@ export default function Home() {
   async function downloadDailyPaymentReport(reportDate: string) {
     await downloadBlob(
       `/api/finance/daily-payments/?date=${encodeURIComponent(reportDate)}&export=pdf`,
-      `zsp-daily-payments-${reportDate}.pdf`,
+      reportFilename(`Daily Payments ${reportDate}`, 'pdf'),
       'Unable to download the daily payment report.',
     );
   }
@@ -731,7 +736,7 @@ export default function Home() {
     if (containerId) params.set('container', containerId);
     await downloadBlob(
       `/api/operations/inventory-report/?${params.toString()}`,
-      `zsp-available-inventory${containerId ? '-container' : ''}.${format}`,
+      reportFilename(containerId ? 'Specific Container Available Inventory' : 'All Available Inventory', format),
       format === 'csv' ? 'Unable to download inventory Spreadsheet.' : 'Unable to download inventory PDF.',
     );
   }
@@ -739,7 +744,7 @@ export default function Home() {
   async function downloadAuctionInventory(containerId: UUID) {
     await downloadBlob(
       `/api/operations/inventory-report/?export=pdf&report=auction&container=${containerId}`,
-      'zsp-auction-inventory-sheet.pdf',
+      reportFilename('Auction Inventory Sheet', 'pdf'),
       'Unable to download the auction inventory sheet.',
     );
   }
@@ -747,7 +752,7 @@ export default function Home() {
   async function downloadContainerTracking(format: 'pdf' | 'xlsx') {
     await downloadBlob(
       `/api/operations/container-tracking-report/?export=${format}`,
-      `zsp-container-tracking.${format}`,
+      reportFilename('Container Tracking Report', format),
       `Unable to download the container tracking ${format === 'xlsx' ? 'Spreadsheet' : 'PDF'}.`,
     );
   }
@@ -756,7 +761,7 @@ export default function Home() {
     const container = containers.find((entry) => entry.id === containerId);
     await downloadBlob(
       `/api/operations/container-profit-loss-report/?container=${encodeURIComponent(containerId)}`,
-      `container-${(container?.reference || 'report').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-profit-loss.pdf`,
+      reportFilename(`Container ${container?.reference || 'Report'} Profit and Loss`, 'pdf'),
       'Unable to download the container profit and loss report.',
     );
   }
@@ -764,7 +769,7 @@ export default function Home() {
   async function downloadCurrencyCreditorStatement(creditor: CurrencyCreditor) {
     await downloadBlob(
       `/api/finance/currency-creditors/${creditor.id}/statement/`,
-      `zsp-currency-creditor-${creditor.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.pdf`,
+      reportFilename(`Currency Creditor ${creditor.name}`, 'pdf'),
       'Unable to download the creditor statement.',
     );
   }
@@ -772,12 +777,12 @@ export default function Home() {
   async function downloadSaleInvoice(sale: AuctionSale) {
     await downloadBlob(
       `/api/operations/auction-sales/${sale.id}/invoice/`,
-      `zsp-invoice-${sale.sale_number}.pdf`,
+      reportFilename(`Sales Invoice ${sale.sale_number}`, 'pdf'),
       'Unable to download invoice.',
     );
     await downloadBlob(
       `/api/operations/auction-sales/${sale.id}/invoice/?layout=thermal`,
-      `zsp-thermal-invoice-${sale.sale_number}.pdf`,
+      reportFilename(`Thermal Sales Invoice ${sale.sale_number}`, 'pdf'),
       'Standard invoice downloaded, but the thermal invoice could not be downloaded.',
     );
   }
@@ -879,7 +884,7 @@ export default function Home() {
         {!loading && activeTab === 'containers' ? <ContainersPanel canWrite={canWrite('containers')} containers={containers} statusAppearances={containerStatusAppearances} items={items} itemsByContainer={itemsByContainer} parts={parts} expandedContainers={expandedContainers} expandedParts={expandedParts} inventoryPane={inventoryPane} onInventoryPaneChange={setInventoryPane} onToggleContainer={(id) => toggleSet(setExpandedContainers, id)} onTogglePart={(id) => toggleSet(setExpandedParts, id)} onAdd={() => setModal({ type: 'container' })} onEdit={(container) => setModal({ type: 'container', container })} onDelete={(container) => remove(`/operations/containers/${container.id}/`)} onAddItem={(containerId) => setModal({ type: 'item', containerId })} onEditItem={(item) => setModal({ type: 'item', item })} onDeleteItem={(item) => remove(`/operations/items/${item.id}/`)} onAddSubparts={(item) => setModal({ type: 'subparts', parentItem: item })} onAddPart={() => setModal({ type: 'part' })} onEditPart={(part) => setModal({ type: 'part', part })} onDeletePart={(part) => remove(`/operations/parts/${part.id}/`)} onAddGeneralStock={(part) => setModal({ type: 'general-batch', part })} onEditGeneralBatch={(part, batch) => setModal({ type: 'general-batch', part, batch })} onDeleteGeneralBatch={(batch) => remove(`/operations/inventory-batches/${batch.id}/`)} onReports={() => setModal({ type: 'container-reports' })} onProfitLoss={downloadContainerProfitLoss} /> : null}
         {!loading && activeTab === 'sales' ? <SalesPanel canWrite={canWrite('sales')} sales={sales} analytics={salesAnalytics} onLoadAnalytics={loadSalesAnalytics} onAdd={() => { setNewSaleCustomer(null); setModal({ type: 'sale' }); }} onEdit={(sale) => { setNewSaleCustomer(null); setModal({ type: 'sale', sale }); }} onPrint={printSaleGatePass} onDownloadInvoice={downloadSaleInvoice} onPrintInvoice={printSaleInvoice} onPrintThermalInvoice={printThermalInvoice} /> : null}
         {!loading && activeTab === 'cheques' ? <ChequesPanel canWrite={canWrite('cheques')} cheques={cheques} statuses={chequeStatuses} onAdd={() => setModal({ type: 'cheque' })} onEdit={(cheque) => setModal({ type: 'cheque', cheque })} onStatus={markChequeStatus} onAddStatus={() => setModal({ type: 'cheque-status' })} /> : null}
-        {!loading && activeTab === 'currency' ? <CurrencyPanel canWrite={canWrite('currency')} currencies={currencies} purchases={currencyPurchases} openings={currencyOpenings} spending={currencySpending} creditors={currencyCreditors} repayments={currencyRepayments} onAddOpening={() => setModal({ type: 'currency-opening' })} onEditCurrency={(currency) => setModal({ type: 'currency', currency })} onAddPurchase={() => setModal({ type: 'currency-purchase' })} onEditPurchase={(purchase) => setModal({ type: 'currency-purchase', purchase })} onAddSpending={() => setModal({ type: 'currency-spending' })} onEditOpening={(opening) => setModal({ type: 'currency-opening', opening })} onEditSpending={(entry) => setModal({ type: 'currency-spending', spending: entry })} onAddCreditor={() => setModal({ type: 'currency-creditor' })} onEditCreditor={(creditor) => setModal({ type: 'currency-creditor', creditor })} onRepay={(purchase) => setModal({ type: 'currency-repayment', purchase })} onDownloadCreditor={downloadCurrencyCreditorStatement} /> : null}
+        {!loading && activeTab === 'currency' ? <CurrencyPanel canWrite={canWrite('currency')} currencies={currencies} purchases={currencyPurchases} openings={currencyOpenings} spending={currencySpending} creditors={currencyCreditors} repayments={currencyRepayments} onAddOpening={() => setModal({ type: 'currency-opening' })} onEditCurrency={(currency) => setModal({ type: 'currency', currency })} onAddPurchase={() => setModal({ type: 'currency-purchase' })} onEditPurchase={(purchase) => setModal({ type: 'currency-purchase', purchase })} onAddSpending={() => setModal({ type: 'currency-spending' })} onEditOpening={(opening) => setModal({ type: 'currency-opening', opening })} onEditSpending={(entry) => setModal({ type: 'currency-spending', spending: entry })} onAddCreditor={() => setModal({ type: 'currency-creditor' })} onEditCreditor={(creditor) => setModal({ type: 'currency-creditor', creditor })} onDeleteCreditor={(creditor) => remove(`/finance/currency-creditors/${creditor.id}/`)} onRepay={(purchase) => setModal({ type: 'currency-repayment', purchase })} onDownloadCreditor={downloadCurrencyCreditorStatement} /> : null}
         {!loading && activeTab === 'expenses' ? <ExpensesPanel canWrite={canWrite('expenses')} expenses={expenses} analytics={expenseAnalytics} onLoadAnalytics={loadExpenseAnalytics} onAdd={() => setModal({ type: 'expense' })} onEdit={(expense) => setModal({ type: 'expense', expense })} onDelete={(expense) => remove(`/finance/expenses/${expense.id}/`)} /> : null}
         {!loading && activeTab === 'settings' ? <SettingsPanel canWrite={canWrite('settings')} options={dropdownOptions} chequeStatuses={chequeStatuses} statusAppearances={containerStatusAppearances} onSaveStatusColor={saveContainerStatusAppearance} onAdd={(group) => setModal({ type: 'dropdown-option', group })} onAddChequeStatus={() => setModal({ type: 'cheque-status' })} /> : null}
         {!loading && activeTab === 'users' ? <UsersPanel canWrite={canWrite('users')} users={managedUsers} currentUserId={currentUser?.id} deletingPath={deletingPath} onAdd={() => setModal({ type: 'user' })} onEdit={(user) => setModal({ type: 'user', user })} onDelete={(user) => remove(`/auth/users/${user.id}/`)} /> : null}
@@ -1323,6 +1328,8 @@ function ContainersPanel({
                     item.part_number || '-',
                     item.category || '-',
                     `${item.quantity} ${item.unit}`,
+                    `${item.sold_quantity} ${item.unit}`,
+                    <strong key="available">{item.available_quantity} {item.unit}</strong>,
                     money(item.raw_unit_cost),
                     money(item.raw_total_cost),
                     money(item.added_cost_share),
@@ -1331,7 +1338,7 @@ function ContainersPanel({
                     <div className="table-actions" key="actions">
                       {canWrite ? <button className="icon-btn" onClick={() => onEditItem(item)} aria-label={`Edit ${item.part_name}`}><Pencil size={16} /></button> : null}
                       {canWrite ? <button className="icon-btn" onClick={() => onAddSubparts(item)} aria-label={`Create subparts from ${item.part_name}`} title={item.quantity > 0 ? 'Create subparts' : 'No quantity left to split'} disabled={item.quantity <= 0}><Boxes size={16} /></button> : null}
-                      {canWrite ? <button className="icon-btn danger" onClick={() => onDeleteItem(item)} aria-label={`Delete ${item.part_name}`}><Trash2 size={16} /></button> : <span className="muted">View only</span>}
+                      {canWrite ? <button className="icon-btn danger" onClick={() => onDeleteItem(item)} aria-label={`Delete ${item.part_name}`} disabled={item.sold_quantity > 0 || item.has_subparts} title={item.sold_quantity > 0 ? 'Inventory with sale history cannot be deleted.' : item.has_subparts ? 'Delete child parts before deleting this parent item.' : `Delete ${item.part_name}`}><Trash2 size={16} /></button> : <span className="muted">View only</span>}
                     </div>,
                   ],
                 };
@@ -1342,6 +1349,8 @@ function ContainersPanel({
                     child.part_number || '-',
                     child.category || '-',
                     `${child.quantity} ${child.unit}`,
+                    `${child.sold_quantity} ${child.unit}`,
+                    <strong key="available">{child.available_quantity} {child.unit}</strong>,
                     money(child.raw_unit_cost),
                     money(child.raw_total_cost),
                     money(child.added_cost_share),
@@ -1349,7 +1358,7 @@ function ContainersPanel({
                     money(child.net_total_cost),
                     <div className="table-actions" key="actions">
                       {canWrite ? <button className="icon-btn" onClick={() => onEditItem(child)} aria-label={`Edit ${child.part_name}`}><Pencil size={16} /></button> : null}
-                      {canWrite ? <button className="icon-btn danger" onClick={() => onDeleteItem(child)} aria-label={`Delete ${child.part_name}`}><Trash2 size={16} /></button> : <span className="muted">View only</span>}
+                      {canWrite ? <button className="icon-btn danger" onClick={() => onDeleteItem(child)} aria-label={`Delete ${child.part_name}`} disabled={child.sold_quantity > 0} title={child.sold_quantity > 0 ? 'Inventory with sale history cannot be deleted.' : `Delete ${child.part_name}`}><Trash2 size={16} /></button> : <span className="muted">View only</span>}
                     </div>,
                   ],
                 }));
@@ -1388,7 +1397,7 @@ function ContainersPanel({
                     <>
                     <SearchField compact label={`Search parts inside ${container.reference}`} value={containerItemSearch[container.id] || ''} onChange={(value) => setContainerItemSearch((previous) => ({ ...previous, [container.id]: value }))} />
                     <DataTable
-                      headers={['Part', 'Part number', 'Category', 'Qty', 'Raw unit', 'Raw total', 'Clearing Fee share', 'Net unit', 'Net total', 'Actions']}
+                      headers={['Part', 'Part number', 'Category', 'Original qty', 'Sold', 'Available', 'Raw unit', 'Raw total', 'Clearing Fee share', 'Net unit', 'Net total', 'Actions']}
                       rows={itemRows}
                     />
                     </>
@@ -1670,7 +1679,7 @@ function ChequesPanel({ cheques, statuses, canWrite, onAdd, onEdit, onStatus, on
   return <section className="panel"><div className="section-head"><div><h2>Cheque control</h2><p className="muted">Receivables reduce only when a cheque reaches a settlement status.</p></div>{canWrite ? <div className="head-actions"><button className="btn" onClick={onAddStatus}><Plus size={18} /> Status</button><button className="btn primary" onClick={onAdd}><Plus size={18} /> Cheque</button></div> : null}</div><DataTable headers={['Cheque', 'Customer', 'Name on cheque', 'Bank', 'Amount', 'Dates', 'Status', 'Actions']} rows={cheques.map((cheque) => ({ className: chequeRowClass(cheque), cells: [cheque.cheque_number, cheque.customer_name, cheque.name_on_cheque || '-', cheque.bank_name, money(cheque.amount), <div key="dates">Cheque: {cheque.cheque_date}<span className="cell-note">Expiry: {cheque.expiry_date}</span></div>, canWrite ? <Select key="status" compact name={`cheque-status-${cheque.id}`} label="Status" value={cheque.status} onChange={(value) => onStatus(cheque, value)} options={statusOptions} /> : <span key="status" className={statusClass(cheque.status_name)}>{cheque.status_name}</span>, canWrite ? <button className="icon-btn" key="edit" onClick={() => onEdit(cheque)} aria-label={`Edit ${cheque.cheque_number}`}><Pencil size={16} /></button> : <span className="muted" key="view">View only</span>] }))} /></section>;
 }
 
-function CurrencyPanel({ currencies, purchases, openings, spending, creditors, repayments, canWrite, onAddOpening, onEditCurrency, onAddPurchase, onEditPurchase, onAddSpending, onEditOpening, onEditSpending, onAddCreditor, onEditCreditor, onRepay, onDownloadCreditor }: { currencies: Currency[]; purchases: CurrencyPurchase[]; openings: CurrencyOpeningBalance[]; spending: CurrencySpending[]; creditors: CurrencyCreditor[]; repayments: CurrencyCreditorRepayment[]; canWrite: boolean; onAddOpening: () => void; onEditCurrency: (currency: Currency) => void; onAddPurchase: () => void; onEditPurchase: (purchase: CurrencyPurchase) => void; onAddSpending: () => void; onEditOpening: (opening: CurrencyOpeningBalance) => void; onEditSpending: (entry: CurrencySpending) => void; onAddCreditor: () => void; onEditCreditor: (creditor: CurrencyCreditor) => void; onRepay: (purchase: CurrencyPurchase) => void; onDownloadCreditor: (creditor: CurrencyCreditor) => void }) {
+function CurrencyPanel({ currencies, purchases, openings, spending, creditors, repayments, canWrite, onAddOpening, onEditCurrency, onAddPurchase, onEditPurchase, onAddSpending, onEditOpening, onEditSpending, onAddCreditor, onEditCreditor, onDeleteCreditor, onRepay, onDownloadCreditor }: { currencies: Currency[]; purchases: CurrencyPurchase[]; openings: CurrencyOpeningBalance[]; spending: CurrencySpending[]; creditors: CurrencyCreditor[]; repayments: CurrencyCreditorRepayment[]; canWrite: boolean; onAddOpening: () => void; onEditCurrency: (currency: Currency) => void; onAddPurchase: () => void; onEditPurchase: (purchase: CurrencyPurchase) => void; onAddSpending: () => void; onEditOpening: (opening: CurrencyOpeningBalance) => void; onEditSpending: (entry: CurrencySpending) => void; onAddCreditor: () => void; onEditCreditor: (creditor: CurrencyCreditor) => void; onDeleteCreditor: (creditor: CurrencyCreditor) => void; onRepay: (purchase: CurrencyPurchase) => void; onDownloadCreditor: (creditor: CurrencyCreditor) => void }) {
   const [pane, setPane] = useState<'holdings' | 'creditors'>('holdings');
   const [selectedCreditorId, setSelectedCreditorId] = useState('');
   const portfolioCurrencies = currencies
@@ -1735,7 +1744,7 @@ function CurrencyPanel({ currencies, purchases, openings, spending, creditors, r
       ])} />
       </> : <>
       <div className="report-summary"><Metric compact label="Creditors" value={creditors.length} /><Metric compact label="Open liabilities" value={creditPurchases.filter((purchase) => Number(purchase.outstanding_amount) > 0).length} tone="warning" /><Metric compact label="Overdue liabilities" value={creditors.reduce((sum, creditor) => sum + creditor.overdue_count, 0)} tone="warning" /><Metric compact label="PKR repaid" value={money(creditors.reduce((sum, creditor) => sum + Number(creditor.total_pkr_repaid), 0))} tone="cash" /></div>
-      <DataTable headers={['Creditor', 'Outstanding currencies', 'Credit purchases', 'Repayments', 'Overdue', 'Actions']} rows={creditors.map((creditor) => [<div key="creditor"><strong>{creditor.name}</strong><span className="cell-note">{creditor.phone || 'No contact number'}</span></div>, <div className="chips" key="balances">{creditor.outstanding_by_currency.length ? creditor.outstanding_by_currency.map((balance) => <span className="chip" key={balance.currency_code}>{Number(balance.amount).toLocaleString('en-PK', { maximumFractionDigits: 4 })} {balance.currency_code}</span>) : <span className="badge good">Settled</span>}</div>, creditor.purchase_count, creditor.repayment_count, <span className={creditor.overdue_count ? 'badge bad' : 'badge good'} key="overdue">{creditor.overdue_count}</span>, <div className="table-actions" key="actions"><button className="icon-btn" onClick={() => setSelectedCreditorId(creditor.id)} aria-label={`View ${creditor.name} liabilities`}><Eye size={16} /></button><button className="icon-btn" onClick={() => onDownloadCreditor(creditor)} aria-label={`Download ${creditor.name} statement`}><FileDown size={16} /></button>{canWrite ? <button className="icon-btn" onClick={() => onEditCreditor(creditor)} aria-label={`Edit ${creditor.name}`}><Pencil size={16} /></button> : null}</div>])} />
+      <DataTable headers={['Creditor', 'Outstanding currencies', 'Credit purchases', 'Repayments', 'Overdue', 'Actions']} rows={creditors.map((creditor) => [<div key="creditor"><strong>{creditor.name}</strong><span className="cell-note">{creditor.phone || 'No contact number'}</span></div>, <div className="chips" key="balances">{creditor.outstanding_by_currency.length ? creditor.outstanding_by_currency.map((balance) => <span className="chip" key={balance.currency_code}>{Number(balance.amount).toLocaleString('en-PK', { maximumFractionDigits: 4 })} {balance.currency_code}</span>) : <span className="badge good">Settled</span>}</div>, creditor.purchase_count, creditor.repayment_count, <span className={creditor.overdue_count ? 'badge bad' : 'badge good'} key="overdue">{creditor.overdue_count}</span>, <div className="table-actions" key="actions"><button className="icon-btn" onClick={() => setSelectedCreditorId(creditor.id)} aria-label={`View ${creditor.name} liabilities`}><Eye size={16} /></button><button className="icon-btn" onClick={() => onDownloadCreditor(creditor)} aria-label={`Download ${creditor.name} statement`}><FileDown size={16} /></button>{canWrite ? <button className="icon-btn" onClick={() => onEditCreditor(creditor)} aria-label={`Edit ${creditor.name}`}><Pencil size={16} /></button> : null}{canWrite ? <button className="icon-btn danger" onClick={() => onDeleteCreditor(creditor)} aria-label={`Delete ${creditor.name}`} disabled={!creditor.can_delete} title={creditor.can_delete ? `Delete ${creditor.name}` : 'Creditors with purchase or repayment history cannot be deleted. Mark the creditor inactive instead.'}><Trash2 size={16} /></button> : null}</div>])} />
       {selectedCreditor ? <section className="creditor-detail"><div className="section-head slim"><div><h3>{selectedCreditor.name}</h3><p className="muted">Credit purchases and repayment history by currency.</p></div><button type="button" className="icon-btn" onClick={() => setSelectedCreditorId('')} aria-label="Close creditor details"><X size={16} /></button></div><DataTable headers={['Purchase date', 'Currency liability', 'Due date', 'Repaid', 'Outstanding', 'Status', 'Actions']} rows={selectedPurchases.map((purchase) => [shortDate(purchase.purchase_date), `${Number(purchase.amount).toLocaleString('en-PK', { maximumFractionDigits: 4 })} ${purchase.currency_code}`, shortDate(purchase.due_date), `${Number(purchase.repaid_amount).toLocaleString('en-PK', { maximumFractionDigits: 4 })} ${purchase.currency_code}`, <strong className={Number(purchase.outstanding_amount) > 0 ? 'money-bad' : 'money-good'} key="outstanding">{Number(purchase.outstanding_amount).toLocaleString('en-PK', { maximumFractionDigits: 4 })} {purchase.currency_code}</strong>, <span className={Number(purchase.outstanding_amount) > 0 ? 'badge warn' : 'badge good'} key="status">{Number(purchase.outstanding_amount) > 0 ? 'Outstanding' : 'Settled'}</span>, <div className="table-actions" key="actions">{canWrite && Number(purchase.outstanding_amount) > 0 ? <button className="btn small" onClick={() => onRepay(purchase)}><Banknote size={15} /> Repay</button> : null}{canWrite ? <button className="icon-btn" onClick={() => onEditPurchase(purchase)} aria-label="Edit credit purchase"><Pencil size={16} /></button> : null}</div>])} /><h3>Repayment history</h3><DataTable headers={['Date', 'Currency amount', 'Exchange rate', 'PKR paid', 'Reference']} rows={selectedRepayments.map((repayment) => [shortDate(repayment.repayment_date), `${Number(repayment.amount).toLocaleString('en-PK', { maximumFractionDigits: 4 })} ${repayment.currency_code}`, Number(repayment.exchange_rate).toLocaleString('en-PK', { maximumFractionDigits: 6 }), money(repayment.total_cost), repayment.reference || repayment.notes || '-'])} /></section> : null}
       </>}
     </section>
@@ -2753,5 +2762,5 @@ function escapeHtml(value: unknown) {
 function gatePassPrintHtml(gatePass: GatePass) {
   const logoUrl = `${window.location.origin}/digi7-logo.png`;
   const copies = [1, 2].map((copy) => `<section class="copy"><header><div class="brand"><img src="${escapeHtml(logoUrl)}" alt=""/><div><h1>Syed Zulfiqar Old Spare Parts</h1><p>Gate Pass · Digi7 controlled inventory release</p></div></div><strong>${escapeHtml(gatePass.gate_pass_number)}</strong></header><div class="grid"><p><b>Issued to</b><span>${escapeHtml(gatePass.issued_to_name)}</span></p><p><b>Phone</b><span>${escapeHtml(gatePass.issued_to_phone || '-')}</span></p><p><b>Vehicle</b><span>${escapeHtml(gatePass.vehicle_number || '-')}</span></p><p><b>Driver</b><span>${escapeHtml(gatePass.driver_name || '-')}</span></p><p><b>Copy</b><span>${copy} of 2</span></p><p><b>Issued on</b><span>${escapeHtml(new Date(gatePass.issued_at).toLocaleString())}</span></p></div><table><thead><tr><th>Part</th><th>Part number</th><th>Category</th><th>Quantity</th></tr></thead><tbody>${gatePass.lines.map((line) => `<tr><td>${escapeHtml(line.sale_line.item.part_name)}</td><td>${escapeHtml(line.sale_line.item.part_number || '-')}</td><td>${escapeHtml(line.sale_line.item.category || '-')}</td><td>${escapeHtml(line.sale_line.quantity)} ${escapeHtml(line.sale_line.item.unit)}</td></tr>`).join('')}</tbody></table><footer><div><span></span><b>Issued by</b></div><div class="stamp"><span></span><b>Authorisation stamp</b></div><div><span></span><b>Gatekeeper</b></div></footer></section>`).join('');
-  return `<!doctype html><html><head><title>${escapeHtml(gatePass.gate_pass_number)}</title><style>body{font-family:Arial,sans-serif;margin:0;color:#111827;background:#fff}.copy{page-break-after:always;padding:28px;min-height:92vh;border:2px solid #111827;margin:18px}header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111827;padding-bottom:16px}.brand{display:flex;align-items:center;gap:12px;max-width:72%}.brand img{width:62px;height:62px;object-fit:contain;flex:0 0 auto}h1{margin:0;font-size:22px;line-height:1.15}p{margin:0}header p{color:#4b5563;margin-top:5px}header>strong{font-size:18px;white-space:nowrap}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:22px 0}.grid p{border:1px solid #d1d5db;padding:10px}.grid b{display:block;font-size:11px;text-transform:uppercase;color:#4b5563}.grid span{display:block;margin-top:5px;font-size:15px}table{width:100%;border-collapse:collapse;margin-top:16px;table-layout:fixed}th,td{border:1px solid #111827;padding:10px;text-align:left;overflow-wrap:anywhere}th{background:#f3f4f6}footer{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-top:60px}footer span{display:block;height:72px;border:1px dashed #6b7280;margin-bottom:8px}.stamp span{height:96px}footer b{font-size:12px;text-transform:uppercase;color:#374151}@media print{.copy{margin:0;border:2px solid #111827}.copy:last-child{page-break-after:auto}}</style></head><body>${copies}</body></html>`;
+  return `<!doctype html><html><head><title>${escapeHtml(reportFilename(`Gate Pass ${gatePass.gate_pass_number}`, 'pdf').replace(/\.pdf$/, ''))}</title><style>body{font-family:Arial,sans-serif;margin:0;color:#111827;background:#fff}.copy{page-break-after:always;padding:28px;min-height:92vh;border:2px solid #111827;margin:18px}header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111827;padding-bottom:16px}.brand{display:flex;align-items:center;gap:12px;max-width:72%}.brand img{width:62px;height:62px;object-fit:contain;flex:0 0 auto}h1{margin:0;font-size:22px;line-height:1.15}p{margin:0}header p{color:#4b5563;margin-top:5px}header>strong{font-size:18px;white-space:nowrap}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:22px 0}.grid p{border:1px solid #d1d5db;padding:10px}.grid b{display:block;font-size:11px;text-transform:uppercase;color:#4b5563}.grid span{display:block;margin-top:5px;font-size:15px}table{width:100%;border-collapse:collapse;margin-top:16px;table-layout:fixed}th,td{border:1px solid #111827;padding:10px;text-align:left;overflow-wrap:anywhere}th{background:#f3f4f6}footer{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-top:60px}footer span{display:block;height:72px;border:1px dashed #6b7280;margin-bottom:8px}.stamp span{height:96px}footer b{font-size:12px;text-transform:uppercase;color:#374151}@media print{.copy{margin:0;border:2px solid #111827}.copy:last-child{page-break-after:auto}}</style></head><body>${copies}</body></html>`;
 }

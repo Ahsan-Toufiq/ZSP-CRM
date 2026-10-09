@@ -208,6 +208,8 @@ class ContainerItemSerializer(serializers.ModelSerializer):
     net_total_cost = serializers.SerializerMethodField()
     has_subparts = serializers.SerializerMethodField()
     subpart_count = serializers.SerializerMethodField()
+    sold_quantity = serializers.SerializerMethodField()
+    available_quantity = serializers.SerializerMethodField()
 
     class Meta:
         model = ContainerItem
@@ -216,11 +218,12 @@ class ContainerItemSerializer(serializers.ModelSerializer):
             'part_number', 'description', 'category', 'quantity',
             'unit', 'raw_unit_cost', 'raw_total_cost',
             'added_cost_share', 'net_unit_cost', 'net_total_cost', 'status',
-            'has_subparts', 'subpart_count', 'created_at', 'updated_at',
+            'sold_quantity', 'available_quantity', 'has_subparts', 'subpart_count',
+            'created_at', 'updated_at',
         ]
         read_only_fields = [
             'id', 'container_reference', 'parent_item', 'status', 'net_unit_cost',
-            'has_subparts', 'subpart_count',
+            'sold_quantity', 'available_quantity', 'has_subparts', 'subpart_count',
             'created_at', 'updated_at',
         ]
 
@@ -247,6 +250,17 @@ class ContainerItemSerializer(serializers.ModelSerializer):
             return obj.subpart_count_total
         return obj.subparts.count()
 
+    def get_sold_quantity(self, obj):
+        if hasattr(obj, 'sold_quantity_total'):
+            return int(obj.sold_quantity_total or 0)
+        try:
+            return sold_quantity_for_batch(obj.inventory_batch)
+        except InventoryBatch.DoesNotExist:
+            return 0
+
+    def get_available_quantity(self, obj):
+        return max(int(obj.quantity) - int(self.get_sold_quantity(obj)), 0)
+
     def _persist_options(self, validated_data):
         user = self.context['request'].user
         ensure_dropdown_option(group=DropdownOption.Group.PART_NAME, label=validated_data.get('part_name', ''), user=user)
@@ -265,6 +279,31 @@ class ContainerItemSerializer(serializers.ModelSerializer):
             'net_unit_cost': instance.net_unit_cost,
             'description': instance.description or '',
         }
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if self.instance is None:
+            return attrs
+        try:
+            sold_quantity = sold_quantity_for_batch(self.instance.inventory_batch)
+        except InventoryBatch.DoesNotExist:
+            sold_quantity = 0
+        quantity = int(attrs.get('quantity', self.instance.quantity))
+        if quantity < sold_quantity:
+            raise serializers.ValidationError({
+                'quantity': f'Quantity cannot be lower than {sold_quantity} unit(s) already sold from this source.',
+            })
+        if sold_quantity:
+            immutable_fields = ('container', 'part_name', 'part_number', 'category', 'unit')
+            changed = [
+                field for field in immutable_fields
+                if field in attrs and attrs[field] != getattr(self.instance, field)
+            ]
+            if changed:
+                raise serializers.ValidationError({
+                    'item': 'The container and part identity cannot be changed after stock from this source has been sold.',
+                })
+        return attrs
 
     def create(self, validated_data):
         self._persist_options(validated_data)
@@ -323,6 +362,20 @@ class ContainerItemSerializer(serializers.ModelSerializer):
                 instance.refresh_from_db()
             return instance
 
+    def update(self, instance, validated_data):
+        self._persist_options(validated_data)
+        with transaction.atomic():
+            before = self._snapshot(instance)
+            instance = super().update(instance, validated_data)
+            if is_container_cost_locked(instance.container):
+                instance.net_unit_cost = Decimal(instance.raw_unit_cost or 0).quantize(Decimal('0.01'))
+                instance.save(update_fields=['net_unit_cost', 'updated_at'])
+            apply_container_inventory_delta(user=self.context['request'].user, before=before, after=instance)
+            if not is_container_cost_locked(instance.container):
+                recalculate_container_net_costs(user=self.context['request'].user, container=instance.container)
+                instance.refresh_from_db()
+            return instance
+
 
 class SubpartWriteSerializer(serializers.Serializer):
     part_name = serializers.CharField(max_length=180)
@@ -347,20 +400,6 @@ class SubpartCreateSerializer(serializers.Serializer):
 
     def to_representation(self, instance):
         return ContainerItemSerializer(instance, many=True, context=self.context).data
-
-    def update(self, instance, validated_data):
-        self._persist_options(validated_data)
-        with transaction.atomic():
-            before = self._snapshot(instance)
-            instance = super().update(instance, validated_data)
-            if is_container_cost_locked(instance.container):
-                instance.net_unit_cost = Decimal(instance.raw_unit_cost or 0).quantize(Decimal('0.01'))
-                instance.save(update_fields=['net_unit_cost', 'updated_at'])
-            apply_container_inventory_delta(user=self.context['request'].user, before=before, after=instance)
-            if not is_container_cost_locked(instance.container):
-                recalculate_container_net_costs(user=self.context['request'].user, container=instance.container)
-                instance.refresh_from_db()
-            return instance
 
 
 class InventoryBatchSerializer(serializers.ModelSerializer):
