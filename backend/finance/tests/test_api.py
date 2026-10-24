@@ -24,7 +24,7 @@ from finance.models import (
     CustomerPaymentTarget,
 )
 from finance.services import change_cheque_status, create_cheque
-from operations.models import AuctionSale, Customer, InventoryBatch, PartInventory
+from operations.models import AuctionSale, Container, Customer, InventoryBatch, PartInventory
 from finance.reporting import build_customer_statement
 from operations.services import create_auction_sale
 
@@ -184,6 +184,42 @@ def test_dashboard_summary_includes_pending_in_date_cheques(api_client, admin_us
     assert response.status_code == 200
     assert any(cheque['cheque_number'] == 'CHQ-READY-API' for cheque in response.data['pending_in_date_cheques'])
     assert response.data['cheques_by_status']['Pending'] >= 1
+
+
+@pytest.mark.django_db
+def test_dashboard_summary_returns_zero_after_business_data_is_removed(api_client, admin_user):
+    customer = Customer.objects.create(name='Temporary Dashboard Customer', phone='+923009997777')
+    item = PartInventory.objects.create(part_name='Temporary Dashboard Part', quantity=2, unit='piece')
+    container = Container.objects.create(reference='TEMP-DASHBOARD-CONTAINER')
+    CustomerLedgerEntry.objects.create(
+        customer=customer,
+        entry_date=timezone.localdate(),
+        entry_type=CustomerLedgerEntry.EntryType.ADJUSTMENT,
+        description='Temporary opening balance',
+        debit=Decimal('5000.00'),
+        credit=Decimal('0.00'),
+        created_by=admin_user,
+        updated_by=admin_user,
+    )
+
+    CustomerLedgerEntry.objects.all().delete()
+    item.delete()
+    container.delete()
+    customer.delete()
+
+    response = api_client.get('/api/finance/dashboard-summary/')
+
+    assert response.status_code == 200
+    assert response['Cache-Control'] == 'no-store, no-cache, must-revalidate, max-age=0'
+    assert response.data['containers'] == 0
+    assert response.data['items'] == {'total': 0, 'by_status': {'available': 0, 'sold_out': 0}}
+    assert response.data['auction_sales'] == 0
+    assert response.data['customer_receivable'] == Decimal('0')
+    assert response.data['creditors'] == {'count': 0, 'total_outstanding': Decimal('0')}
+    assert response.data['gate_passes'] == {'issued': 0, 'not_printed': 0, 'printed': 0}
+    assert response.data['cheques_by_status'] == {}
+    assert response.data['cheque_amounts_by_status'] == {}
+    assert response.data['pending_in_date_cheques'] == []
 
 
 @pytest.mark.django_db

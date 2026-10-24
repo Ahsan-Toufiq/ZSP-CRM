@@ -388,7 +388,7 @@ def dashboard_summary(request):
     )
     cheque_amounts_by_status = Cheque.objects.values('status__name').annotate(total=Coalesce(Sum('amount'), Value(Decimal('0.00')), output_field=DecimalField(max_digits=14, decimal_places=2)))
 
-    return Response({
+    response = Response({
         'containers': Container.objects.count(),
         'items': {
             'total': PartInventory.objects.count(),
@@ -424,6 +424,8 @@ def dashboard_summary(request):
         },
         'customer_receivable': receivable,
     })
+    response['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    return response
 
 
 @api_view(['GET'])

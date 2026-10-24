@@ -513,6 +513,35 @@ export default function Home() {
     return () => window.clearTimeout(handle);
   }, [activeTab, isAuthenticated, visibleTabs]);
 
+  useEffect(() => {
+    if (!isAuthenticated || activeTab !== 'dashboard') return;
+
+    let cancelled = false;
+    const refreshSummary = async () => {
+      try {
+        const summaryData = await get<DashboardSummary>('/finance/dashboard-summary/');
+        if (!cancelled) setSummary(summaryData);
+      } catch {
+        // Keep the current figures during a transient background refresh failure.
+      }
+    };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') void refreshSummary();
+    };
+    const interval = window.setInterval(refreshSummary, 30_000);
+
+    window.addEventListener('focus', refreshSummary);
+    window.addEventListener('online', refreshSummary);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener('focus', refreshSummary);
+      window.removeEventListener('online', refreshSummary);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+    };
+  }, [activeTab, isAuthenticated]);
+
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (authSubmitting) return;
@@ -650,6 +679,10 @@ export default function Home() {
   }
 
   function navigateTab(tab: Tab) {
+    if (tab === activeTab) {
+      void loadTabData(tab);
+      return;
+    }
     setActiveTab(tab);
     if (window.location.pathname !== tabRoutes[tab]) {
       window.history.pushState(null, '', tabRoutes[tab]);
